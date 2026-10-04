@@ -1700,7 +1700,6 @@ export default function App() {
 
 
   const bondTarget = (bond ?? 0) + bondReserve
-  const remainingBondGp = bond ? Math.max(bond - gp, 0) : 0
   const remainingSafeGp = bond ? Math.max(bondTarget - gp, 0) : 0
   const allOpenMethods = [
     ...rows.filter(r=>r.unlocked && (r.gpHour??0)>0).map(r=>({id:r.id,name:r.name,gpHour:r.gpHour??0,source:r.speedSource,attention:r.attentionLevel})),
@@ -1724,7 +1723,7 @@ export default function App() {
     const targetRoi=targetProfit!==null&&targetInput!>0?targetProfit/targetInput!*100:null
     return {...r,targetBuy:target,targetProfit,targetRoi,targetRun:targetProfit!==null?targetProfit*r.itemsPerRun:null,baseBuy}
   }).filter(r=>r.targetProfit!==null&&r.targetProfit>0).sort((a,b)=>(b.targetRun??0)-(a.targetRun??0)).slice(0,Math.max(1,geSlots))
-  const nextUnlocks=rows.filter(r=>!r.unlocked && !r.membersLocked && r.levelLocked && (r.profit??0)>0).map(r=>({...r,levelsMissing:Math.max(0,r.level-r.currentLevel)})).sort((a,b)=>a.levelsMissing-b.levelsMissing).slice(0,5)
+  const nextUnlocks=rows.filter(r=>!r.unlocked && !r.membersLocked && r.levelLocked && (r.profit??0)>0).map(r=>({...r,levelsMissing:Math.max(0,r.level-r.currentLevel),xpMissing:Math.max(0,xpForLevel(r.level)-xpForLevel(r.currentLevel))})).sort((a,b)=>a.levelsMissing-b.levelsMissing).slice(0,5)
 
 
 
