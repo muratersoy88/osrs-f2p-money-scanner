@@ -14,6 +14,7 @@ type MethodUserData = {
   actualBuyCost?: number
   actualSellPrice?: number
   purpose?: MethodPurpose
+  itemsPerRun?: number
 }
 
 type Ingredient = {
@@ -923,6 +924,23 @@ const recipeId = (name: string) =>
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '')
 
+const defaultItemsPerRun = (r: Recipe) => {
+  // Common F2P inventory loops. User can override every value from the UI.
+  if (r.name === 'Iron + 2 Coal → Steel bar') return 9
+  if (
+    r.category === 'Crafting' &&
+    (r.name.includes('ring') || r.name.includes('necklace') || r.name.includes('amulet'))
+  ) return 13
+
+  if (r.kind === 'alchemy') return 27
+
+  const slotsPerProcess = Math.max(
+    1,
+    r.inputs.reduce((sum, i) => sum + i.qty, 0)
+  )
+  return Math.max(1, Math.floor(28 / slotsPerProcess))
+}
+
 const loadMethodData = (): Record<string, MethodUserData> => {
   try {
     const saved = localStorage.getItem('osrs-method-data-v22')
@@ -1272,6 +1290,14 @@ export default function App() {
           : 'XP'
       const purpose = userData.purpose || autoPurpose
 
+      const itemsPerRun = Math.max(
+        1,
+        Math.floor(userData.itemsPerRun || defaultItemsPerRun(r))
+      )
+      const profitPerRun = profit !== null ? profit * itemsPerRun : null
+      const xpPerRun = r.xp * itemsPerRun
+      const capitalPerRun = effectiveCost !== null ? effectiveCost * itemsPerRun : null
+
       const slotsPerAttempt =
         r.kind === 'alchemy'
           ? 2
@@ -1323,6 +1349,10 @@ export default function App() {
         timeProfit,
         timeXp,
         purpose,
+        itemsPerRun,
+        profitPerRun,
+        xpPerRun,
+        capitalPerRun,
         inventoryProfit,
         ingredientsText,
         alchValue,
@@ -1425,25 +1455,69 @@ export default function App() {
     ...Array.from(new Set(RECIPES.map((r) => r.category))),
   ]
 
-  const bestF2P = rows
-    .filter(
+  const top3F2P = useMemo(() => {
+    const candidates = rows.filter(
       (r) =>
         r.unlocked &&
-        r.f2p &&
+        (mode !== 'F2P' || r.f2p) &&
         r.profit !== null &&
-        r.profit > 0
+        r.profit > 0 &&
+        r.capitalPerRun !== null &&
+        r.capitalPerRun <= gp
     )
-    .sort(
-      (a, b) =>
-        (b.gpHour ?? -Infinity) -
-        (a.gpHour ?? -Infinity)
-    )[0]
+
+    if (!candidates.length) return []
+
+    const maxProfitItem = Math.max(...candidates.map((r) => Math.max(r.profit ?? 0, 0)), 1)
+    const maxProfitRun = Math.max(...candidates.map((r) => Math.max(r.profitPerRun ?? 0, 0)), 1)
+    const maxRoi = Math.max(...candidates.map((r) => Math.max(r.roi ?? 0, 0)), 1)
+    const maxLogVolume = Math.max(
+      ...candidates.map((r) => Math.log10(Math.max((r.dailyVolume ?? 0) + 1, 1))),
+      1
+    )
+    const maxXpRun = Math.max(...candidates.map((r) => Math.max(r.xpPerRun ?? 0, 0)), 1)
+
+    return candidates
+      .map((r) => {
+        const parts = {
+          profitItem: Math.max(r.profit ?? 0, 0) / maxProfitItem,
+          profitRun: Math.max(r.profitPerRun ?? 0, 0) / maxProfitRun,
+          roi: Math.max(r.roi ?? 0, 0) / maxRoi,
+          volume:
+            Math.log10(Math.max((r.dailyVolume ?? 0) + 1, 1)) /
+            maxLogVolume,
+          xp: Math.max(r.xpPerRun ?? 0, 0) / maxXpRun,
+        }
+
+        // GP/h is deliberately NOT part of this score.
+        const recommendationScore =
+          parts.profitItem * 0.30 +
+          parts.profitRun * 0.30 +
+          parts.roi * 0.20 +
+          parts.volume * 0.15 +
+          parts.xp * 0.05
+
+        const reasons: Array<[number, string]> = [
+          [parts.profitItem, 'Yüksek ürün kârı'],
+          [parts.profitRun, 'Yüksek tur kârı'],
+          [parts.roi, 'İyi ROI'],
+          [parts.volume, 'Yüksek satış hacmi'],
+          [r.purpose === 'SKILL + PROFIT' ? 0.85 : parts.xp * 0.7, 'Skill + Profit'],
+        ]
+        reasons.sort((a, b) => b[0] - a[0])
+
+        return { ...r, recommendationScore, recommendationReason: reasons[0][1] }
+      })
+      .sort((a, b) => b.recommendationScore - a.recommendationScore)
+      .slice(0, 3)
+  }, [rows, gp, mode])
+
 
   return (
     <main>
       <header>
         <div>
-          <h1>OSRS F2P Money Scanner V2.2.1</h1>
+          <h1>OSRS F2P Money Scanner V2.3</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -1541,26 +1615,44 @@ export default function App() {
         </div>
       </section>
 
-      {bestF2P && (
+      {top3F2P.length > 0 && (
         <div
           style={{
-            background: '#12261a',
-            border: '1px solid #238636',
-            borderRadius: 7,
-            padding: '9px 12px',
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+            gap: 8,
             marginBottom: 10,
-            fontSize: 12,
           }}
         >
-          <b style={{ color: '#3fb950' }}>
-            ★ Şu an en güçlü açık F2P yöntem:
-          </b>{' '}
-          {bestF2P.name} —{' '}
-          <b>{fmt(bestF2P.gpHour)} GP/h</b> —{' '}
-          {fmt(bestF2P.profit)} GP/adet —{' '}
-          <b>{bestF2P.speedSource}</b>
+          {top3F2P.map((r, index) => (
+            <div
+              key={r.id}
+              style={{
+                background: '#12261a',
+                border: '1px solid #238636',
+                borderRadius: 7,
+                padding: '9px 12px',
+                fontSize: 11,
+              }}
+            >
+              <div style={{ color: '#3fb950', fontWeight: 'bold', marginBottom: 4 }}>
+                #{index + 1} — {r.name}
+              </div>
+              <div>
+                <b>{fmt(r.profit)}</b> GP/adet • <b>{fmt(r.profitPerRun)}</b> GP/tur •{' '}
+                <b>{r.roi === null ? '—' : `${r.roi.toFixed(1)}%`}</b> ROI
+              </div>
+              <div style={{ color: '#c9d1d9', marginTop: 3 }}>
+                XP/tur {fmt(r.xpPerRun, 1)} • Hacim {fmt(r.dailyVolume)} • {fmt(r.gpHour)} GP/h
+              </div>
+              <div style={{ color: '#e3b341', marginTop: 4 }}>
+                {r.recommendationReason} • {r.speedSource === 'GERÇEK' ? 'GERÇEK ÖLÇÜM' : 'TAHMİN'}
+              </div>
+            </div>
+          ))}
         </div>
       )}
+
 
       <section className="filters">
         <label>
@@ -1739,6 +1831,9 @@ export default function App() {
               <th>GP/XP</th>
               <th>Başarı</th>
               <th>24h Hacim</th>
+              <th>Adet/Tur</th>
+              <th>Kâr/Tur</th>
+              <th>XP/Tur</th>
               <th>Hız</th>
               <th>GP/h</th>
               <th>XP/h</th>
@@ -1921,6 +2016,20 @@ export default function App() {
                             />
                           </label>
                           <label style={{ fontSize: 9 }}>
+                            Adet / tur
+                            <input
+                              type="number"
+                              min="1"
+                              value={r.itemsPerRun}
+                              onChange={(e) =>
+                                updateMethodData(r.id, {
+                                  itemsPerRun: Math.max(1, Math.floor(Number(e.target.value) || 1)),
+                                })
+                              }
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <label style={{ fontSize: 9 }}>
                             Yöntem türü
                             <select
                               value={r.purpose}
@@ -2044,6 +2153,16 @@ export default function App() {
                       </div>
                     )}
                   </td>
+
+                  <td>
+                    <b>{fmt(r.itemsPerRun)}</b>
+                  </td>
+
+                  <td className={(r.profitPerRun ?? 0) >= 0 ? 'positive' : 'negative'}>
+                    {r.profitPerRun !== null && r.profitPerRun > 0 ? '+' : ''}{fmt(r.profitPerRun)}
+                  </td>
+
+                  <td>{fmt(r.xpPerRun, 1)}</td>
 
                   <td>
                     <b>{fmt(r.effectiveItemsPerHour)}/h</b>
