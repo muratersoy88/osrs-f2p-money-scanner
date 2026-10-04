@@ -1,7 +1,34 @@
-import { useEffect, useMemo, useState } from 'react';
-import './App.css';
+import { useEffect, useMemo, useState } from 'react'
+import './App.css'
 
-const API = 'https://prices.runescape.wiki/api/v1/osrs';
+const API = 'https://prices.runescape.wiki/api/v1/osrs'
+
+type AccountMode = 'F2P' | 'P2P'
+type RecipeKind = 'normal' | 'alchemy'
+
+type Ingredient = {
+  name: string
+  qty: number
+}
+
+type Recipe = {
+  name: string
+  category: string
+  skill: string
+  level: number
+  xp: number
+  inputs: Ingredient[]
+  output?: string
+  outputQty?: number
+  fee?: number
+  f2p: boolean
+  itemsPerHour: number
+  kind?: RecipeKind
+  alchItem?: string
+  alchType?: 'high' | 'low'
+  success?: (levels: Record<string, number>) => number
+  note?: string
+}
 
 const DEFAULT_LEVELS: Record<string, number> = {
   Attack: 20,
@@ -9,9 +36,9 @@ const DEFAULT_LEVELS: Record<string, number> = {
   Defence: 20,
   Hitpoints: 24,
   Prayer: 11,
-  Magic: 1,
+  Magic: 25,
   Runecraft: 1,
-  Crafting: 1,
+  Crafting: 35,
   Mining: 31,
   Smithing: 30,
   Fishing: 50,
@@ -19,60 +46,96 @@ const DEFAULT_LEVELS: Record<string, number> = {
   Firemaking: 13,
   Woodcutting: 11,
   Ranged: 1,
-};
+}
 
-type Ingredient = {
-  name: string;
-  qty: number;
-};
+const clamp = (n: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, n))
 
-type Method = {
-  name: string;
-  skill: string;
-  level: number;
-  xp: number;
-  inputs: Ingredient[];
-  output: string;
-  outputQty?: number;
-  extraCost?: number;
-};
+const wineSuccess = (levels: Record<string, number>) => {
+  const level = levels.Cooking || 1
+  if (level < 35) return 0.6
+  if (level >= 68) return 1
+  return clamp(0.6 + ((level - 35) / 33) * 0.4, 0.6, 1)
+}
 
-const METHODS: Method[] = [
+/*
+  Plain pizza burn chance is level-dependent.
+  We deliberately use a conservative linear estimate between unlock and
+  no-burn level rather than pretending to have an exact tick-perfect formula.
+*/
+const pizzaSuccess = (levels: Record<string, number>) => {
+  const level = levels.Cooking || 1
+  if (level >= 68) return 1
+  if (level <= 35) return 0.65
+  return clamp(0.65 + ((level - 35) / 33) * 0.35, 0.65, 1)
+}
+
+const RECIPES: Recipe[] = [
+  // ---------------- TANNING ----------------
   {
     name: 'Cowhide → Leather',
+    category: 'Tanning',
     skill: 'Crafting',
     level: 1,
     xp: 0,
     inputs: [{ name: 'Cowhide', qty: 1 }],
     output: 'Leather',
-    extraCost: 1,
+    fee: 1,
+    f2p: true,
+    itemsPerHour: 2000,
+    note: 'Al Kharid Tanner — 1 gp fee',
   },
   {
+    name: 'Cowhide → Hard leather',
+    category: 'Tanning',
+    skill: 'Crafting',
+    level: 1,
+    xp: 0,
+    inputs: [{ name: 'Cowhide', qty: 1 }],
+    output: 'Hard leather',
+    fee: 3,
+    f2p: true,
+    itemsPerHour: 2000,
+    note: 'Al Kharid Tanner — 3 gp fee',
+  },
+
+  // ---------------- GOLD ----------------
+  {
     name: 'Gold ring',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 5,
     xp: 15,
     inputs: [{ name: 'Gold bar', qty: 1 }],
     output: 'Gold ring',
+    f2p: true,
+    itemsPerHour: 1100,
   },
   {
     name: 'Gold necklace',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 6,
     xp: 20,
     inputs: [{ name: 'Gold bar', qty: 1 }],
     output: 'Gold necklace',
+    f2p: true,
+    itemsPerHour: 1100,
   },
   {
     name: 'Gold amulet (u)',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 8,
     xp: 30,
     inputs: [{ name: 'Gold bar', qty: 1 }],
     output: 'Gold amulet (u)',
+    f2p: true,
+    itemsPerHour: 1100,
   },
   {
     name: 'String gold amulet',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 1,
     xp: 4,
@@ -81,18 +144,25 @@ const METHODS: Method[] = [
       { name: 'Ball of wool', qty: 1 },
     ],
     output: 'Gold amulet',
+    f2p: true,
+    itemsPerHour: 1600,
   },
 
+  // ---------------- SAPPHIRE ----------------
   {
     name: 'Cut sapphire',
+    category: 'Gem Cutting',
     skill: 'Crafting',
     level: 20,
     xp: 50,
     inputs: [{ name: 'Uncut sapphire', qty: 1 }],
     output: 'Sapphire',
+    f2p: true,
+    itemsPerHour: 2500,
   },
   {
     name: 'Sapphire ring',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 20,
     xp: 40,
@@ -101,9 +171,12 @@ const METHODS: Method[] = [
       { name: 'Sapphire', qty: 1 },
     ],
     output: 'Sapphire ring',
+    f2p: true,
+    itemsPerHour: 1100,
   },
   {
     name: 'Sapphire necklace',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 22,
     xp: 55,
@@ -112,9 +185,12 @@ const METHODS: Method[] = [
       { name: 'Sapphire', qty: 1 },
     ],
     output: 'Sapphire necklace',
+    f2p: true,
+    itemsPerHour: 1100,
   },
   {
     name: 'Sapphire amulet (u)',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 24,
     xp: 65,
@@ -123,18 +199,25 @@ const METHODS: Method[] = [
       { name: 'Sapphire', qty: 1 },
     ],
     output: 'Sapphire amulet (u)',
+    f2p: true,
+    itemsPerHour: 1100,
   },
 
+  // ---------------- EMERALD ----------------
   {
     name: 'Cut emerald',
+    category: 'Gem Cutting',
     skill: 'Crafting',
     level: 27,
     xp: 67.5,
     inputs: [{ name: 'Uncut emerald', qty: 1 }],
     output: 'Emerald',
+    f2p: true,
+    itemsPerHour: 2500,
   },
   {
     name: 'Emerald ring',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 27,
     xp: 55,
@@ -143,9 +226,12 @@ const METHODS: Method[] = [
       { name: 'Emerald', qty: 1 },
     ],
     output: 'Emerald ring',
+    f2p: true,
+    itemsPerHour: 1100,
   },
   {
     name: 'Emerald necklace',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 29,
     xp: 60,
@@ -154,9 +240,12 @@ const METHODS: Method[] = [
       { name: 'Emerald', qty: 1 },
     ],
     output: 'Emerald necklace',
+    f2p: true,
+    itemsPerHour: 1100,
   },
   {
     name: 'Emerald amulet (u)',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 31,
     xp: 70,
@@ -165,18 +254,25 @@ const METHODS: Method[] = [
       { name: 'Emerald', qty: 1 },
     ],
     output: 'Emerald amulet (u)',
+    f2p: true,
+    itemsPerHour: 1100,
   },
 
+  // ---------------- RUBY ----------------
   {
     name: 'Cut ruby',
+    category: 'Gem Cutting',
     skill: 'Crafting',
     level: 34,
     xp: 85,
     inputs: [{ name: 'Uncut ruby', qty: 1 }],
     output: 'Ruby',
+    f2p: true,
+    itemsPerHour: 2500,
   },
   {
     name: 'Ruby ring',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 34,
     xp: 70,
@@ -185,9 +281,12 @@ const METHODS: Method[] = [
       { name: 'Ruby', qty: 1 },
     ],
     output: 'Ruby ring',
+    f2p: true,
+    itemsPerHour: 1100,
   },
   {
     name: 'Ruby necklace',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 40,
     xp: 75,
@@ -196,9 +295,12 @@ const METHODS: Method[] = [
       { name: 'Ruby', qty: 1 },
     ],
     output: 'Ruby necklace',
+    f2p: true,
+    itemsPerHour: 1100,
   },
   {
     name: 'Ruby amulet (u)',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 50,
     xp: 85,
@@ -207,18 +309,25 @@ const METHODS: Method[] = [
       { name: 'Ruby', qty: 1 },
     ],
     output: 'Ruby amulet (u)',
+    f2p: true,
+    itemsPerHour: 1100,
   },
 
+  // ---------------- DIAMOND ----------------
   {
     name: 'Cut diamond',
+    category: 'Gem Cutting',
     skill: 'Crafting',
     level: 43,
     xp: 107.5,
     inputs: [{ name: 'Uncut diamond', qty: 1 }],
     output: 'Diamond',
+    f2p: true,
+    itemsPerHour: 2500,
   },
   {
     name: 'Diamond ring',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 43,
     xp: 85,
@@ -227,9 +336,12 @@ const METHODS: Method[] = [
       { name: 'Diamond', qty: 1 },
     ],
     output: 'Diamond ring',
+    f2p: true,
+    itemsPerHour: 1100,
   },
   {
     name: 'Diamond necklace',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 56,
     xp: 90,
@@ -238,9 +350,12 @@ const METHODS: Method[] = [
       { name: 'Diamond', qty: 1 },
     ],
     output: 'Diamond necklace',
+    f2p: true,
+    itemsPerHour: 1100,
   },
   {
     name: 'Diamond amulet (u)',
+    category: 'Crafting',
     skill: 'Crafting',
     level: 70,
     xp: 100,
@@ -249,10 +364,154 @@ const METHODS: Method[] = [
       { name: 'Diamond', qty: 1 },
     ],
     output: 'Diamond amulet (u)',
+    f2p: true,
+    itemsPerHour: 1100,
   },
 
+  // ---------------- SILVER ----------------
   {
-    name: 'Pastry dough',
+    name: 'Silver bar → Unstrung symbol',
+    category: 'Silver',
+    skill: 'Crafting',
+    level: 16,
+    xp: 50,
+    inputs: [{ name: 'Silver bar', qty: 1 }],
+    output: 'Unstrung symbol',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Unstrung symbol → Unblessed symbol',
+    category: 'Silver',
+    skill: 'Crafting',
+    level: 16,
+    xp: 4,
+    inputs: [
+      { name: 'Unstrung symbol', qty: 1 },
+      { name: 'Ball of wool', qty: 1 },
+    ],
+    output: 'Unblessed symbol',
+    f2p: true,
+    itemsPerHour: 1600,
+  },
+  {
+    name: 'Unblessed symbol → Holy symbol',
+    category: 'Silver',
+    skill: 'Prayer',
+    level: 31,
+    xp: 0,
+    inputs: [{ name: 'Unblessed symbol', qty: 1 }],
+    output: 'Holy symbol',
+    f2p: true,
+    itemsPerHour: 1000,
+    note: 'Brother Jered blessing',
+  },
+  {
+    name: 'Silver bar → Tiara',
+    category: 'Silver',
+    skill: 'Crafting',
+    level: 23,
+    xp: 52.5,
+    inputs: [{ name: 'Silver bar', qty: 1 }],
+    output: 'Tiara',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+
+  // ---------------- WOOL / LEATHER ----------------
+  {
+    name: 'Wool → Ball of wool',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 1,
+    xp: 2.5,
+    inputs: [{ name: 'Wool', qty: 1 }],
+    output: 'Ball of wool',
+    f2p: true,
+    itemsPerHour: 900,
+  },
+  {
+    name: 'Leather → Leather gloves',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 1,
+    xp: 13.8,
+    inputs: [{ name: 'Leather', qty: 1 }],
+    output: 'Leather gloves',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+  {
+    name: 'Leather → Leather boots',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 7,
+    xp: 16.3,
+    inputs: [{ name: 'Leather', qty: 1 }],
+    output: 'Leather boots',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+  {
+    name: 'Leather → Leather cowl',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 9,
+    xp: 18.5,
+    inputs: [{ name: 'Leather', qty: 1 }],
+    output: 'Leather cowl',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+  {
+    name: 'Leather → Leather vambraces',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 11,
+    xp: 22,
+    inputs: [{ name: 'Leather', qty: 1 }],
+    output: 'Leather vambraces',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+  {
+    name: 'Leather → Leather body',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 14,
+    xp: 25,
+    inputs: [{ name: 'Leather', qty: 1 }],
+    output: 'Leather body',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+  {
+    name: 'Leather → Leather chaps',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 18,
+    xp: 27,
+    inputs: [{ name: 'Leather', qty: 1 }],
+    output: 'Leather chaps',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+  {
+    name: 'Hard leather → Hardleather body',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 28,
+    xp: 35,
+    inputs: [{ name: 'Hard leather', qty: 1 }],
+    output: 'Hardleather body',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+
+  // ---------------- FOOD PROCESSING ----------------
+  {
+    name: 'Pot of flour + water → Pastry dough',
+    category: 'Food',
     skill: 'Cooking',
     level: 1,
     xp: 0,
@@ -261,28 +520,37 @@ const METHODS: Method[] = [
       { name: 'Jug of water', qty: 1 },
     ],
     output: 'Pastry dough',
+    f2p: true,
+    itemsPerHour: 1800,
   },
   {
-    name: 'Pie shell',
+    name: 'Pastry dough + dish → Pie shell',
+    category: 'Food',
     skill: 'Cooking',
     level: 1,
     xp: 0,
     inputs: [
-      { name: 'Pie dish', qty: 1 },
       { name: 'Pastry dough', qty: 1 },
+      { name: 'Pie dish', qty: 1 },
     ],
     output: 'Pie shell',
+    f2p: true,
+    itemsPerHour: 1800,
   },
   {
-    name: 'Chocolate dust',
+    name: 'Chocolate bar → Chocolate dust',
+    category: 'Food',
     skill: 'Cooking',
     level: 1,
     xp: 0,
     inputs: [{ name: 'Chocolate bar', qty: 1 }],
     output: 'Chocolate dust',
+    f2p: true,
+    itemsPerHour: 2700,
   },
   {
-    name: 'Anchovy pizza',
+    name: 'Plain pizza → Anchovy pizza',
+    category: 'Food',
     skill: 'Cooking',
     level: 55,
     xp: 39,
@@ -291,10 +559,337 @@ const METHODS: Method[] = [
       { name: 'Anchovies', qty: 1 },
     ],
     output: 'Anchovy pizza',
+    f2p: true,
+    itemsPerHour: 2500,
+  },
+  {
+    name: 'Grapes + Jug of water → Jug of wine',
+    category: 'Food',
+    skill: 'Cooking',
+    level: 35,
+    xp: 200,
+    inputs: [
+      { name: 'Grapes', qty: 1 },
+      { name: 'Jug of water', qty: 1 },
+    ],
+    output: 'Jug of wine',
+    f2p: true,
+    itemsPerHour: 2400,
+    success: wineSuccess,
+    note: '35 Cooking ≈60% success; 68 = 100%',
+  },
+  {
+    name: 'Uncooked pizza → Plain pizza',
+    category: 'Food',
+    skill: 'Cooking',
+    level: 35,
+    xp: 143,
+    inputs: [{ name: 'Uncooked pizza', qty: 1 }],
+    output: 'Plain pizza',
+    f2p: true,
+    itemsPerHour: 1200,
+    success: pizzaSuccess,
+    note: 'Range cooking; 68 Cooking = no burn',
+  },
+  {
+    name: 'Plain pizza → Meat pizza',
+    category: 'Food',
+    skill: 'Cooking',
+    level: 45,
+    xp: 26,
+    inputs: [
+      { name: 'Plain pizza', qty: 1 },
+      { name: 'Cooked meat', qty: 1 },
+    ],
+    output: 'Meat pizza',
+    f2p: true,
+    itemsPerHour: 2500,
+  },
+  {
+    name: 'Uncooked berry pie → Redberry pie',
+    category: 'Food',
+    skill: 'Cooking',
+    level: 10,
+    xp: 78,
+    inputs: [{ name: 'Uncooked berry pie', qty: 1 }],
+    output: 'Redberry pie',
+    f2p: true,
+    itemsPerHour: 1200,
+    success: (levels) => {
+      const l = levels.Cooking || 1
+      if (l >= 45) return 1
+      return clamp(0.65 + ((l - 10) / 35) * 0.35, 0.65, 1)
+    },
+    note: 'Range cooking; burn chance included',
   },
 
+  // ---------------- SMELTING ----------------
   {
-    name: 'Enchant sapphire ring',
+    name: 'Iron ore → Iron bar',
+    category: 'Smelting',
+    skill: 'Smithing',
+    level: 15,
+    xp: 12.5,
+    inputs: [{ name: 'Iron ore', qty: 1 }],
+    output: 'Iron bar',
+    f2p: true,
+    itemsPerHour: 900,
+    success: () => 0.5,
+    note: 'F2P normal furnace: 50% success',
+  },
+  {
+    name: 'Iron + 2 Coal → Steel bar',
+    category: 'Smelting',
+    skill: 'Smithing',
+    level: 30,
+    xp: 17.5,
+    inputs: [
+      { name: 'Iron ore', qty: 1 },
+      { name: 'Coal', qty: 2 },
+    ],
+    output: 'Steel bar',
+    f2p: true,
+    itemsPerHour: 750,
+  },
+  {
+    name: 'Mithril + 4 Coal → Mithril bar',
+    category: 'Smelting',
+    skill: 'Smithing',
+    level: 50,
+    xp: 30,
+    inputs: [
+      { name: 'Mithril ore', qty: 1 },
+      { name: 'Coal', qty: 4 },
+    ],
+    output: 'Mithril bar',
+    f2p: true,
+    itemsPerHour: 600,
+  },
+  {
+    name: 'Adamantite + 6 Coal → Adamantite bar',
+    category: 'Smelting',
+    skill: 'Smithing',
+    level: 70,
+    xp: 37.5,
+    inputs: [
+      { name: 'Adamantite ore', qty: 1 },
+      { name: 'Coal', qty: 6 },
+    ],
+    output: 'Adamantite bar',
+    f2p: true,
+    itemsPerHour: 500,
+  },
+  {
+    name: 'Runite + 8 Coal → Runite bar',
+    category: 'Smelting',
+    skill: 'Smithing',
+    level: 85,
+    xp: 50,
+    inputs: [
+      { name: 'Runite ore', qty: 1 },
+      { name: 'Coal', qty: 8 },
+    ],
+    output: 'Runite bar',
+    f2p: true,
+    itemsPerHour: 450,
+  },
+
+  // ---------------- BAR → EQUIPMENT ----------------
+  {
+    name: 'Steel bars → Steel platebody',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 48,
+    xp: 187.5,
+    inputs: [{ name: 'Steel bar', qty: 5 }],
+    output: 'Steel platebody',
+    f2p: true,
+    itemsPerHour: 900,
+  },
+  {
+    name: 'Mithril bars → Mithril platebody',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 68,
+    xp: 250,
+    inputs: [{ name: 'Mithril bar', qty: 5 }],
+    output: 'Mithril platebody',
+    f2p: true,
+    itemsPerHour: 900,
+  },
+  {
+    name: 'Adamantite bars → Adamant platebody',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 88,
+    xp: 312.5,
+    inputs: [{ name: 'Adamantite bar', qty: 5 }],
+    output: 'Adamant platebody',
+    f2p: true,
+    itemsPerHour: 900,
+  },
+  {
+    name: 'Runite bars → Rune platebody',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 99,
+    xp: 375,
+    inputs: [{ name: 'Runite bar', qty: 5 }],
+    output: 'Rune platebody',
+    f2p: true,
+    itemsPerHour: 900,
+  },
+  {
+    name: 'Steel bars → Steel 2h sword',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 35,
+    xp: 75,
+    inputs: [{ name: 'Steel bar', qty: 2 }],
+    output: 'Steel 2h sword',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Mithril bars → Mithril 2h sword',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 64,
+    xp: 100,
+    inputs: [{ name: 'Mithril bar', qty: 2 }],
+    output: 'Mithril 2h sword',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Adamantite bars → Adamant 2h sword',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 84,
+    xp: 125,
+    inputs: [{ name: 'Adamantite bar', qty: 2 }],
+    output: 'Adamant 2h sword',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Runite bars → Rune 2h sword',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 99,
+    xp: 150,
+    inputs: [{ name: 'Runite bar', qty: 2 }],
+    output: 'Rune 2h sword',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+
+  // ---------------- F2P HIGH ALCH ----------------
+  {
+    name: 'High Alch — Rune platebody',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 55,
+    xp: 65,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Rune platebody',
+    alchType: 'high',
+    note: 'Fire staff assumed; Nature rune included',
+  },
+  {
+    name: 'High Alch — Rune platelegs',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 55,
+    xp: 65,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Rune platelegs',
+    alchType: 'high',
+    note: 'Fire staff assumed; Nature rune included',
+  },
+  {
+    name: 'High Alch — Rune 2h sword',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 55,
+    xp: 65,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Rune 2h sword',
+    alchType: 'high',
+    note: 'Fire staff assumed; Nature rune included',
+  },
+  {
+    name: 'High Alch — Adamant platebody',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 55,
+    xp: 65,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Adamant platebody',
+    alchType: 'high',
+    note: 'Fire staff assumed; Nature rune included',
+  },
+  {
+    name: 'High Alch — Adamant platelegs',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 55,
+    xp: 65,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Adamant platelegs',
+    alchType: 'high',
+    note: 'Fire staff assumed; Nature rune included',
+  },
+  {
+    name: 'High Alch — Green d’hide body',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 55,
+    xp: 65,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Green d\'hide body',
+    alchType: 'high',
+    note: 'Fire staff assumed; Nature rune included',
+  },
+
+  // ---------------- LOW ALCH ----------------
+  {
+    name: 'Low Alch — Rune 2h sword',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 21,
+    xp: 31,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Rune 2h sword',
+    alchType: 'low',
+    note: 'Usually poor economics; shown for comparison',
+  },
+
+  // ---------------- MEMBERS AUDIT ----------------
+  {
+    name: 'Enchant sapphire ring → Ring of recoil',
+    category: 'Members',
     skill: 'Magic',
     level: 7,
     xp: 17.5,
@@ -304,268 +899,418 @@ const METHODS: Method[] = [
       { name: 'Water rune', qty: 1 },
     ],
     output: 'Ring of recoil',
+    f2p: false,
+    itemsPerHour: 1200,
+    note: 'MEMBERS ONLY',
   },
-];
+]
 
-const fmt = (n: number | null | undefined) =>
-  n === null || n === undefined || !Number.isFinite(n)
-    ? '—'
-    : Math.round(n).toLocaleString('en-US');
+const fmt = (n: number | null | undefined, digits = 0) => {
+  if (n === null || n === undefined || !Number.isFinite(n)) return '—'
+  return n.toLocaleString('en-US', {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: digits,
+  })
+}
+
+const geTax = (price: number) =>
+  Math.min(5_000_000, Math.floor(price * 0.02))
 
 export default function App() {
-  const [mapping, setMapping] = useState<any[]>([]);
-  const [prices, setPrices] = useState<Record<string, any>>({});
-  const [volumes, setVolumes] = useState<Record<string, any>>({});
-  const [loading, setLoading] = useState(false);
-  const [updated, setUpdated] = useState<Date | null>(null);
-  const [error, setError] = useState('');
+  const [mapping, setMapping] = useState<any[]>([])
+  const [prices, setPrices] = useState<Record<string, any>>({})
+  const [volumes, setVolumes] = useState<Record<string, any>>({})
+  const [loading, setLoading] = useState(false)
+  const [updated, setUpdated] = useState<Date | null>(null)
+  const [error, setError] = useState('')
+
+  const [mode, setMode] = useState<AccountMode>(
+    (localStorage.getItem('osrs-mode') as AccountMode) || 'F2P'
+  )
 
   const [gp, setGp] = useState(
     Number(localStorage.getItem('osrs-current-gp') || 200000)
-  );
+  )
 
   const [quantity, setQuantity] = useState(
     Number(localStorage.getItem('osrs-quantity') || 500)
-  );
+  )
 
   const [levels, setLevels] = useState<Record<string, number>>(() => {
     try {
-      const saved = localStorage.getItem('osrs-levels');
+      const saved = localStorage.getItem('osrs-levels-v2')
       return saved
         ? { ...DEFAULT_LEVELS, ...JSON.parse(saved) }
-        : DEFAULT_LEVELS;
+        : DEFAULT_LEVELS
     } catch {
-      return DEFAULT_LEVELS;
+      return DEFAULT_LEVELS
     }
-  });
+  })
 
-  const [availableOnly, setAvailableOnly] = useState(false);
-  const [showLocked, setShowLocked] = useState(true);
-  const [profitFilter, setProfitFilter] = useState('All');
-  const [skill, setSkill] = useState('All');
-  const [sort, setSort] = useState('profit');
+  const [availableOnly, setAvailableOnly] = useState(false)
+  const [showMembers, setShowMembers] = useState(true)
+  const [profitFilter, setProfitFilter] = useState('All')
+  const [skillFilter, setSkillFilter] = useState('All')
+  const [categoryFilter, setCategoryFilter] = useState('All')
+  const [sort, setSort] = useState('profit')
 
   const refresh = async () => {
-    setLoading(true);
-    setError('');
+    setLoading(true)
+    setError('')
 
     try {
       const [m, p, v] = await Promise.all([
         fetch(`${API}/mapping`),
         fetch(`${API}/latest`),
         fetch(`${API}/24h`),
-      ]);
+      ])
 
-      if (!m.ok || !p.ok || !v.ok) throw new Error();
+      if (!m.ok || !p.ok || !v.ok) throw new Error()
 
-      const md = await m.json();
-      const pd = await p.json();
-      const vd = await v.json();
+      const md = await m.json()
+      const pd = await p.json()
+      const vd = await v.json()
 
-      setMapping(md);
-      setPrices(pd.data || {});
-      setVolumes(vd.data || {});
-      setUpdated(new Date());
+      setMapping(md)
+      setPrices(pd.data || {})
+      setVolumes(vd.data || {})
+      setUpdated(new Date())
     } catch {
-      setError('OSRS Wiki fiyatları alınamadı.');
+      setError('OSRS Wiki fiyatları alınamadı.')
     } finally {
-      setLoading(false);
+      setLoading(false)
     }
-  };
+  }
 
   useEffect(() => {
-    refresh();
-  }, []);
+    refresh()
+  }, [])
 
   useEffect(() => {
-    localStorage.setItem('osrs-current-gp', String(gp));
-  }, [gp]);
-
-  useEffect(() => {
-    localStorage.setItem('osrs-quantity', String(quantity));
-  }, [quantity]);
-
-  useEffect(() => {
-    localStorage.setItem('osrs-levels', JSON.stringify(levels));
-  }, [levels]);
+    localStorage.setItem('osrs-current-gp', String(gp))
+    localStorage.setItem('osrs-quantity', String(quantity))
+    localStorage.setItem('osrs-levels-v2', JSON.stringify(levels))
+    localStorage.setItem('osrs-mode', mode)
+  }, [gp, quantity, levels, mode])
 
   const items = useMemo(() => {
-    const x: Record<string, any> = {};
+    const result: Record<string, any> = {}
     mapping.forEach((i) => {
-      x[i.name.toLowerCase()] = i;
-    });
-    return x;
-  }, [mapping]);
+      result[i.name.toLowerCase()] = i
+    })
+    return result
+  }, [mapping])
 
-  const item = (name: string) => items[name.toLowerCase()];
+  const getItem = (name: string) => items[name.toLowerCase()]
 
   const buy = (name: string): number | null => {
-    const i = item(name);
-    return i ? prices[i.id]?.high ?? null : null;
-  };
+    const i = getItem(name)
+    return i ? prices[i.id]?.high ?? null : null
+  }
 
   const sell = (name: string): number | null => {
-    const i = item(name);
-    return i ? prices[i.id]?.low ?? null : null;
-  };
+    const i = getItem(name)
+    return i ? prices[i.id]?.low ?? null : null
+  }
 
   const volume = (name: string): number | null => {
-    const i = item(name);
-    if (!i) return null;
-
-    const d = volumes[i.id];
-    if (!d) return null;
-
-    return (d.highPriceVolume || 0) + (d.lowPriceVolume || 0);
-  };
+    const i = getItem(name)
+    if (!i) return null
+    const d = volumes[i.id]
+    if (!d) return null
+    return (d.highPriceVolume || 0) + (d.lowPriceVolume || 0)
+  }
 
   const rows = useMemo(() => {
-    return METHODS.map((m) => {
-      let cost = m.extraCost || 0;
-      let valid = true;
+    return RECIPES.map((r) => {
+      const membersLocked = mode === 'F2P' && !r.f2p
+      const currentLevel = levels[r.skill] ?? 1
+      const levelLocked = currentLevel < r.level
 
-      for (const ingredient of m.inputs) {
-        const p = buy(ingredient.name);
+      let status = '✓ AÇIK'
+      if (membersLocked) status = '🔒 MEMBERS'
+      else if (levelLocked) status = `🔒 ${r.skill.toUpperCase()} ${r.level}`
 
-        if (p === null) {
-          valid = false;
-        } else {
-          cost += p * ingredient.qty;
+      const unlocked = !membersLocked && !levelLocked
+
+      let inputCost = 0
+      let outputPrice: number | null = null
+      let outputNet: number | null = null
+      let successRate = r.success ? r.success(levels) : 1
+      let dailyVolume: number | null = null
+      let ingredientsText = ''
+      let alchValue: number | null = null
+
+      if (r.kind === 'alchemy') {
+        const itemName = r.alchItem!
+        const itemData = getItem(itemName)
+        const itemBuy = buy(itemName)
+        const nature = buy('Nature rune')
+
+        if (itemBuy !== null && nature !== null && itemData) {
+          inputCost = itemBuy + nature
+          alchValue =
+            r.alchType === 'high'
+              ? itemData.highalch ?? null
+              : itemData.lowalch ?? null
+
+          outputPrice = alchValue
+          outputNet = alchValue
+          dailyVolume = volume(itemName)
+          ingredientsText = `1× ${itemName} + 1× Nature rune`
+        }
+      } else {
+        let valid = true
+
+        const ingredientParts: string[] = []
+
+        for (const input of r.inputs) {
+          const p = buy(input.name)
+          ingredientParts.push(`${input.qty}× ${input.name}`)
+
+          if (p === null) valid = false
+          else inputCost += p * input.qty
+        }
+
+        inputCost += r.fee || 0
+        ingredientsText = ingredientParts.join(' + ')
+
+        const s = r.output ? sell(r.output) : null
+
+        if (valid && s !== null) {
+          outputPrice = s * (r.outputQty || 1)
+
+          const taxPerOutput = geTax(s)
+          outputNet =
+            (s - taxPerOutput) * (r.outputQty || 1)
+
+          dailyVolume = volume(r.output!)
         }
       }
 
-      const outputPrice = sell(m.output);
+      const valid =
+        outputNet !== null &&
+        Number.isFinite(inputCost) &&
+        inputCost > 0
 
-      if (outputPrice === null) valid = false;
+      /*
+        Cost per successful finished item.
+        This matters for iron smelting, wine, pizza etc.
+      */
+      const effectiveCost =
+        valid && successRate > 0
+          ? inputCost / successRate
+          : null
 
-      const outputQty = m.outputQty || 1;
+      const profit =
+        effectiveCost !== null && outputNet !== null
+          ? outputNet - effectiveCost
+          : null
 
-      const revenue = valid ? outputPrice! * outputQty : null;
-      const profit = revenue === null ? null : revenue - cost;
+      const roi =
+        profit !== null && effectiveCost! > 0
+          ? (profit / effectiveCost!) * 100
+          : null
 
-      const roi = profit === null || cost <= 0 ? null : (profit / cost) * 100;
+      const profitPerXp =
+        profit !== null && r.xp > 0
+          ? profit / r.xp
+          : null
 
-      const current = levels[m.skill] ?? 1;
-      const unlocked = current >= m.level;
-      const vol = volume(m.output);
+      const successfulItemsPerHour =
+        r.itemsPerHour * successRate
 
-      const slotsPerProcess = m.inputs.reduce(
-        (sum, input) => sum + input.qty,
-        0
-      );
+      const gpHour =
+        profit !== null
+          ? profit * successfulItemsPerHour
+          : null
+
+      const qty = Math.max(1, Math.floor(quantity || 1))
+
+      const attemptsForQty =
+        successRate > 0
+          ? qty / successRate
+          : qty
+
+      const capitalForQty =
+        valid
+          ? inputCost * attemptsForQty
+          : null
+
+      const profitForQty =
+        profit !== null
+          ? profit * qty
+          : null
+
+      const xpForQty = r.xp * qty
+
+      const slotsPerAttempt =
+        r.kind === 'alchemy'
+          ? 2
+          : Math.max(
+              1,
+              r.inputs.reduce((sum, i) => sum + i.qty, 0)
+            )
 
       const inventoryProcesses =
-        slotsPerProcess > 0 ? Math.floor(28 / slotsPerProcess) : 0;
+        Math.max(1, Math.floor(28 / slotsPerAttempt))
 
       const inventoryProfit =
-        profit === null ? null : profit * inventoryProcesses;
-
-      const wanted = Math.max(1, Math.floor(quantity || 1));
-
-      const requiredInputs = m.inputs.map((input) => ({
-        name: input.name,
-        qty: input.qty * wanted,
-        unitPrice: buy(input.name),
-        total:
-          buy(input.name) === null
-            ? null
-            : buy(input.name)! * input.qty * wanted,
-      }));
-
-      const totalCost = valid ? cost * wanted : null;
-
-      const totalRevenue = revenue === null ? null : revenue * wanted;
-
-      const totalProfit = profit === null ? null : profit * wanted;
-
-      const totalXp = m.xp * wanted;
+        profit !== null
+          ? profit * inventoryProcesses
+          : null
 
       return {
-        ...m,
-        current,
+        ...r,
+        currentLevel,
+        membersLocked,
+        levelLocked,
         unlocked,
-        cost: valid ? cost : null,
-        revenue,
+        status,
+        inputCost,
+        effectiveCost,
+        outputPrice,
+        outputNet,
         profit,
         roi,
-        vol,
-        inventoryProcesses,
+        profitPerXp,
+        successRate,
+        dailyVolume,
+        successfulItemsPerHour,
+        gpHour,
+        capitalForQty,
+        profitForQty,
+        xpForQty,
         inventoryProfit,
-        requiredInputs,
-        totalCost,
-        totalRevenue,
-        totalProfit,
-        totalXp,
-      };
-    });
-  }, [mapping, prices, volumes, levels, quantity]);
+        ingredientsText,
+        alchValue,
+      }
+    })
+  }, [mapping, prices, volumes, levels, mode, quantity])
 
-  const visible = useMemo(() => {
-    let x = [...rows];
+  const visibleRows = useMemo(() => {
+    let result = [...rows]
 
-    if (availableOnly) {
-      x = x.filter((r) => r.unlocked);
+    if (!showMembers && mode === 'F2P') {
+      result = result.filter((r) => !r.membersLocked)
     }
 
-    if (!showLocked) {
-      x = x.filter((r) => r.unlocked);
+    if (availableOnly) {
+      result = result.filter((r) => r.unlocked)
     }
 
     if (profitFilter === 'Profit') {
-      x = x.filter((r) => (r.profit ?? -Infinity) > 0);
+      result = result.filter(
+        (r) => r.unlocked && (r.profit ?? -Infinity) > 0
+      )
     }
 
     if (profitFilter === 'Loss') {
-      x = x.filter((r) => (r.profit ?? Infinity) < 0);
+      result = result.filter(
+        (r) => r.unlocked && (r.profit ?? Infinity) < 0
+      )
     }
 
-    if (skill !== 'All') {
-      x = x.filter((r) => r.skill === skill);
+    if (skillFilter !== 'All') {
+      result = result.filter((r) => r.skill === skillFilter)
     }
 
-    x.sort((a, b) => {
-      if (sort === 'roi') {
-        return (b.roi ?? -Infinity) - (a.roi ?? -Infinity);
+    if (categoryFilter !== 'All') {
+      result = result.filter((r) => r.category === categoryFilter)
+    }
+
+    /*
+      CRITICAL:
+      F2P account + members recipe can NEVER influence economic ranking.
+      Members rows are always sent to the bottom.
+    */
+    result.sort((a, b) => {
+      if (a.membersLocked !== b.membersLocked) {
+        return a.membersLocked ? 1 : -1
       }
 
-      if (sort === 'level') {
-        return a.level - b.level;
+      if (a.unlocked !== b.unlocked) {
+        return a.unlocked ? -1 : 1
       }
 
-      if (sort === 'totalProfit') {
-        return (b.totalProfit ?? -Infinity) - (a.totalProfit ?? -Infinity);
-      }
+      if (sort === 'roi')
+        return (b.roi ?? -Infinity) - (a.roi ?? -Infinity)
 
-      return (b.profit ?? -Infinity) - (a.profit ?? -Infinity);
-    });
+      if (sort === 'gph')
+        return (b.gpHour ?? -Infinity) - (a.gpHour ?? -Infinity)
 
-    return x;
-  }, [rows, availableOnly, showLocked, profitFilter, skill, sort]);
+      if (sort === 'level')
+        return a.level - b.level
+
+      if (sort === 'volume')
+        return (b.dailyVolume ?? -Infinity) - (a.dailyVolume ?? -Infinity)
+
+      return (b.profit ?? -Infinity) - (a.profit ?? -Infinity)
+    })
+
+    return result
+  }, [
+    rows,
+    showMembers,
+    availableOnly,
+    profitFilter,
+    skillFilter,
+    categoryFilter,
+    sort,
+    mode,
+  ])
 
   const bondItem = mapping.find(
     (i) => i.name.toLowerCase() === 'old school bond'
-  );
+  )
 
   const bond = bondItem
-    ? prices[bondItem.id]?.high ?? prices[bondItem.id]?.low ?? null
-    : null;
+    ? prices[bondItem.id]?.high ??
+      prices[bondItem.id]?.low ??
+      null
+    : null
 
-  const bondProgress = bond ? Math.min((gp / bond) * 100, 100) : 0;
+  const bondProgress = bond
+    ? Math.min((gp / bond) * 100, 100)
+    : 0
 
-  const missing = bond ? Math.max(bond - gp, 0) : null;
+  const missing = bond
+    ? Math.max(bond - gp, 0)
+    : null
 
-  const skillNames = Object.keys(levels);
+  const categories = [
+    'All',
+    ...Array.from(new Set(RECIPES.map((r) => r.category))),
+  ]
+
+  const bestF2P = rows
+    .filter(
+      (r) =>
+        r.unlocked &&
+        r.f2p &&
+        r.profit !== null &&
+        r.profit > 0
+    )
+    .sort(
+      (a, b) =>
+        (b.gpHour ?? -Infinity) -
+        (a.gpHour ?? -Infinity)
+    )[0]
 
   return (
     <main>
       <header>
         <div>
-          <h1>OSRS F2P Money Scanner</h1>
-          <p>Canlı GE processing fırsatları</p>
+          <h1>OSRS F2P Money Scanner V2</h1>
+          <p>
+            Live GE processing scanner • F2P safety audit
+          </p>
         </div>
 
         <button onClick={refresh} disabled={loading}>
-          {loading ? 'Güncelleniyor...' : '↻ Fiyatları Güncelle'}
+          {loading
+            ? 'Güncelleniyor...'
+            : '↻ Fiyatları Güncelle'}
         </button>
       </header>
 
@@ -573,42 +1318,63 @@ export default function App() {
 
       <section className="cards">
         <div className="card">
-          <label>MEVCUT GP</label>
+          <label>ACCOUNT MODE</label>
+          <select
+            value={mode}
+            onChange={(e) =>
+              setMode(e.target.value as AccountMode)
+            }
+            style={{ width: '100%' }}
+          >
+            <option value="F2P">F2P</option>
+            <option value="P2P">P2P</option>
+          </select>
+        </div>
 
+        <div className="card">
+          <label>MEVCUT GP</label>
           <input
             type="number"
             value={gp}
             min="0"
-            onChange={(e) => setGp(Math.max(0, Number(e.target.value)))}
+            onChange={(e) =>
+              setGp(Math.max(0, Number(e.target.value)))
+            }
           />
         </div>
 
         <div className="card">
-          <label>ÜRETİM ADEDİ</label>
-
+          <label>HEDEF ÜRETİM</label>
           <input
             type="number"
             value={quantity}
             min="1"
-            onChange={(e) => setQuantity(Math.max(1, Number(e.target.value)))}
+            onChange={(e) =>
+              setQuantity(
+                Math.max(1, Number(e.target.value))
+              )
+            }
           />
         </div>
 
         <div className="card">
-          <label>BOND FİYATI</label>
+          <label>BOND / KALAN</label>
           <strong>{fmt(bond)} GP</strong>
+          <span
+            style={{
+              fontSize: 11,
+              color: '#8b949e',
+            }}
+          >
+            Kalan: {fmt(missing)}
+          </span>
         </div>
 
         <div className="card">
-          <label>BOND'A KALAN</label>
-          <strong>{fmt(missing)} GP</strong>
-        </div>
-
-        <div className="card">
-          <label>İLERLEME</label>
-
-          <strong>{bond ? bondProgress.toFixed(2) : '—'}%</strong>
-
+          <label>BOND İLERLEME</label>
+          <strong>
+            {bond ? bondProgress.toFixed(2) : '—'}%
+          </strong>
           <div className="bar">
             <div
               style={{
@@ -619,59 +1385,105 @@ export default function App() {
         </div>
       </section>
 
+      {bestF2P && (
+        <div
+          style={{
+            background: '#12261a',
+            border: '1px solid #238636',
+            borderRadius: 7,
+            padding: '9px 12px',
+            marginBottom: 10,
+            fontSize: 12,
+          }}
+        >
+          <b style={{ color: '#3fb950' }}>
+            ★ Şu an tahmini en güçlü açık F2P yöntem:
+          </b>{' '}
+          {bestF2P.name} —{' '}
+          <b>{fmt(bestF2P.gpHour)} GP/h</b> —{' '}
+          {fmt(bestF2P.profit)} GP/adet
+        </div>
+      )}
+
       <section className="filters">
         <label>
           <input
             type="checkbox"
             checked={availableOnly}
-            onChange={(e) => setAvailableOnly(e.target.checked)}
+            onChange={(e) =>
+              setAvailableOnly(e.target.checked)
+            }
           />
-          Şu an yapabildiklerim
+          Sadece AÇIK
         </label>
 
         <label>
           <input
             type="checkbox"
-            checked={showLocked}
-            onChange={(e) => setShowLocked(e.target.checked)}
+            checked={showMembers}
+            onChange={(e) =>
+              setShowMembers(e.target.checked)
+            }
           />
-          Kilitlileri göster
+          MEMBERS yöntemleri göster
         </label>
 
         <select
           value={profitFilter}
-          onChange={(e) => setProfitFilter(e.target.value)}
+          onChange={(e) =>
+            setProfitFilter(e.target.value)
+          }
         >
           <option value="All">Kâr/Zarar: Tümü</option>
-
-          <option value="Profit">Sadece kârlılar</option>
-
-          <option value="Loss">Sadece zararlılar</option>
+          <option value="Profit">Sadece kârlı</option>
+          <option value="Loss">Sadece zararlı</option>
         </select>
 
-        <select value={skill} onChange={(e) => setSkill(e.target.value)}>
+        <select
+          value={skillFilter}
+          onChange={(e) =>
+            setSkillFilter(e.target.value)
+          }
+        >
           <option value="All">Tüm skill'ler</option>
-
           <option>Crafting</option>
           <option>Cooking</option>
+          <option>Smithing</option>
           <option>Magic</option>
+          <option>Prayer</option>
         </select>
 
-        <select value={sort} onChange={(e) => setSort(e.target.value)}>
+        <select
+          value={categoryFilter}
+          onChange={(e) =>
+            setCategoryFilter(e.target.value)
+          }
+        >
+          {categories.map((c) => (
+            <option key={c} value={c}>
+              {c === 'All' ? 'Tüm kategoriler' : c}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={sort}
+          onChange={(e) =>
+            setSort(e.target.value)
+          }
+        >
           <option value="profit">Kâr/adet ↓</option>
-
-          <option value="totalProfit">Toplam kâr ↓</option>
-
+          <option value="gph">GP/saat ↓</option>
           <option value="roi">ROI ↓</option>
-
-          <option value="level">Gerekli level ↑</option>
+          <option value="volume">Hacim ↓</option>
+          <option value="level">Level ↑</option>
         </select>
       </section>
 
       <div
         style={{
-          marginTop: 12,
-          padding: 12,
+          marginTop: 10,
+          padding: 10,
           background: '#161b22',
           border: '1px solid #30363d',
           borderRadius: 7,
@@ -680,8 +1492,9 @@ export default function App() {
         <div
           style={{
             fontWeight: 'bold',
-            marginBottom: 10,
+            marginBottom: 8,
             color: '#e3b341',
+            fontSize: 12,
           }}
         >
           Skill Seviyelerim
@@ -691,41 +1504,44 @@ export default function App() {
           style={{
             display: 'flex',
             flexWrap: 'wrap',
-            gap: 8,
+            gap: 7,
           }}
         >
-          {skillNames.map((s) => (
+          {Object.keys(levels).map((s) => (
             <label
               key={s}
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: 5,
-                fontSize: 12,
+                gap: 4,
+                fontSize: 11,
               }}
             >
               {s}
-
               <input
                 type="number"
                 min="1"
                 max="99"
                 value={levels[s]}
                 onChange={(e) => {
-                  const n = Math.min(99, Math.max(1, Number(e.target.value)));
+                  const n = clamp(
+                    Number(e.target.value),
+                    1,
+                    99
+                  )
 
                   setLevels((old) => ({
                     ...old,
                     [s]: n,
-                  }));
+                  }))
                 }}
                 style={{
-                  width: 55,
+                  width: 50,
                   background: '#0d1117',
                   color: 'white',
                   border: '1px solid #30363d',
                   borderRadius: 4,
-                  padding: 5,
+                  padding: 4,
                 }}
               />
             </label>
@@ -734,151 +1550,218 @@ export default function App() {
       </div>
 
       <div className="explain">
-        <b>Hammadde:</b> HIGH (hızlı alış) &nbsp;•&nbsp;
-        <b>Ürün:</b> LOW (hızlı satış) &nbsp;•&nbsp; Üretim adedi:{' '}
-        <b>{fmt(quantity)}</b>
-        &nbsp;•&nbsp; Son fiyat güncellemesi:{' '}
-        <b>{updated ? updated.toLocaleTimeString('tr-TR') : '—'}</b>
+        <b>Input:</b> Wiki HIGH = hızlı alış &nbsp;•&nbsp;
+        <b>Output:</b> Wiki LOW = hızlı satış &nbsp;•&nbsp;
+        <b>GE tax:</b> dahil &nbsp;•&nbsp;
+        <b>Hedef:</b> {fmt(quantity)} adet &nbsp;•&nbsp;
+        <b>Güncelleme:</b>{' '}
+        {updated
+          ? updated.toLocaleTimeString('tr-TR')
+          : '—'}
       </div>
 
       <div className="tableBox">
-        <table>
+        <table
+          style={{
+            tableLayout: 'auto',
+            minWidth: 0,
+          }}
+        >
           <thead>
             <tr>
-              <th>Yöntem</th>
-              <th>Skill</th>
-              <th>Level</th>
-              <th>Hammadde / adet</th>
-              <th>Maliyet/adet</th>
-              <th>Satış/adet</th>
-              <th>Kâr/adet</th>
-              <th>ROI</th>
-              <th>XP/adet</th>
-              <th>Inv. Kâr</th>
-              <th>24h Hacim</th>
+              <th>Yöntem / {fmt(quantity)} adet plan</th>
               <th>Durum</th>
-              <th>{fmt(quantity)} ADET İÇİN AL</th>
-              <th>Toplam Maliyet</th>
-              <th>Toplam Satış</th>
-              <th>Toplam Kâr</th>
-              <th>Toplam XP</th>
+              <th>Skill</th>
+              <th>Maliyet</th>
+              <th>Satış</th>
+              <th>Kâr</th>
+              <th>ROI</th>
+              <th>XP</th>
+              <th>GP/XP</th>
+              <th>Başarı</th>
+              <th>24h Hacim</th>
+              <th>Adet/h</th>
+              <th>GP/h</th>
             </tr>
           </thead>
 
           <tbody>
-            {visible.map((r) => {
-              const lowVolume = r.vol !== null && r.vol < 1000;
+            {visibleRows.map((r) => {
+              const lowVolume =
+                r.dailyVolume !== null &&
+                r.dailyVolume < 1000
 
               return (
-                <tr key={r.name} className={!r.unlocked ? 'lockedRow' : ''}>
-                  <td className="name">{r.name}</td>
-
-                  <td>{r.skill}</td>
-
-                  <td>
-                    {r.current} / {r.level}
-                  </td>
-
-                  <td>
-                    {r.inputs.map((i) => `${i.qty}× ${i.name}`).join(' + ')}
-                  </td>
-
-                  <td>{fmt(r.cost)}</td>
-
-                  <td>{fmt(r.revenue)}</td>
-
+                <tr
+                  key={r.name}
+                  className={
+                    !r.unlocked
+                      ? 'lockedRow'
+                      : ''
+                  }
+                >
                   <td
-                    className={(r.profit ?? 0) >= 0 ? 'positive' : 'negative'}
+                    className="name"
+                    style={{ minWidth: 250 }}
                   >
-                    {r.profit !== null && r.profit > 0 ? '+' : ''}
+                    <div>{r.name}</div>
 
-                    {fmt(r.profit)}
-                  </td>
+                    <div
+                      style={{
+                        color: '#8b949e',
+                        fontWeight: 'normal',
+                        fontSize: 9,
+                        marginTop: 3,
+                      }}
+                    >
+                      {r.ingredientsText}
+                    </div>
 
-                  <td className={(r.roi ?? 0) >= 0 ? 'positive' : 'negative'}>
-                    {r.roi === null ? '—' : `${r.roi.toFixed(1)}%`}
-                  </td>
+                    <div
+                      style={{
+                        fontWeight: 'normal',
+                        fontSize: 9,
+                        marginTop: 3,
+                        color: '#c9d1d9',
+                      }}
+                    >
+                      {fmt(quantity)} adet:
+                      {' '}Sermaye{' '}
+                      <b>{fmt(r.capitalForQty)}</b>
+                      {' '}• Kâr{' '}
+                      <b
+                        className={
+                          (r.profitForQty ?? 0) >= 0
+                            ? 'positive'
+                            : 'negative'
+                        }
+                      >
+                        {fmt(r.profitForQty)}
+                      </b>
+                      {' '}• XP{' '}
+                      <b>{fmt(r.xpForQty)}</b>
+                    </div>
 
-                  <td>{r.xp}</td>
-
-                  <td
-                    className={
-                      (r.inventoryProfit ?? 0) >= 0 ? 'positive' : 'negative'
-                    }
-                  >
-                    {fmt(r.inventoryProfit)}
-                  </td>
-
-                  <td>
-                    {fmt(r.vol)}
-
-                    {lowVolume && <span className="warn"> ⚠</span>}
-                  </td>
-
-                  <td>
-                    {r.unlocked ? (
-                      <span className="open">✓ AÇIK</span>
-                    ) : (
-                      <span className="locked">
-                        🔒 {r.skill} {r.level}
-                      </span>
+                    {r.note && (
+                      <div
+                        style={{
+                          color: '#d29922',
+                          fontWeight: 'normal',
+                          fontSize: 9,
+                          marginTop: 2,
+                        }}
+                      >
+                        {r.note}
+                      </div>
                     )}
                   </td>
 
                   <td>
-                    {r.requiredInputs.map((input, index) => (
-                      <div key={index}>
-                        <b>{fmt(input.qty)}</b> × {input.name}
-                        {input.unitPrice !== null && (
-                          <span
-                            style={{
-                              color: '#8b949e',
-                            }}
-                          >
-                            {' '}
-                            @ {fmt(input.unitPrice)}
-                          </span>
-                        )}
-                      </div>
-                    ))}
-
-                    {r.extraCost ? (
-                      <div
-                        style={{
-                          color: '#8b949e',
-                        }}
-                      >
-                        + {fmt(r.extraCost * quantity)} GP işlem ücreti
-                      </div>
-                    ) : null}
+                    <span
+                      className={
+                        r.unlocked
+                          ? 'open'
+                          : 'locked'
+                      }
+                    >
+                      {r.status}
+                    </span>
                   </td>
 
-                  <td>{fmt(r.totalCost)}</td>
+                  <td>
+                    {r.skill}
+                    <br />
+                    {r.currentLevel}/{r.level}
+                  </td>
 
-                  <td>{fmt(r.totalRevenue)}</td>
+                  <td>
+                    {fmt(r.effectiveCost)}
+                  </td>
+
+                  <td>
+                    {fmt(r.outputNet)}
+                  </td>
 
                   <td
                     className={
-                      (r.totalProfit ?? 0) >= 0 ? 'positive' : 'negative'
+                      (r.profit ?? 0) >= 0
+                        ? 'positive'
+                        : 'negative'
                     }
                   >
-                    {r.totalProfit !== null && r.totalProfit > 0 ? '+' : ''}
-
-                    {fmt(r.totalProfit)}
+                    {r.profit !== null &&
+                    r.profit > 0
+                      ? '+'
+                      : ''}
+                    {fmt(r.profit)}
                   </td>
 
-                  <td>{fmt(r.totalXp)}</td>
+                  <td
+                    className={
+                      (r.roi ?? 0) >= 0
+                        ? 'positive'
+                        : 'negative'
+                    }
+                  >
+                    {r.roi === null
+                      ? '—'
+                      : `${r.roi.toFixed(1)}%`}
+                  </td>
+
+                  <td>{fmt(r.xp, 1)}</td>
+
+                  <td
+                    className={
+                      (r.profitPerXp ?? 0) >= 0
+                        ? 'positive'
+                        : 'negative'
+                    }
+                  >
+                    {fmt(r.profitPerXp, 2)}
+                  </td>
+
+                  <td>
+                    {(r.successRate * 100).toFixed(0)}%
+                  </td>
+
+                  <td>
+                    {fmt(r.dailyVolume)}
+                    {lowVolume && (
+                      <div className="warn">
+                        ⚠ LOW VOLUME
+                      </div>
+                    )}
+                  </td>
+
+                  <td>
+                    {fmt(
+                      r.successfulItemsPerHour
+                    )}
+                  </td>
+
+                  <td
+                    className={
+                      (r.gpHour ?? 0) >= 0
+                        ? 'positive'
+                        : 'negative'
+                    }
+                  >
+                    {fmt(r.gpHour)}
+                  </td>
                 </tr>
-              );
+              )
             })}
           </tbody>
         </table>
       </div>
 
       <p className="foot">
-        ⚠ Düşük hacimli ürünlerde görünen marj gerçekleşmeyebilir. HIGH =
-        hammaddenin hızlı alış fiyatı, LOW = ürünün hızlı satış fiyatı.
+        F2P modunda MEMBERS yöntemleri ekonomik sıralamaya
+        katılmaz. GP/h değerleri yaklaşık işlem hızıdır; gerçek
+        koşu/bank/furnace süresi ve GE fill süresi sonucu
+        değiştirebilir. Düşük hacimli ürünlerde görünen marjı
+        büyük miktarda işlem yapmadan önce 1–10 adet ile doğrula.
       </p>
     </main>
-  );
+  )
 }
