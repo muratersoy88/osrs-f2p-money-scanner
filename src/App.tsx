@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { V4_ACTIVITY_DATABASE } from './v4/database'
 import { evaluateActivity } from './v4/requirements'
+import { rankCombat, nextUnlocks as v4NextUnlocks, questUnlockValue, itemChains } from './v4/planner'
 
 const API = 'https://prices.runescape.wiki/api/v1/osrs'
 
@@ -1163,6 +1164,7 @@ export default function App() {
   const [v4ShowLocked, setV4ShowLocked] = useState(true)
   const [v4ViewAll, setV4ViewAll] = useState(false)
   const [v4KindFilter, setV4KindFilter] = useState('ALL')
+  const [v4PlannerItem, setV4PlannerItem] = useState('')
   const [measurementHistory, setMeasurementHistory] = useState<Record<string,Measurement[]>>(() => {
     try {
       const saved=JSON.parse(localStorage.getItem('osrs-measurement-history-v25')||'{}')
@@ -1760,11 +1762,18 @@ export default function App() {
     }
   }, [mode, levels, requirements])
 
+  const v4Ctx = useMemo(() => ({mode,levels,unlocks:requirements}), [mode,levels,requirements])
+  const v4SafeCombat = useMemo(() => rankCombat(V4_ACTIVITY_DATABASE,v4Ctx,true).slice(0,10), [v4Ctx])
+  const v4WildCombat = useMemo(() => rankCombat(V4_ACTIVITY_DATABASE,v4Ctx,false).filter(x=>['WILDERNESS','PVP'].includes(x.activity.riskType)).slice(0,10), [v4Ctx])
+  const v4Unlocks = useMemo(() => v4NextUnlocks(V4_ACTIVITY_DATABASE,v4Ctx).slice(0,20), [v4Ctx])
+  const v4QuestValue = useMemo(() => questUnlockValue(V4_ACTIVITY_DATABASE,v4Ctx).slice(0,10), [v4Ctx])
+  const v4Chains = useMemo(() => itemChains(V4_ACTIVITY_DATABASE,v4PlannerItem).slice(0,20), [v4PlannerItem])
+
   return (
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V4 — Foundation 6</h1>
+          <h1>OSRS Economy Scanner V4 — Foundation 7</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2535,6 +2544,22 @@ export default function App() {
         </tr>)}
       </tbody></table></div>
 
+
+      <section style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+        <h3 style={{marginTop:0}}>V4 Account Planner — Final Integration</h3>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))',gap:10}}>
+          <div className="tableBox"><table><thead><tr><th colSpan={3}>Best Safe Combat</th></tr><tr><th>Activity</th><th>Net GP/h</th><th>Risk</th></tr></thead><tbody>{v4SafeCombat.slice(0,5).map(x=><tr key={x.activity.id}><td>{x.activity.name}</td><td>{x.netGpHour==null?'—':fmt(x.netGpHour)}</td><td>{x.activity.riskType}</td></tr>)}{!v4SafeCombat.length&&<tr><td colSpan={3}>Açık/doğrulanmış combat yöntemi yok.</td></tr>}</tbody></table></div>
+          <div className="tableBox"><table><thead><tr><th colSpan={3}>Wilderness / PvP — Ayrı Liste</th></tr><tr><th>Activity</th><th>Net GP/h</th><th>Risk</th></tr></thead><tbody>{v4WildCombat.slice(0,5).map(x=><tr key={x.activity.id}><td>{x.activity.name}</td><td>{x.netGpHour==null?'—':fmt(x.netGpHour)}</td><td>{x.activity.riskType}</td></tr>)}{!v4WildCombat.length&&<tr><td colSpan={3}>Açık yöntem yok.</td></tr>}</tbody></table></div>
+        </div>
+        <h4>Next Profitable Unlock — Full Database</h4>
+        <div className="tableBox"><table><thead><tr><th>Ufuk</th><th>Activity</th><th>Eksik skill</th><th>Diğer kilitler</th></tr></thead><tbody>{v4Unlocks.slice(0,10).map(x=><tr key={x.activity.id}><td>{x.bucket}</td><td>{x.activity.name}</td><td>{x.missingSkills.map(r=>`${r.skill} ${r.current}→${r.level}`).join(' • ')||'—'}</td><td>{x.access.missing.filter(m=>!m.includes('gerekli (mevcut')).join(' • ')||'—'}</td></tr>)}</tbody></table></div>
+        <h4>Quest Unlock Value</h4>
+        <div className="tableBox"><table><thead><tr><th>Quest</th><th>Açtığı verified activity</th><th>Örnekler</th></tr></thead><tbody>{v4QuestValue.map(q=><tr key={q.quest}><td>{q.quest}</td><td>{q.count}</td><td>{q.activities.slice(0,4).join(' • ')}</td></tr>)}{!v4QuestValue.length&&<tr><td colSpan={3}>Eksik quest requirement bulunamadı.</td></tr>}</tbody></table></div>
+        <h4>Item → Money Chain</h4>
+        <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}><input value={v4PlannerItem} onChange={e=>setV4PlannerItem(e.target.value)} placeholder="Item ara: onyx, rune, shark..."/><span style={{fontSize:10,color:'#8b949e'}}>Gather myself = 0 GP sayılmaz; ekonomik maliyet GE opportunity cost'tur.</span></div>
+        {v4PlannerItem&&<div className="tableBox" style={{marginTop:6}}><table><thead><tr><th>Activity</th><th>Acquire</th><th>Process</th><th>Final</th><th>Sell</th></tr></thead><tbody>{v4Chains.map(a=><tr key={a.id}><td>{a.name}</td><td>{a.chain?.acquire?.join(' → ')||'—'}</td><td>{a.chain?.process?.join(' → ')||'—'}</td><td>{a.chain?.finalProduct?.join(' → ')||'—'}</td><td>{a.chain?.sell?.join(' → ')||'—'}</td></tr>)}{!v4Chains.length&&<tr><td colSpan={5}>Bu item için tanımlı verified/needs-verification chain kaydı yok.</td></tr>}</tbody></table></div>}
+        <div style={{fontSize:10,color:'#8b949e',marginTop:8}}>Bond Sustain mevcut canlı ekonomi motorunda kalır; V4 combat tarafında yalnızca net GP/h (loot − supplies) tanımlı ve VERIFIED yöntemler güvenli karşılaştırmaya alınır. Wilderness/PvP otomatik olarak ayrı tutulur.</div>
+      </section>
 
       <section style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}}>
         <h3 style={{marginTop:0}}>V4 — Global Activity Database Search</h3>
