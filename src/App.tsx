@@ -1764,7 +1764,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V4 — Foundation 5</h1>
+          <h1>OSRS Economy Scanner V4 — Foundation 6</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2552,8 +2552,8 @@ export default function App() {
             <td>{activity.kind}<br/><span style={{fontSize:9}}>{activity.category}</span></td>
             <td>{activity.skills.join(', ')}</td>
             <td><b>{access.status}</b></td>
-            <td>{activity.riskType}</td>
-            <td>{activity.verified==='VERIFIED'?'✓ VERIFIED':'⚠ NEEDS VERIFICATION'}</td>
+            <td>{activity.riskType}{activity.combat?.wildernessPvpRisk&&<><br/><span style={{fontSize:9,color:'#f85149'}}>PvP risk</span></>}</td>
+            <td>{activity.verified==='VERIFIED'?'✓ VERIFIED':'⚠ NEEDS VERIFICATION'}{activity.combat?.recommendedStats?.length?<div style={{fontSize:9,color:'#8b949e'}}>Öneri: {activity.combat.recommendedStats.map(x=>`${x.skill} ${x.level}`).join(' • ')}</div>:null}</td>
           </tr>)}
           {!v4SearchResults.length&&<tr><td colSpan={6}>Eşleşme yok.</td></tr>}
         </tbody></table></div>}

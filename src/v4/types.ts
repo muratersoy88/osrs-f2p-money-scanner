@@ -42,6 +42,7 @@ export type V4Activity = {
   items?: string[]
   notes?: string
   chain?: EconomyChain
+  combat?: CombatProfile
 }
 
 export type RequirementContext = {
@@ -54,4 +55,19 @@ export type RequirementResult = {
   status: V4LockStatus
   open: boolean
   missing: string[]
+}
+
+export type CombatProfile = {
+  minimumStats?: SkillRequirement[]
+  recommendedStats?: SkillRequirement[]
+  slayerLevel?: number
+  killsPerHour?: number
+  lootGpPerHour?: number
+  supplyCostPerHour?: number
+  netGpPerHour?: number
+  xpPerHour?: number
+  soloGroup?: 'SOLO' | 'GROUP' | 'BOTH'
+  deathRisk?: 'LOW' | 'MEDIUM' | 'HIGH'
+  wildernessPvpRisk?: boolean
+  consumables?: string[]
 }
