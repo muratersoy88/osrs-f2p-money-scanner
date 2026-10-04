@@ -1764,7 +1764,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V4 — Foundation 3</h1>
+          <h1>OSRS Economy Scanner V4 — Foundation 5</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>

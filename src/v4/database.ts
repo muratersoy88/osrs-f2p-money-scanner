@@ -11,9 +11,14 @@ import { p2pFletchingActivities } from './activities/p2pFletching'
 import { p2pHerbloreActivities } from './activities/p2pHerblore'
 import { p2pCookingActivities } from './activities/p2pCooking'
 import { p2pSmithingActivities } from './activities/p2pSmithing'
+import { p2pMiningActivities } from './activities/p2pMining'
+import { p2pFishingActivities } from './activities/p2pFishing'
+import { p2pWoodcuttingActivities } from './activities/p2pWoodcutting'
+import { p2pFarmingActivities } from './activities/p2pFarming'
+import { p2pHunterThievingActivities } from './activities/p2pHunterThieving'
 import type { V4Activity } from './types'
 
-const all = [...coreActivities, ...f2pGatheringActivities, ...f2pProcessingActivities, ...f2pCookingActivities, ...f2pJewelleryActivities, ...f2pRunecraftActivities, ...f2pSmithingEquipmentActivities, ...f2pMagicCombatActivities, ...p2pCraftingActivities, ...p2pFletchingActivities, ...p2pHerbloreActivities, ...p2pCookingActivities, ...p2pSmithingActivities]
+const all = [...coreActivities, ...f2pGatheringActivities, ...f2pProcessingActivities, ...f2pCookingActivities, ...f2pJewelleryActivities, ...f2pRunecraftActivities, ...f2pSmithingEquipmentActivities, ...f2pMagicCombatActivities, ...p2pCraftingActivities, ...p2pFletchingActivities, ...p2pHerbloreActivities, ...p2pCookingActivities, ...p2pSmithingActivities, ...p2pMiningActivities, ...p2pFishingActivities, ...p2pWoodcuttingActivities, ...p2pFarmingActivities, ...p2pHunterThievingActivities]
 const seen = new Set<string>()
 export const V4_ACTIVITY_DATABASE: V4Activity[] = all.filter(a => !seen.has(a.id) && !!seen.add(a.id))
 export const VERIFIED_V4_ACTIVITIES = V4_ACTIVITY_DATABASE.filter(a => a.verified === 'VERIFIED')
