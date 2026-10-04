@@ -1411,6 +1411,9 @@ export default function App() {
       if (sort === 'gph')
         return (b.gpHour ?? -Infinity) - (a.gpHour ?? -Infinity)
 
+      if (sort === 'runprofit')
+        return (b.profitPerRun ?? -Infinity) - (a.profitPerRun ?? -Infinity)
+
       if (sort === 'level')
         return a.level - b.level
 
@@ -1722,6 +1725,7 @@ export default function App() {
           }
         >
           <option value="profit">Kâr/adet ↓</option>
+          <option value="runprofit">Kâr/tur ↓</option>
           <option value="gph">GP/saat ↓</option>
           <option value="roi">ROI ↓</option>
           <option value="volume">Hacim ↓</option>
