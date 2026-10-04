@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { V4_ACTIVITY_DATABASE } from './v4/database'
 import { evaluateActivity } from './v4/requirements'
-import { rankCombat, nextUnlocks as v4NextUnlocks, questUnlockValue, itemChains } from './v4/planner'
+import { rankCombat, nextUnlocks as v4NextUnlocks, questUnlockValue, itemChains, readyAfterSimpleRequirements } from './v4/planner'
 
 const API = 'https://prices.runescape.wiki/api/v1/osrs'
 
@@ -1165,6 +1165,8 @@ export default function App() {
   const [v4ViewAll, setV4ViewAll] = useState(false)
   const [v4KindFilter, setV4KindFilter] = useState('ALL')
   const [v4PlannerItem, setV4PlannerItem] = useState('')
+  const [v4Page, setV4Page] = useState(1)
+  const V4_PAGE_SIZE = 30
   const [measurementHistory, setMeasurementHistory] = useState<Record<string,Measurement[]>>(() => {
     try {
       const saved=JSON.parse(localStorage.getItem('osrs-measurement-history-v25')||'{}')
@@ -1722,7 +1724,7 @@ export default function App() {
   const requiredGpPerWeek=requiredGpPerDay*7
   const requiredHours=realisticGpHour>0?remainingSafeGp/realisticGpHour:null
   const requiredMinutesPerDay=requiredHours!==null?requiredHours*60/days:null
-  const v4RequirementNames = V4_ACTIVITY_DATABASE.flatMap(a => [...(a.requirements.quests ?? []), ...(a.requirements.areas ?? []), ...(a.requirements.gear ?? []), ...(a.requirements.diary ?? []), ...(a.requirements.minigame ?? [])])
+  const v4RequirementNames = V4_ACTIVITY_DATABASE.flatMap(a => [...(a.requirements.quests ?? []), ...(a.requirements.areas ?? []), ...(a.requirements.diary ?? []), ...(a.requirements.minigame ?? [])])
   const requirementNames=Array.from(new Set([...RECIPES.flatMap(r=>[r.questRequirement,r.accessRequirement,r.regionRequirement,r.diaryRequirement,r.minigameRequirement,r.equipment]),...GATHERING.flatMap(a=>[a.questRequirement,a.accessRequirement,a.regionRequirement,a.equipment]),...v4RequirementNames].filter(Boolean))) as string[]
   const buyOrderTop3=rows.filter(r=>r.unlocked && r.kind!=='alchemy' && r.inputs.length===1 && r.inputCost>0).map(r=>{
     const target=methodData[r.id]?.targetBuyPrice
@@ -1748,8 +1750,9 @@ export default function App() {
         const haystack = [activity.name, activity.category, ...activity.skills, ...activity.tags, ...(activity.items ?? [])].join(' ').toLowerCase()
         return haystack.includes(q)
       })
-      .slice(0, v4ViewAll ? 250 : 40)
   }, [v4Search, v4ShowLocked, v4ViewAll, v4KindFilter, mode, levels, requirements])
+  const v4PageCount = Math.max(1, Math.ceil(v4SearchResults.length / V4_PAGE_SIZE))
+  const v4PagedResults = v4SearchResults.slice((v4Page-1)*V4_PAGE_SIZE, v4Page*V4_PAGE_SIZE)
 
   const v4Stats = useMemo(() => {
     const evaluated = V4_ACTIVITY_DATABASE.map(activity => ({activity, access:evaluateActivity(activity,{mode,levels,unlocks:requirements})}))
@@ -1768,12 +1771,13 @@ export default function App() {
   const v4Unlocks = useMemo(() => v4NextUnlocks(V4_ACTIVITY_DATABASE,v4Ctx).slice(0,20), [v4Ctx])
   const v4QuestValue = useMemo(() => questUnlockValue(V4_ACTIVITY_DATABASE,v4Ctx).slice(0,10), [v4Ctx])
   const v4Chains = useMemo(() => itemChains(V4_ACTIVITY_DATABASE,v4PlannerItem).slice(0,20), [v4PlannerItem])
+  const v4GearReady = useMemo(() => readyAfterSimpleRequirements(V4_ACTIVITY_DATABASE,v4Ctx).slice(0,20), [v4Ctx])
 
   return (
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V4 — Foundation 7</h1>
+          <h1>OSRS Economy Scanner V4.1 — Account Planner</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -1786,9 +1790,19 @@ export default function App() {
         </button>
       </header>
 
+      <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:6,flexWrap:'wrap',padding:'8px 0',background:'#0d1117'}}>
+        {[
+          ['dashboard','Dashboard'],
+          ['bond-planner','Bond Planner'],
+          ['money-methods','Money Methods'],
+          ['account-planner','Unlocks / Planner'],
+          ['activity-database','Full Database'],
+        ].map(([id,label])=><button key={id} type="button" onClick={()=>document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'})}>{label}</button>)}
+      </nav>
+
       {error && <div className="error">{error}</div>}
 
-      <section className="cards">
+      <section id="dashboard" className="cards">
         <div className="card">
           <label>ACCOUNT MODE</label>
           <select
@@ -1871,7 +1885,7 @@ export default function App() {
         </div>
       </section>
 
-      <section style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+      <section id="bond-planner" style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
         <div style={{fontWeight:'bold',color:'#e3b341',marginBottom:8}}>BOND SUSTAINABILITY</div>
         <div style={{display:'flex',flexWrap:'wrap',gap:8,fontSize:11}}>
           <label>Kalan member gün <input type="number" min="1" value={membershipDaysRemaining} onChange={e=>setMembershipDaysRemaining(Math.max(1,Number(e.target.value)||1))} style={{width:65}}/></label>
@@ -1928,7 +1942,7 @@ export default function App() {
 
       {(mode==='MEMBER' || (bond&&gp>=bond)) && <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #8957e5',borderRadius:7,fontSize:11}}><b>FIRST BOND TRANSITION PLAN</b><div>1) Member skill seviyelerini gir ve yalnızca gerçekten sahip olduğun quest/access kutularını işaretle.</div><div>2) İlk hedef: Bond + reserve için <b>{fmt(bondTarget)}</b> GP çalışma tabanı.</div><div>3) Şu an ekonomik rota: <b>{bondSustainTop3[0]?.name||'ölçüm/veri gerekli'}</b>{bondSustainTop3[0]?` — ${fmt(bondSustainTop3[0].gpHour)} GP/h`:''}.</div><div>4) Bond+reserve güvenceye girdikten sonraki GP <b>Progression GP</b> olarak quest/gear/skill gelişimine ayrılır.</div></section>}
 
-      <section className="filters">
+      <section className="filters" id="money-methods">
         <label>
           <input
             type="checkbox"
@@ -2545,7 +2559,7 @@ export default function App() {
       </tbody></table></div>
 
 
-      <section style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+      <section id="account-planner" style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}}>
         <h3 style={{marginTop:0}}>V4 Account Planner — Final Integration</h3>
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))',gap:10}}>
           <div className="tableBox"><table><thead><tr><th colSpan={3}>Best Safe Combat</th></tr><tr><th>Activity</th><th>Net GP/h</th><th>Risk</th></tr></thead><tbody>{v4SafeCombat.slice(0,5).map(x=><tr key={x.activity.id}><td>{x.activity.name}</td><td>{x.netGpHour==null?'—':fmt(x.netGpHour)}</td><td>{x.activity.riskType}</td></tr>)}{!v4SafeCombat.length&&<tr><td colSpan={3}>Açık/doğrulanmış combat yöntemi yok.</td></tr>}</tbody></table></div>
@@ -2553,6 +2567,11 @@ export default function App() {
         </div>
         <h4>Next Profitable Unlock — Full Database</h4>
         <div className="tableBox"><table><thead><tr><th>Ufuk</th><th>Activity</th><th>Eksik skill</th><th>Diğer kilitler</th></tr></thead><tbody>{v4Unlocks.slice(0,10).map(x=><tr key={x.activity.id}><td>{x.bucket}</td><td>{x.activity.name}</td><td>{x.missingSkills.map(r=>`${r.skill} ${r.current}→${r.level}`).join(' • ')||'—'}</td><td>{x.access.missing.filter(m=>!m.includes('gerekli (mevcut')).join(' • ')||'—'}</td></tr>)}</tbody></table></div>
+        <h4>Şimdi yapabilirsin — sadece ekipmanı edin</h4>
+        <div className="tableBox"><table><thead><tr><th>Activity</th><th>Skill</th><th>Gerekli ekipman</th></tr></thead><tbody>
+          {v4GearReady.map(x=><tr key={x.activity.id}><td>{x.activity.name}</td><td>{x.activity.requirements.skills?.map(s=>`${s.skill} ${s.level}`).join(' • ')||'—'}</td><td>{x.access.missing.filter(m=>m.startsWith('Ekipman edin:')).map(m=>m.replace('Ekipman edin: ','')).join(' • ')}</td></tr>)}
+          {!v4GearReady.length&&<tr><td colSpan={3}>Yalnızca ekipman alarak açılacak yöntem yok.</td></tr>}
+        </tbody></table></div>
         <h4>Quest Unlock Value</h4>
         <div className="tableBox"><table><thead><tr><th>Quest</th><th>Açtığı verified activity</th><th>Örnekler</th></tr></thead><tbody>{v4QuestValue.map(q=><tr key={q.quest}><td>{q.quest}</td><td>{q.count}</td><td>{q.activities.slice(0,4).join(' • ')}</td></tr>)}{!v4QuestValue.length&&<tr><td colSpan={3}>Eksik quest requirement bulunamadı.</td></tr>}</tbody></table></div>
         <h4>Item → Money Chain</h4>
@@ -2561,27 +2580,36 @@ export default function App() {
         <div style={{fontSize:10,color:'#8b949e',marginTop:8}}>Bond Sustain mevcut canlı ekonomi motorunda kalır; V4 combat tarafında yalnızca net GP/h (loot − supplies) tanımlı ve VERIFIED yöntemler güvenli karşılaştırmaya alınır. Wilderness/PvP otomatik olarak ayrı tutulur.</div>
       </section>
 
-      <section style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+      <section style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}} id="activity-database">
         <h3 style={{marginTop:0}}>V4 — Global Activity Database Search</h3>
         <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>OPEN ve LOCKED aktiviteleri aynı katalogda ara. Doğrulanmamış kayıtlar önerilere girmez.</div>
         <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
-          <input value={v4Search} onChange={e=>setV4Search(e.target.value)} placeholder="onyx, rune, shark, dragon, slayer..." style={{minWidth:280}} />
-          <select value={v4KindFilter} onChange={e=>setV4KindFilter(e.target.value)}><option value="ALL">Tüm türler</option><option value="PROCESSING">Processing</option><option value="GATHERING">Gathering</option><option value="COMBAT">Combat</option><option value="MAGIC">Magic</option><option value="UTILITY">Utility</option></select>
-          <label style={{fontSize:10}}><input type="checkbox" checked={v4ShowLocked} onChange={e=>setV4ShowLocked(e.target.checked)} /> LOCKED göster</label>
-          <button type="button" onClick={()=>setV4ViewAll(x=>!x)}>{v4ViewAll?'View All kapat':'View All'}</button>
+          <input value={v4Search} onChange={e=>{setV4Search(e.target.value);setV4Page(1)}} placeholder="onyx, rune, shark, dragon, slayer..." style={{minWidth:280}} />
+          <select value={v4KindFilter} onChange={e=>{setV4KindFilter(e.target.value);setV4Page(1)}}><option value="ALL">Tüm türler</option><option value="PROCESSING">Processing</option><option value="GATHERING">Gathering</option><option value="COMBAT">Combat</option><option value="MAGIC">Magic</option><option value="UTILITY">Utility</option></select>
+          <label style={{fontSize:10}}><input type="checkbox" checked={v4ShowLocked} onChange={e=>{setV4ShowLocked(e.target.checked);setV4Page(1)}} /> LOCKED göster</label>
+          <button type="button" onClick={()=>{setV4ViewAll(x=>!x);setV4Page(1)}}>{v4ViewAll?'View All kapat':'View All'}</button>
           <span style={{fontSize:10,color:'#8b949e'}}>Database: {v4Stats.total} • Verified: {v4Stats.verified} • Members: {v4Stats.members} • OPEN: {v4Stats.open} • LOCKED: {v4Stats.locked}</span>
         </div>
-        {(v4Search || v4ViewAll) && <div className="tableBox" style={{marginTop:8}}><table><thead><tr><th>Activity</th><th>Tür</th><th>Skill</th><th>Durum</th><th>Risk</th><th>Doğrulama</th></tr></thead><tbody>
-          {v4SearchResults.map(({activity,access})=><tr key={activity.id} className={!access.open?'lockedRow':''}>
-            <td className="name">{activity.name}<div style={{fontSize:9,color:'#8b949e'}}>{activity.items?.join(' • ')}</div>{access.missing.length>0&&<div style={{fontSize:9,color:'#d29922'}}>{access.missing.join(' | ')}</div>}</td>
+        {(v4Search || v4ViewAll) && <div className="tableBox" style={{marginTop:8}}><table><thead><tr><th>Activity</th><th>F2P/P2P</th><th>Tür</th><th>Skill / Level</th><th>Durum</th><th>Eksik / Hazırlık</th><th>Risk</th><th>Dikkat</th><th>Doğrulama</th></tr></thead><tbody>
+          {v4PagedResults.map(({activity,access})=><tr key={activity.id} className={!access.open?'lockedRow':''}>
+            <td className="name">{activity.name}<div style={{fontSize:9,color:'#8b949e'}}>{activity.items?.join(' • ')}</div></td>
+            <td>{activity.f2p?'F2P':'MEMBER'}</td>
             <td>{activity.kind}<br/><span style={{fontSize:9}}>{activity.category}</span></td>
-            <td>{activity.skills.join(', ')}</td>
+            <td>{activity.requirements.skills?.map(x=>`${x.skill} ${x.level}`).join(' • ')||activity.skills.join(', ')||'—'}</td>
             <td><b>{access.status}</b></td>
+            <td>{access.missing.length?access.missing.join(' | '):'—'}</td>
             <td>{activity.riskType}{activity.combat?.wildernessPvpRisk&&<><br/><span style={{fontSize:9,color:'#f85149'}}>PvP risk</span></>}</td>
+            <td>{activity.attention}{activity.afkWindowSeconds?<><br/><span style={{fontSize:9}}>{activity.afkWindowSeconds}s AFK</span></>:null}</td>
             <td>{activity.verified==='VERIFIED'?'✓ VERIFIED':'⚠ NEEDS VERIFICATION'}{activity.combat?.recommendedStats?.length?<div style={{fontSize:9,color:'#8b949e'}}>Öneri: {activity.combat.recommendedStats.map(x=>`${x.skill} ${x.level}`).join(' • ')}</div>:null}</td>
           </tr>)}
-          {!v4SearchResults.length&&<tr><td colSpan={6}>Eşleşme yok.</td></tr>}
-        </tbody></table></div>}
+          {!v4SearchResults.length&&<tr><td colSpan={9}>Eşleşme yok.</td></tr>}
+        </tbody></table>
+          {v4SearchResults.length>0&&<div style={{display:'flex',justifyContent:'center',gap:8,alignItems:'center',padding:8}}>
+            <button type="button" disabled={v4Page<=1} onClick={()=>setV4Page(p=>Math.max(1,p-1))}>← Önceki</button>
+            <span>Sayfa {v4Page}/{v4PageCount} • {v4SearchResults.length} kayıt</span>
+            <button type="button" disabled={v4Page>=v4PageCount} onClick={()=>setV4Page(p=>Math.min(v4PageCount,p+1))}>Sonraki →</button>
+          </div>}
+        </div>}
       </section>
 
       <p className="foot">

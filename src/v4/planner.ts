@@ -37,7 +37,20 @@ export function nextUnlocks(db: V4Activity[], ctx: RequirementContext) {
       const bucket: UnlockBucket = maxDelta <= 1 ? '+1 level' : maxDelta <= 5 ? '+5 level' : maxDelta <= 10 ? '+10 level' : 'Long-term'
       return {...x, missingSkills, maxDelta, bucket}
     })
+    .filter(x => x.missingSkills.length > 0)
     .sort((a,b)=>a.maxDelta-b.maxDelta || a.access.missing.length-b.access.missing.length)
+}
+
+export function readyAfterSimpleRequirements(db: V4Activity[], ctx: RequirementContext) {
+  return evaluateDatabase(db, ctx)
+    .filter(x => x.activity.verified === 'VERIFIED')
+    .filter(x => {
+      const skillMissing=(x.activity.requirements.skills ?? []).some(r => (ctx.levels[r.skill] ?? 1) < r.level)
+      const hardMissing=x.access.missing.some(m => m.startsWith('Members') || m.startsWith('Quest:') || m.startsWith('Bölge:') || m.startsWith('Diary:') || m.startsWith('Unlock:'))
+      const gearMissing=x.access.missing.some(m => m.startsWith('Ekipman edin:'))
+      return !skillMissing && !hardMissing && gearMissing
+    })
+    .sort((a,b)=>a.activity.name.localeCompare(b.activity.name))
 }
 
 export function questUnlockValue(db: V4Activity[], ctx: RequirementContext) {
