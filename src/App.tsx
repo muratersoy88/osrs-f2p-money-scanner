@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
+import { V4_ACTIVITY_DATABASE } from './v4/database'
+import { evaluateActivity } from './v4/requirements'
 
 const API = 'https://prices.runescape.wiki/api/v1/osrs'
 
@@ -1157,6 +1159,8 @@ export default function App() {
   const [playerMode, setPlayerMode] = useState<PlayerMode>(() => (localStorage.getItem('osrs-player-mode-v25') as PlayerMode) || 'NORMAL')
   const [geSlots, setGeSlots] = useState(() => Number(localStorage.getItem('osrs-ge-slots-v25') || 3))
   const [requirements, setRequirements] = useState<Record<string,boolean>>(() => { try{return JSON.parse(localStorage.getItem('osrs-requirements-v25')||'{}')}catch{return{}} })
+  const [v4Search, setV4Search] = useState('')
+  const [v4ShowLocked, setV4ShowLocked] = useState(true)
   const [measurementHistory, setMeasurementHistory] = useState<Record<string,Measurement[]>>(() => {
     try {
       const saved=JSON.parse(localStorage.getItem('osrs-measurement-history-v25')||'{}')
@@ -1726,6 +1730,19 @@ export default function App() {
   const nextUnlocks=rows.filter(r=>!r.unlocked && !r.membersLocked && r.levelLocked && (r.profit??0)>0).map(r=>({...r,levelsMissing:Math.max(0,r.level-r.currentLevel),xpMissing:Math.max(0,xpForLevel(r.level)-xpForLevel(r.currentLevel))})).sort((a,b)=>a.levelsMissing-b.levelsMissing).slice(0,5)
 
 
+
+  const v4SearchResults = useMemo(() => {
+    const q = v4Search.trim().toLowerCase()
+    if (!q) return []
+    return V4_ACTIVITY_DATABASE
+      .map(activity => ({ activity, access: evaluateActivity(activity, { mode, levels, unlocks: requirements }) }))
+      .filter(({ activity, access }) => {
+        if (!v4ShowLocked && !access.open) return false
+        const haystack = [activity.name, activity.category, ...activity.skills, ...activity.tags, ...(activity.items ?? [])].join(' ').toLowerCase()
+        return haystack.includes(q)
+      })
+      .slice(0, 40)
+  }, [v4Search, v4ShowLocked, mode, levels, requirements])
 
   return (
     <main>
@@ -2501,6 +2518,28 @@ export default function App() {
           </td><td>{r.unlocked?'✓ AÇIK':`🔒 ${r.skill.toUpperCase()} ${r.requiredLevel}`}</td><td>{r.skill} {r.currentLevel}/{r.requiredLevel}</td><td>{fmt(r.netSell)}</td><td>{fmt(r.planningItemsPerHour)}</td><td>{fmt(r.gpHour)}</td><td>{fmt(r.xpHour)}</td><td>{r.attentionLevel}</td><td>{r.competitionRisk}</td><td>{r.speedSource}</td>
         </tr>)}
       </tbody></table></div>
+
+
+      <section style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+        <h3 style={{marginTop:0}}>V4 — Global Activity Database Search</h3>
+        <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>OPEN ve LOCKED aktiviteleri aynı katalogda ara. Doğrulanmamış kayıtlar önerilere girmez.</div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+          <input value={v4Search} onChange={e=>setV4Search(e.target.value)} placeholder="onyx, rune, shark, dragon, slayer..." style={{minWidth:280}} />
+          <label style={{fontSize:10}}><input type="checkbox" checked={v4ShowLocked} onChange={e=>setV4ShowLocked(e.target.checked)} /> LOCKED göster</label>
+          <span style={{fontSize:10,color:'#8b949e'}}>Database: {V4_ACTIVITY_DATABASE.length} kayıt</span>
+        </div>
+        {v4Search && <div className="tableBox" style={{marginTop:8}}><table><thead><tr><th>Activity</th><th>Tür</th><th>Skill</th><th>Durum</th><th>Risk</th><th>Doğrulama</th></tr></thead><tbody>
+          {v4SearchResults.map(({activity,access})=><tr key={activity.id} className={!access.open?'lockedRow':''}>
+            <td className="name">{activity.name}<div style={{fontSize:9,color:'#8b949e'}}>{activity.items?.join(' • ')}</div>{access.missing.length>0&&<div style={{fontSize:9,color:'#d29922'}}>{access.missing.join(' | ')}</div>}</td>
+            <td>{activity.kind}<br/><span style={{fontSize:9}}>{activity.category}</span></td>
+            <td>{activity.skills.join(', ')}</td>
+            <td><b>{access.status}</b></td>
+            <td>{activity.riskType}</td>
+            <td>{activity.verified==='VERIFIED'?'✓ VERIFIED':'⚠ NEEDS VERIFICATION'}</td>
+          </tr>)}
+          {!v4SearchResults.length&&<tr><td colSpan={6}>Eşleşme yok.</td></tr>}
+        </tbody></table></div>}
+      </section>
 
       <p className="foot">
         F2P modunda MEMBERS veya F2P doğrulaması olmayan yöntemler ekonomik sıralamaya katılmaz. Gerçek hız girilmişse GP/h ve XP/h gerçek ölçümü, yoksa teorik tahmini kullanır. Gerçek fiyat override'ları yalnızca ilgili yöntemin hesabını değiştirir; canlı Wiki verisini değiştirmez. Düşük hacimli ürünlerde görünen marjı
