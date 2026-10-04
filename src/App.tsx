@@ -1575,6 +1575,7 @@ export default function App() {
               <th>Maliyet</th>
               <th>Satış</th>
               <th>Kâr</th>
+              <th>Kâr / {fmt(quantity)}</th>
               <th>ROI</th>
               <th>XP</th>
               <th>GP/XP</th>
@@ -1695,6 +1696,20 @@ export default function App() {
                       : ''}
                     {fmt(r.profit)}
                   </td>
+
+                  <td
+  className={
+    (r.profitForQty ?? 0) >= 0
+      ? 'positive'
+      : 'negative'
+  }
+>
+  {r.profitForQty !== null &&
+  r.profitForQty > 0
+    ? '+'
+    : ''}
+  {fmt(r.profitForQty)}
+</td>
 
                   <td
                     className={
