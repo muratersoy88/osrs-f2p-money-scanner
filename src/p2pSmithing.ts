@@ -1,0 +1,6 @@
+import type { V4Activity } from '../types'
+const d='2026-10-04',src='OSRS Smithing member processing requirements'
+export const p2pSmithingActivities:V4Activity[]=[
+ {id:'p2p-cannonballs',name:'Smith Cannonballs',kind:'PROCESSING',category:'Smithing',skills:['Smithing'],f2p:false,members:true,verified:'VERIFIED',source:src,lastVerified:d,requirements:{skills:[{skill:'Smithing',level:35}],quests:['Dwarf Cannon'],gear:['Ammo mould']},attention:'AFK',afkWindowSeconds:150,riskType:'SAFE',tags:['members','smithing','cannonball','steel bar','afk'],items:['Steel bar','Cannonball'],notes:'4 cannonballs per steel bar with the standard ammo mould; long processing cycle. Live prices determine margin.'},
+ {id:'p2p-cannonballs-double-mould',name:'Smith Cannonballs — Double ammo mould',kind:'PROCESSING',category:'Smithing',skills:['Smithing'],f2p:false,members:true,verified:'VERIFIED',source:src,lastVerified:d,requirements:{skills:[{skill:'Smithing',level:35}],quests:['Dwarf Cannon'],gear:['Double ammo mould'],minigame:['Giants\' Foundry double ammo mould unlock']},attention:'LOW',afkWindowSeconds:75,riskType:'SAFE',tags:['members','smithing','cannonball','double ammo mould'],items:['Steel bar','Cannonball'],notes:'Faster cannonball processing using the double ammo mould; unlock requirement is tracked separately.'},
+]

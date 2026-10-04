@@ -1165,6 +1165,7 @@ export default function App() {
   const [v4ViewAll, setV4ViewAll] = useState(false)
   const [v4KindFilter, setV4KindFilter] = useState('ALL')
   const [v4PlannerItem, setV4PlannerItem] = useState('')
+  const [activeTab, setActiveTab] = useState<'dashboard'|'money'|'planner'|'database'>('dashboard')
   const [v4Page, setV4Page] = useState(1)
   const V4_PAGE_SIZE = 30
   const [measurementHistory, setMeasurementHistory] = useState<Record<string,Measurement[]>>(() => {
@@ -1726,6 +1727,18 @@ export default function App() {
   const requiredMinutesPerDay=requiredHours!==null?requiredHours*60/days:null
   const v4RequirementNames = V4_ACTIVITY_DATABASE.flatMap(a => [...(a.requirements.quests ?? []), ...(a.requirements.areas ?? []), ...(a.requirements.diary ?? []), ...(a.requirements.minigame ?? [])])
   const requirementNames=Array.from(new Set([...RECIPES.flatMap(r=>[r.questRequirement,r.accessRequirement,r.regionRequirement,r.diaryRequirement,r.minigameRequirement,r.equipment]),...GATHERING.flatMap(a=>[a.questRequirement,a.accessRequirement,a.regionRequirement,a.equipment]),...v4RequirementNames].filter(Boolean))) as string[]
+  const requirementGroups = useMemo(() => {
+    const groups:{title:string;items:string[]}[] = [
+      {title:'Quests',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.quests??[])))},
+      {title:'Areas / Access',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.areas??[])))},
+      {title:'Diaries',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.diary??[])))},
+      {title:'Minigames',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.minigame??[])))},
+    ]
+    const grouped=new Set(groups.flatMap(g=>g.items))
+    const legacy=requirementNames.filter(x=>!grouped.has(x))
+    if(legacy.length) groups.push({title:'Legacy / Other',items:legacy})
+    return groups.filter(g=>g.items.length)
+  }, [requirementNames.join('|')])
   const buyOrderTop3=rows.filter(r=>r.unlocked && r.kind!=='alchemy' && r.inputs.length===1 && r.inputCost>0).map(r=>{
     const target=methodData[r.id]?.targetBuyPrice
     const baseBuy=buy(r.inputs[0].name)
@@ -1777,7 +1790,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V4.1 — Account Planner</h1>
+          <h1>OSRS Economy Scanner V4.2 — Account Planner</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -1790,19 +1803,17 @@ export default function App() {
         </button>
       </header>
 
-      <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:6,flexWrap:'wrap',padding:'8px 0',background:'#0d1117'}}>
-        {[
-          ['dashboard','Dashboard'],
-          ['bond-planner','Bond Planner'],
-          ['money-methods','Money Methods'],
-          ['account-planner','Unlocks / Planner'],
-          ['activity-database','Full Database'],
-        ].map(([id,label])=><button key={id} type="button" onClick={()=>document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'})}>{label}</button>)}
+      <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:8,flexWrap:'wrap',padding:'10px 0',background:'#0d1117',borderBottom:'1px solid #30363d'}}>
+        {([
+          ['dashboard','Dashboard'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],
+        ] as const).map(([id,label])=><button key={id} type="button" onClick={()=>setActiveTab(id)}
+          style={{fontWeight:activeTab===id?800:500,outline:activeTab===id?'2px solid #58a6ff':'none'}}>{label}</button>)}
       </nav>
 
       {error && <div className="error">{error}</div>}
 
-      <section id="dashboard" className="cards">
+            {activeTab==='dashboard'&&<div>
+<section id="dashboard" className="cards">
         <div className="card">
           <label>ACCOUNT MODE</label>
           <select
@@ -1904,7 +1915,14 @@ export default function App() {
       </section>
 
       {mode==='MEMBER' && <section style={{marginBottom:12,padding:10,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
-        <b>MEMBER REQUIREMENTS / UNLOCKS</b><div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:7}}>{requirementNames.map(x=><label key={x} style={{fontSize:10}}><input type="checkbox" checked={!!requirements[x]} onChange={e=>setRequirements(o=>({...o,[x]:e.target.checked}))}/>{x}</label>)}</div>
+        <b>MEMBER REQUIREMENTS / UNLOCKS</b>
+        <div style={{fontSize:10,color:'#8b949e',margin:'5px 0 8px'}}>Yalnız kalıcı quest/access unlocklarını işaretle. Normal satın alınabilir ekipman activity'yi kilitlemez.</div>
+        {requirementGroups.map(group=><details key={group.title} style={{marginBottom:6,border:'1px solid #30363d',borderRadius:6,padding:7}}>
+          <summary style={{cursor:'pointer',fontWeight:700}}>{group.title} — {group.items.filter(x=>requirements[x]).length}/{group.items.length}</summary>
+          <div style={{display:'flex',flexWrap:'wrap',gap:7,marginTop:8}}>
+            {group.items.map(x=><label key={x} style={{fontSize:10}}><input type="checkbox" checked={!!requirements[x]} onChange={e=>setRequirements(o=>({...o,[x]:e.target.checked}))}/>{x}</label>)}
+          </div>
+        </details>)}
       </section>}
 
       <section style={{marginBottom:12}}><div style={{fontWeight:'bold',fontSize:12,marginBottom:5}}>D — Bond Sustain Top 3</div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:8}}>{bondSustainTop3.map((m,i)=><div key={m.id} style={{background:'#12261a',border:'1px solid #8957e5',borderRadius:7,padding:9,fontSize:11}}><b>#{i+1} — {m.name}</b><div>{fmt(m.gpHour)} GP/h • {m.source} • {m.attention}</div></div>)}</div></section>
@@ -1942,7 +1960,10 @@ export default function App() {
 
       {(mode==='MEMBER' || (bond&&gp>=bond)) && <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #8957e5',borderRadius:7,fontSize:11}}><b>FIRST BOND TRANSITION PLAN</b><div>1) Member skill seviyelerini gir ve yalnızca gerçekten sahip olduğun quest/access kutularını işaretle.</div><div>2) İlk hedef: Bond + reserve için <b>{fmt(bondTarget)}</b> GP çalışma tabanı.</div><div>3) Şu an ekonomik rota: <b>{bondSustainTop3[0]?.name||'ölçüm/veri gerekli'}</b>{bondSustainTop3[0]?` — ${fmt(bondSustainTop3[0].gpHour)} GP/h`:''}.</div><div>4) Bond+reserve güvenceye girdikten sonraki GP <b>Progression GP</b> olarak quest/gear/skill gelişimine ayrılır.</div></section>}
 
-      <section className="filters" id="money-methods">
+            </div>}
+
+      {activeTab==='money'&&<div>
+<section className="filters" id="money-methods">
         <label>
           <input
             type="checkbox"
@@ -2559,7 +2580,10 @@ export default function App() {
       </tbody></table></div>
 
 
-      <section id="account-planner" style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+            </div>}
+
+      {activeTab==='planner'&&<div>
+<section id="account-planner" style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}}>
         <h3 style={{marginTop:0}}>V4 Account Planner — Final Integration</h3>
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))',gap:10}}>
           <div className="tableBox"><table><thead><tr><th colSpan={3}>Best Safe Combat</th></tr><tr><th>Activity</th><th>Net GP/h</th><th>Risk</th></tr></thead><tbody>{v4SafeCombat.slice(0,5).map(x=><tr key={x.activity.id}><td>{x.activity.name}</td><td>{x.netGpHour==null?'—':fmt(x.netGpHour)}</td><td>{x.activity.riskType}</td></tr>)}{!v4SafeCombat.length&&<tr><td colSpan={3}>Açık/doğrulanmış combat yöntemi yok.</td></tr>}</tbody></table></div>
@@ -2580,7 +2604,10 @@ export default function App() {
         <div style={{fontSize:10,color:'#8b949e',marginTop:8}}>Bond Sustain mevcut canlı ekonomi motorunda kalır; V4 combat tarafında yalnızca net GP/h (loot − supplies) tanımlı ve VERIFIED yöntemler güvenli karşılaştırmaya alınır. Wilderness/PvP otomatik olarak ayrı tutulur.</div>
       </section>
 
-      <section style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}} id="activity-database">
+            </div>}
+
+      {activeTab==='database'&&<div>
+<section style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}} id="activity-database">
         <h3 style={{marginTop:0}}>V4 — Global Activity Database Search</h3>
         <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>OPEN ve LOCKED aktiviteleri aynı katalogda ara. Doğrulanmamış kayıtlar önerilere girmez.</div>
         <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
@@ -2611,6 +2638,8 @@ export default function App() {
           </div>}
         </div>}
       </section>
+
+      </div>}
 
       <p className="foot">
         F2P modunda MEMBERS veya F2P doğrulaması olmayan yöntemler ekonomik sıralamaya katılmaz. Gerçek hız girilmişse GP/h ve XP/h gerçek ölçümü, yoksa teorik tahmini kullanır. Gerçek fiyat override'ları yalnızca ilgili yöntemin hesabını değiştirir; canlı Wiki verisini değiştirmez. Düşük hacimli ürünlerde görünen marjı
