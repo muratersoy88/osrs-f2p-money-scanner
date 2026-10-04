@@ -1161,6 +1161,8 @@ export default function App() {
   const [requirements, setRequirements] = useState<Record<string,boolean>>(() => { try{return JSON.parse(localStorage.getItem('osrs-requirements-v25')||'{}')}catch{return{}} })
   const [v4Search, setV4Search] = useState('')
   const [v4ShowLocked, setV4ShowLocked] = useState(true)
+  const [v4ViewAll, setV4ViewAll] = useState(false)
+  const [v4KindFilter, setV4KindFilter] = useState('ALL')
   const [measurementHistory, setMeasurementHistory] = useState<Record<string,Measurement[]>>(() => {
     try {
       const saved=JSON.parse(localStorage.getItem('osrs-measurement-history-v25')||'{}')
@@ -1733,22 +1735,34 @@ export default function App() {
 
   const v4SearchResults = useMemo(() => {
     const q = v4Search.trim().toLowerCase()
-    if (!q) return []
+    if (!q && !v4ViewAll) return []
     return V4_ACTIVITY_DATABASE
       .map(activity => ({ activity, access: evaluateActivity(activity, { mode, levels, unlocks: requirements }) }))
       .filter(({ activity, access }) => {
         if (!v4ShowLocked && !access.open) return false
+        if (v4KindFilter !== 'ALL' && activity.kind !== v4KindFilter) return false
+        if (!q) return true
         const haystack = [activity.name, activity.category, ...activity.skills, ...activity.tags, ...(activity.items ?? [])].join(' ').toLowerCase()
         return haystack.includes(q)
       })
-      .slice(0, 40)
-  }, [v4Search, v4ShowLocked, mode, levels, requirements])
+      .slice(0, v4ViewAll ? 250 : 40)
+  }, [v4Search, v4ShowLocked, v4ViewAll, v4KindFilter, mode, levels, requirements])
+
+  const v4Stats = useMemo(() => {
+    const evaluated = V4_ACTIVITY_DATABASE.map(activity => ({activity, access:evaluateActivity(activity,{mode,levels,unlocks:requirements})}))
+    return {
+      total:evaluated.length,
+      verified:evaluated.filter(x=>x.activity.verified==='VERIFIED').length,
+      open:evaluated.filter(x=>x.access.open).length,
+      locked:evaluated.filter(x=>!x.access.open).length,
+    }
+  }, [mode, levels, requirements])
 
   return (
     <main>
       <header>
         <div>
-          <h1>OSRS Money Scanner V2.5 — Bond Sustain</h1>
+          <h1>OSRS Economy Scanner V4 — Foundation 3</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2525,10 +2539,12 @@ export default function App() {
         <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>OPEN ve LOCKED aktiviteleri aynı katalogda ara. Doğrulanmamış kayıtlar önerilere girmez.</div>
         <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
           <input value={v4Search} onChange={e=>setV4Search(e.target.value)} placeholder="onyx, rune, shark, dragon, slayer..." style={{minWidth:280}} />
+          <select value={v4KindFilter} onChange={e=>setV4KindFilter(e.target.value)}><option value="ALL">Tüm türler</option><option value="PROCESSING">Processing</option><option value="GATHERING">Gathering</option><option value="COMBAT">Combat</option><option value="MAGIC">Magic</option><option value="UTILITY">Utility</option></select>
           <label style={{fontSize:10}}><input type="checkbox" checked={v4ShowLocked} onChange={e=>setV4ShowLocked(e.target.checked)} /> LOCKED göster</label>
-          <span style={{fontSize:10,color:'#8b949e'}}>Database: {V4_ACTIVITY_DATABASE.length} kayıt</span>
+          <button type="button" onClick={()=>setV4ViewAll(x=>!x)}>{v4ViewAll?'View All kapat':'View All'}</button>
+          <span style={{fontSize:10,color:'#8b949e'}}>Database: {v4Stats.total} • Verified: {v4Stats.verified} • OPEN: {v4Stats.open} • LOCKED: {v4Stats.locked}</span>
         </div>
-        {v4Search && <div className="tableBox" style={{marginTop:8}}><table><thead><tr><th>Activity</th><th>Tür</th><th>Skill</th><th>Durum</th><th>Risk</th><th>Doğrulama</th></tr></thead><tbody>
+        {(v4Search || v4ViewAll) && <div className="tableBox" style={{marginTop:8}}><table><thead><tr><th>Activity</th><th>Tür</th><th>Skill</th><th>Durum</th><th>Risk</th><th>Doğrulama</th></tr></thead><tbody>
           {v4SearchResults.map(({activity,access})=><tr key={activity.id} className={!access.open?'lockedRow':''}>
             <td className="name">{activity.name}<div style={{fontSize:9,color:'#8b949e'}}>{activity.items?.join(' • ')}</div>{access.missing.length>0&&<div style={{fontSize:9,color:'#d29922'}}>{access.missing.join(' | ')}</div>}</td>
             <td>{activity.kind}<br/><span style={{fontSize:9}}>{activity.category}</span></td>
