@@ -1101,6 +1101,32 @@ const fmt = (n: number | null | undefined, digits = 0) => {
 const geTax = (price: number) =>
   Math.min(5_000_000, Math.floor(price * 0.02))
 
+
+type V4TheoryEstimate = { id:string; gpHour:number; note:string }
+const V4_THEORY_ESTIMATES: V4TheoryEstimate[] = [
+  {id:'p2p-clean-ranarr',gpHour:650000,note:'Herb cleaning — margin/volume sensitive'},
+  {id:'p2p-clean-toadflax',gpHour:520000,note:'Herb cleaning — margin/volume sensitive'},
+  {id:'p2p-clean-snapdragon',gpHour:480000,note:'Herb cleaning — margin/volume sensitive'},
+  {id:'p2p-string-yew-long',gpHour:360000,note:'Bow stringing planning estimate'},
+  {id:'p2p-string-magic-long',gpHour:330000,note:'Bow stringing planning estimate'},
+  {id:'p2p-fletch-yew-long',gpHour:240000,note:'Unstrung bow planning estimate'},
+  {id:'p2p-fletch-magic-long',gpHour:220000,note:'Unstrung bow planning estimate'},
+  {id:'p2p-mine-gem-rocks',gpHour:420000,note:'Mixed gem output; route dependent'},
+  {id:'p2p-amethyst',gpHour:310000,note:'AFK high-level Mining estimate'},
+  {id:'p2p-motherlode',gpHour:120000,note:'Pay-dirt mix varies by level'},
+  {id:'p2p-mine-pure-essence',gpHour:45000,note:'Low-level member Mining estimate'},
+  {id:'p2p-fish-karambwan',gpHour:260000,note:'AFK Fishing estimate'},
+  {id:'p2p-fish-anglerfish',gpHour:210000,note:'AFK Fishing estimate'},
+  {id:'p2p-fish-monkfish',gpHour:150000,note:'Fishing estimate'},
+  {id:'p2p-fish-shark',gpHour:130000,note:'Fishing estimate'},
+  {id:'p2p-wc-magic',gpHour:170000,note:'Woodcutting estimate'},
+  {id:'p2p-wc-redwood',gpHour:140000,note:'AFK Woodcutting estimate'},
+  {id:'combat-gargoyles',gpHour:550000,note:'Slayer loot less routine supplies'},
+  {id:'combat-abyssal-demons',gpHour:500000,note:'Slayer loot planning estimate'},
+  {id:'combat-skeletal-wyverns',gpHour:650000,note:'Loot less routine supplies'},
+  {id:'combat-kraken',gpHour:850000,note:'Task-only boss planning estimate'},
+]
+
 export default function App() {
   const [mapping, setMapping] = useState<any[]>([])
   const [prices, setPrices] = useState<Record<string, any>>({})
@@ -1778,6 +1804,17 @@ export default function App() {
     }
   }, [mode, levels, requirements])
 
+  const v4TheoryRows = useMemo(() => V4_THEORY_ESTIMATES.map(t => {
+    const activity = V4_ACTIVITY_DATABASE.find(a => a.id === t.id)
+    if (!activity) return null
+    const req = evaluateActivity(activity,{mode,levels,unlocks:requirements})
+    const skillReq = (activity.requirements.skills ?? []).map(s=>`${s.skill} ${s.level}`).join(', ') || '—'
+    return { ...t, activity, open:req.open, missing:req.missing, skillReq }
+  }).filter(Boolean).sort((x:any,y:any)=>y.gpHour-x.gpHour) as any[], [mode, levels, requirements])
+
+  const v4TheoryOpenTop = useMemo(() => v4TheoryRows.filter((r:any)=>r.open).slice(0,5), [v4TheoryRows])
+  const v4TheoryFutureTop = useMemo(() => v4TheoryRows.filter((r:any)=>!r.open).slice(0,5), [v4TheoryRows])
+
   const v4Ctx = useMemo(() => ({mode,levels,unlocks:requirements}), [mode,levels,requirements])
   const v4SafeCombat = useMemo(() => rankCombat(V4_ACTIVITY_DATABASE,v4Ctx,true).slice(0,10), [v4Ctx])
   const v4WildCombat = useMemo(() => rankCombat(V4_ACTIVITY_DATABASE,v4Ctx,false).filter(x=>['WILDERNESS','PVP'].includes(x.activity.riskType)).slice(0,10), [v4Ctx])
@@ -1790,7 +1827,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V4.2 — Account Planner</h1>
+          <h1>OSRS Economy Scanner V4.3 — Account Planner</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -1923,6 +1960,21 @@ export default function App() {
             {group.items.map(x=><label key={x} style={{fontSize:10}}><input type="checkbox" checked={!!requirements[x]} onChange={e=>setRequirements(o=>({...o,[x]:e.target.checked}))}/>{x}</label>)}
           </div>
         </details>)}
+      </section>}
+
+      {mode==='MEMBER' && <section style={{marginBottom:12,padding:10,background:'#161b22',border:'1px solid #8957e5',borderRadius:8}}>
+        <div style={{fontWeight:800,color:'#d2a8ff',marginBottom:4}}>MEMBER THEORY PREVIEW — V4</div>
+        <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Canlı GE hesabı değil; rota seçmek için kaba GP/h başlangıç verisi. GERÇEK ölçüm her zaman teorinin önündedir.</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))',gap:8}}>
+          <div style={{border:'1px solid #238636',borderRadius:6,padding:8}}>
+            <b>Şu an OPEN — teori</b>
+            {v4TheoryOpenTop.length ? v4TheoryOpenTop.map((r:any,i:number)=><div key={r.id} style={{marginTop:5,fontSize:10}}>#{i+1} {r.activity.name} — <b>{fmt(r.gpHour)} GP/h</b> • TAHMİN • {r.skillReq}</div>) : <div style={{marginTop:5,fontSize:10}}>Mevcut level/unlocklarla teorik MEMBER aday yok.</div>}
+          </div>
+          <div style={{border:'1px solid #1f6feb',borderRadius:6,padding:8}}>
+            <b>Gelecek potansiyeli — teori</b>
+            {v4TheoryFutureTop.map((r:any,i:number)=><div key={r.id} style={{marginTop:5,fontSize:10}}>#{i+1} {r.activity.name} — <b>{fmt(r.gpHour)} GP/h</b> • {r.skillReq} • {r.missing.slice(0,2).join(' / ')||'LOCKED'}</div>)}
+          </div>
+        </div>
       </section>}
 
       <section style={{marginBottom:12}}><div style={{fontWeight:'bold',fontSize:12,marginBottom:5}}>D — Bond Sustain Top 3</div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:8}}>{bondSustainTop3.map((m,i)=><div key={m.id} style={{background:'#12261a',border:'1px solid #8957e5',borderRadius:7,padding:9,fontSize:11}}><b>#{i+1} — {m.name}</b><div>{fmt(m.gpHour)} GP/h • {m.source} • {m.attention}</div></div>)}</div></section>
