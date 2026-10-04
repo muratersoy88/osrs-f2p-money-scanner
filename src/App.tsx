@@ -3,12 +3,14 @@ import './App.css'
 
 const API = 'https://prices.runescape.wiki/api/v1/osrs'
 
-type AccountMode = 'F2P' | 'P2P'
+type AccountMode = 'F2P' | 'MEMBER'
 type RecipeKind = 'normal' | 'alchemy'
 type MethodPurpose = 'MONEY' | 'SKILL + PROFIT' | 'XP'
 type AttentionLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'AFK'
 type ActivityType = 'Processing' | 'Gathering' | 'Cooking' | 'Combat'
 type CompetitionRisk = 'LOW' | 'MEDIUM' | 'HIGH'
+type PlayerMode = 'ACTIVE' | 'NORMAL' | 'CHILL'
+type Measurement = { date:string; skillLevel:number; quantity:number; minutes:number; itemsPerHour:number; buyPrice?:number; sellPrice?:number; profit?:number; xp?:number; successful?:number; failed?:number; burnt?:number; outputs?:Record<string,number> }
 
 type MethodUserData = {
   actualItemsPerHour?: number
@@ -20,6 +22,8 @@ type MethodUserData = {
   itemsPerRun?: number
   attentionLevel?: AttentionLevel
   actualSuccessByLevel?: Record<string, { total: number; successful: number; burnt: number; rate: number }>
+  targetBuyPrice?: number
+  averageSecondsBetweenInteractions?: number
 }
 
 type Ingredient = {
@@ -50,6 +54,10 @@ type Recipe = {
   questRequirement?: string
   accessRequirement?: string
   equipment?: string
+  regionRequirement?: string
+  diaryRequirement?: string
+  minigameRequirement?: string
+  verifiedP2P?: boolean
   cooking?: { noBurnLevel: number; burntItem?: string; afkSecondsPerRun?: number }
 }
 
@@ -69,10 +77,22 @@ const DEFAULT_LEVELS: Record<string, number> = {
   Firemaking: 13,
   Woodcutting: 11,
   Ranged: 1,
+  Agility: 1,
+  Herblore: 1,
+  Thieving: 1,
+  Fletching: 1,
+  Slayer: 1,
+  Farming: 1,
+  Construction: 1,
+  Hunter: 1,
+  Sailing: 1,
 }
 
 const clamp = (n: number, min: number, max: number) =>
   Math.max(min, Math.min(max, n))
+
+const xpForLevel = (level:number) => { let points=0; for(let l=1;l<level;l++) points += Math.floor(l + 300*Math.pow(2,l/7)); return Math.floor(points/4) }
+const weightedSpeed = (list:Measurement[]) => { const q=list.reduce((a,m)=>a+(m.quantity||0),0); const mins=list.reduce((a,m)=>a+(m.minutes||0),0); return q>0&&mins>0?q/mins*60:null }
 
 const wineSuccess = (levels: Record<string, number>) => {
   const level = levels.Cooking || 1
@@ -948,23 +968,33 @@ const RECIPES: Recipe[] = [
     note: 'Usually poor economics; shown for comparison',
   },
 
-  // ---------------- MEMBERS AUDIT ----------------
+  // ---------------- VERIFIED MEMBER METHODS ----------------
   {
-    name: 'Enchant sapphire ring → Ring of recoil',
-    category: 'Members',
-    skill: 'Magic',
-    level: 7,
-    xp: 17.5,
-    inputs: [
-      { name: 'Sapphire ring', qty: 1 },
-      { name: 'Cosmic rune', qty: 1 },
-      { name: 'Water rune', qty: 1 },
-    ],
-    output: 'Ring of recoil',
-    f2p: false,
-    itemsPerHour: 1200,
-    note: 'MEMBERS ONLY',
+    name: 'Enchant sapphire ring → Ring of recoil', category: 'Members', skill: 'Magic', level: 7, xp: 17.5,
+    inputs: [{ name: 'Sapphire ring', qty: 1 }, { name: 'Cosmic rune', qty: 1 }], output: 'Ring of recoil',
+    f2p: false, verifiedP2P: true, itemsPerHour: 1200, activityType: 'Processing', attentionLevel: 'HIGH', equipment: 'Staff of water recommended', note: 'Members-only jewellery enchant.'
   },
+  {
+    name: 'Steel bar → Cannonballs', category: 'Members', skill: 'Smithing', level: 35, xp: 25.6,
+    inputs: [{ name: 'Steel bar', qty: 1 }], output: 'Cannonball', outputQty: 4,
+    f2p: false, verifiedP2P: true, itemsPerHour: 600, activityType: 'Processing', attentionLevel: 'AFK', questRequirement: 'Dwarf Cannon', equipment: 'Ammo mould', note: 'Long low-attention smithing cycle; 4 cannonballs per steel bar.'
+  },
+  {
+    name: 'Logs → Arrow shafts', category: 'Members', skill: 'Fletching', level: 1, xp: 5,
+    inputs: [{ name: 'Logs', qty: 1 }], output: 'Arrow shaft', outputQty: 15,
+    f2p: false, verifiedP2P: true, itemsPerHour: 1100, activityType: 'Processing', attentionLevel: 'LOW', equipment: 'Knife', note: 'Members Fletching processing.'
+  },
+  {
+    name: 'Oak logs → Oak shortbow (u)', category: 'Members', skill: 'Fletching', level: 20, xp: 33.3,
+    inputs: [{ name: 'Oak logs', qty: 1 }], output: 'Oak shortbow (u)',
+    f2p: false, verifiedP2P: true, itemsPerHour: 1500, activityType: 'Processing', attentionLevel: 'LOW', equipment: 'Knife'
+  },
+  {
+    name: 'Willow logs → Willow longbow (u)', category: 'Members', skill: 'Fletching', level: 40, xp: 83.3,
+    inputs: [{ name: 'Willow logs', qty: 1 }], output: 'Willow longbow (u)',
+    f2p: false, verifiedP2P: true, itemsPerHour: 1500, activityType: 'Processing', attentionLevel: 'LOW', equipment: 'Knife'
+  },
+
 ]
 
 type GatheringActivity = {
@@ -985,6 +1015,10 @@ type GatheringActivity = {
   accessRequirement?: string
   competitionRisk: CompetitionRisk
   notes?: string
+  verifiedP2P?: boolean
+  regionRequirement?: string
+  equipment?: string
+  afkWindow?: number
 }
 
 const GATHERING: GatheringActivity[] = [
@@ -1003,6 +1037,10 @@ const GATHERING: GatheringActivity[] = [
   { name: 'Chop Oak logs', skill: 'Woodcutting', requiredLevel: 15, f2p: true, verifiedF2P: true, item: 'Oak logs', xpPerSuccess: 37.5, theoreticalItemsPerHour: 500, attentionLevel: 'LOW', bankingMethod: 'Bank', competitionRisk: 'LOW' },
   { name: 'Chop Willow logs', skill: 'Woodcutting', requiredLevel: 30, f2p: true, verifiedF2P: true, item: 'Willow logs', xpPerSuccess: 67.5, theoreticalItemsPerHour: 420, attentionLevel: 'LOW', bankingMethod: 'Bank', competitionRisk: 'LOW' },
   { name: 'Chop Yew logs', skill: 'Woodcutting', requiredLevel: 60, f2p: true, verifiedF2P: true, item: 'Yew logs', xpPerSuccess: 175, theoreticalItemsPerHour: 160, attentionLevel: 'AFK', bankingMethod: 'Bank', competitionRisk: 'MEDIUM' },
+  { name: 'Chop Magic logs', skill: 'Woodcutting', requiredLevel: 75, f2p: false, verifiedF2P: false, verifiedP2P: true, item: 'Magic logs', xpPerSuccess: 250, theoreticalItemsPerHour: 110, attentionLevel: 'AFK', bankingMethod: 'Bank', competitionRisk: 'LOW', regionRequirement: 'Members world', equipment: 'Axe', afkWindow: 75, notes: 'Members gathering; slow catches but long idle windows.' },
+  { name: 'Fish Sharks', skill: 'Fishing', requiredLevel: 76, f2p: false, verifiedF2P: false, verifiedP2P: true, item: 'Raw shark', xpPerSuccess: 110, theoreticalItemsPerHour: 140, attentionLevel: 'AFK', bankingMethod: 'Bank', competitionRisk: 'LOW', regionRequirement: 'Members fishing area', equipment: 'Harpoon', afkWindow: 70 },
+  { name: 'Mine Amethyst', skill: 'Mining', requiredLevel: 92, f2p: false, verifiedF2P: false, verifiedP2P: true, item: 'Amethyst', xpPerSuccess: 240, theoreticalItemsPerHour: 90, attentionLevel: 'AFK', bankingMethod: 'Bank', competitionRisk: 'LOW', regionRequirement: 'Mining Guild members area', equipment: 'Pickaxe', afkWindow: 60 },
+
 ]
 
 const recipeId = (name: string) =>
@@ -1035,21 +1073,16 @@ const loadMethodData = (): Record<string, MethodUserData> => {
     const saved = localStorage.getItem('osrs-method-data-v22')
     const parsed = saved ? JSON.parse(saved) : {}
     const steelId = recipeId('Iron + 2 Coal → Steel bar')
-    if (!parsed[steelId]) {
-      parsed[steelId] = {
-        actualItemsPerHour: 491,
-        measuredQuantity: 270,
-        measuredMinutes: 33,
-      }
+    if (!parsed[steelId] || parsed[steelId].actualItemsPerHour === 491) {
+      parsed[steelId] = { ...(parsed[steelId] || {}), actualItemsPerHour: 453, measuredQuantity: 800, measuredMinutes: 106 }
     }
+    const anchovyId = recipeId('Raw anchovies → Anchovies')
+    if (!parsed[anchovyId]) parsed[anchovyId] = { actualItemsPerHour: 1080, measuredQuantity: 504, measuredMinutes: 28, actualSuccessByLevel: { '28': { total:504, successful:495, burnt:9, rate:495/504 } } }
     return parsed
   } catch {
     return {
-      [recipeId('Iron + 2 Coal → Steel bar')]: {
-        actualItemsPerHour: 491,
-        measuredQuantity: 270,
-        measuredMinutes: 33,
-      },
+      [recipeId('Iron + 2 Coal → Steel bar')]: { actualItemsPerHour: 453, measuredQuantity: 800, measuredMinutes: 106 },
+      [recipeId('Raw anchovies → Anchovies')]: { actualItemsPerHour: 1080, measuredQuantity: 504, measuredMinutes: 28, actualSuccessByLevel: { '28': { total:504, successful:495, burnt:9, rate:495/504 } } },
     }
   }
 }
@@ -1111,9 +1144,33 @@ export default function App() {
   const [noLossOnly, setNoLossOnly] = useState(false)
   const [planningFactor, setPlanningFactor] = useState(() => Number(localStorage.getItem('osrs-planning-factor-v24') || 50))
   const [gatheringData, setGatheringData] = useState<Record<string, MethodUserData>>(() => {
-    try { return JSON.parse(localStorage.getItem('osrs-gathering-data-v24') || '{}') } catch { return {} }
+    try {
+      const parsed=JSON.parse(localStorage.getItem('osrs-gathering-data-v24') || '{}')
+      const baitId=`gather-${recipeId('Bait fish Sardine / Herring')}`
+      if(!parsed[baitId]) parsed[baitId]={actualItemsPerHour:557,measuredQuantity:130,measuredMinutes:14}
+      return parsed
+    } catch { return {[`gather-${recipeId('Bait fish Sardine / Herring')}`]:{actualItemsPerHour:557,measuredQuantity:130,measuredMinutes:14}} }
   })
   const [editingGatheringId, setEditingGatheringId] = useState<string | null>(null)
+  const [membershipDaysRemaining, setMembershipDaysRemaining] = useState(() => Number(localStorage.getItem('osrs-member-days-v25') || 14))
+  const [bondReserve, setBondReserve] = useState(() => Number(localStorage.getItem('osrs-bond-reserve-v25') || 2000000))
+  const [playerMode, setPlayerMode] = useState<PlayerMode>(() => (localStorage.getItem('osrs-player-mode-v25') as PlayerMode) || 'NORMAL')
+  const [geSlots, setGeSlots] = useState(() => Number(localStorage.getItem('osrs-ge-slots-v25') || 3))
+  const [requirements, setRequirements] = useState<Record<string,boolean>>(() => { try{return JSON.parse(localStorage.getItem('osrs-requirements-v25')||'{}')}catch{return{}} })
+  const [measurementHistory, setMeasurementHistory] = useState<Record<string,Measurement[]>>(() => {
+    try {
+      const saved=JSON.parse(localStorage.getItem('osrs-measurement-history-v25')||'{}')
+      if(Object.keys(saved).length) return saved
+      return {
+        [recipeId('Iron + 2 Coal → Steel bar')]: [{date:new Date().toISOString(),skillLevel:30,quantity:800,minutes:106,itemsPerHour:453}],
+        [recipeId('Raw anchovies → Anchovies')]: [{date:new Date().toISOString(),skillLevel:28,quantity:504,minutes:28,itemsPerHour:1080,successful:495,burnt:9}],
+        [`gather-${recipeId('Bait fish Sardine / Herring')}`]: [{date:new Date().toISOString(),skillLevel:50,quantity:130,minutes:14,itemsPerHour:557,outputs:{'Raw herring':478,'Raw sardine':522}}]
+      }
+    } catch { return {} }
+  })
+  const [mixedSamples, setMixedSamples] = useState<Record<string,Record<string,number>>>(() => { try{return JSON.parse(localStorage.getItem('osrs-mixed-samples-v25')||JSON.stringify({[`gather-${recipeId('Bait fish Sardine / Herring')}`]:{'Raw herring':478,'Raw sardine':522}}))}catch{return{}} })
+  const [selectedBondMethod, setSelectedBondMethod] = useState('')
+
 
   const updateMethodData = (id: string, patch: Partial<MethodUserData>) => {
     setMethodData((old) => ({
@@ -1121,6 +1178,9 @@ export default function App() {
       [id]: { ...(old[id] || {}), ...patch },
     }))
   }
+
+  const addMeasurement = (id:string, m:Measurement) => setMeasurementHistory(old=>({...old,[id]:[...(old[id]||[]),m]}))
+  const historySummary = (id:string) => { const list=measurementHistory[id]||[]; return {count:list.length,last:list[list.length-1],weighted:weightedSpeed(list)} }
 
   const clearActualSpeed = (id: string) => {
     setMethodData((old) => {
@@ -1186,7 +1246,14 @@ export default function App() {
     localStorage.setItem('osrs-target-hours-v22', String(targetHours))
     localStorage.setItem('osrs-planning-factor-v24', String(planningFactor))
     localStorage.setItem('osrs-gathering-data-v24', JSON.stringify(gatheringData))
-  }, [gp, quantity, levels, mode, methodData, targetHours, planningFactor, gatheringData])
+    localStorage.setItem('osrs-member-days-v25', String(membershipDaysRemaining))
+    localStorage.setItem('osrs-bond-reserve-v25', String(bondReserve))
+    localStorage.setItem('osrs-player-mode-v25', playerMode)
+    localStorage.setItem('osrs-ge-slots-v25', String(geSlots))
+    localStorage.setItem('osrs-requirements-v25', JSON.stringify(requirements))
+    localStorage.setItem('osrs-measurement-history-v25', JSON.stringify(measurementHistory))
+    localStorage.setItem('osrs-mixed-samples-v25', JSON.stringify(mixedSamples))
+  }, [gp, quantity, levels, mode, methodData, targetHours, planningFactor, gatheringData, membershipDaysRemaining, bondReserve, playerMode, geSlots, requirements, measurementHistory, mixedSamples])
 
   useEffect(() => {
     const savedHours = Number(localStorage.getItem('osrs-target-hours-v22'))
@@ -1226,16 +1293,21 @@ export default function App() {
       const id = recipeId(r.name)
       const userData = methodData[id] || {}
       const verifiedF2P = r.verifiedF2P !== false
-      const membersLocked = mode === 'F2P' && (!r.f2p || !verifiedF2P)
+      const membersLocked = mode === 'F2P' ? (!r.f2p || !verifiedF2P) : (!r.f2p && !r.verifiedP2P)
       const currentLevel = levels[r.skill] ?? 1
       const levelLocked = currentLevel < r.level
+      const reqs = [r.questRequirement, r.accessRequirement, r.regionRequirement, r.diaryRequirement, r.minigameRequirement, r.equipment].filter(Boolean) as string[]
+      const missingRequirements = mode === 'MEMBER' ? reqs.filter(x => !requirements[x]) : []
+      const requirementLocked = missingRequirements.length > 0
 
       let status = '✓ AÇIK'
       if (mode === 'F2P' && !verifiedF2P) status = '🔒 F2P DOĞRULANMADI'
+      else if (mode === 'MEMBER' && !r.f2p && !r.verifiedP2P) status = '🔒 P2P DOĞRULANMADI'
       else if (membersLocked) status = '🔒 MEMBERS'
       else if (levelLocked) status = `🔒 ${r.skill.toUpperCase()} ${r.level}`
+      else if (requirementLocked) status = `🔒 ${missingRequirements.join(', ')}`
 
-      const unlocked = !membersLocked && !levelLocked
+      const unlocked = !membersLocked && !levelLocked && !requirementLocked
 
       let inputCost = 0
       let outputPrice: number | null = null
@@ -1412,6 +1484,8 @@ export default function App() {
         currentLevel,
         membersLocked,
         levelLocked,
+        requirementLocked,
+        missingRequirements,
         unlocked,
         status,
         inputCost,
@@ -1584,18 +1658,24 @@ export default function App() {
     })).sort((a,b)=>b.recommendationScore-a.recommendationScore).slice(0,3)
   }
 
-  const processingTop3 = useMemo(() => scoreProcessing(rows.filter(r => r.unlocked && r.verifiedF2P && r.activityType !== 'Gathering' && r.profit !== null && r.profit > 0 && r.capitalPerRun !== null && r.capitalPerRun <= gp)), [rows, gp])
+  const processingTop3 = useMemo(() => scoreProcessing(rows.filter(r => r.unlocked && (mode==='F2P'?r.verifiedF2P:(r.f2p?r.verifiedF2P:r.verifiedP2P)) && r.activityType !== 'Gathering' && r.profit !== null && r.profit > 0 && r.capitalPerRun !== null && r.capitalPerRun <= gp)), [rows, gp, mode])
 
   const gatheringRows = useMemo(() => GATHERING.map(a => {
     const id = `gather-${recipeId(a.name)}`
     const ud = gatheringData[id] || {}
     const level = levels[a.skill] ?? 1
-    const unlocked = a.f2p && a.verifiedF2P && level >= a.requiredLevel
+    const memberOk = mode === 'MEMBER' && (a.f2p ? a.verifiedF2P : a.verifiedP2P)
+    const f2pOk = mode === 'F2P' && a.f2p && a.verifiedF2P
+    const gatherReqs=[a.questRequirement,a.accessRequirement,a.regionRequirement,a.equipment].filter(Boolean) as string[]
+    const missingRequirements = mode==='MEMBER' ? gatherReqs.filter(x=>!requirements[x]) : []
+    const unlocked = (f2pOk || memberOk) && level >= a.requiredLevel && missingRequirements.length===0
     const sellPrice = sell(a.item)
     const secondarySell = a.secondaryItem ? sell(a.secondaryItem) : null
     const primaryNet = sellPrice === null ? null : sellPrice - geTax(sellPrice)
     const secondaryNet = secondarySell === null ? null : secondarySell - geTax(secondarySell)
-    const share = a.primaryShare ?? 1
+    const sample=mixedSamples[id]
+    const sampleTotal=sample?Object.values(sample).reduce((x,y)=>x+y,0):0
+    const share = a.secondaryItem && sampleTotal>0 ? ((sample[a.item]||0)/sampleTotal) : (a.primaryShare ?? 1)
     const netSell = primaryNet === null ? null : (a.secondaryItem && secondaryNet !== null ? primaryNet * share + secondaryNet * (1-share) : primaryNet)
     const xpPerItem = a.secondaryXpPerSuccess !== undefined ? a.xpPerSuccess * share + a.secondaryXpPerSuccess * (1-share) : a.xpPerSuccess
     const actual = ud.actualItemsPerHour && ud.actualItemsPerHour > 0 ? ud.actualItemsPerHour : null
@@ -1603,8 +1683,8 @@ export default function App() {
     const planningItemsPerHour = actual ?? a.theoreticalItemsPerHour * clamp(planningFactor/100, .1, 1)
     const gpHour = netSell === null ? null : netSell * planningItemsPerHour
     const xpHour = xpPerItem * planningItemsPerHour
-    return { ...a, id, userData: ud, currentLevel: level, unlocked, netSell, xpPerItem, effectiveItemsPerHour, planningItemsPerHour, gpHour, xpHour, speedSource: actual ? 'GERÇEK' : 'TAHMİN' }
-  }), [gatheringData, levels, prices, mapping, planningFactor])
+    return { ...a, id, userData: ud, currentLevel: level, unlocked, missingRequirements, sampleTotal, actualPrimaryShare:share, netSell, xpPerItem, effectiveItemsPerHour, planningItemsPerHour, gpHour, xpHour, speedSource: actual ? 'GERÇEK' : 'TAHMİN' }
+  }), [gatheringData, levels, prices, mapping, planningFactor, mode, requirements, mixedSamples])
 
   const gatheringTop3 = useMemo(() => gatheringRows.filter(r => r.unlocked && r.netSell !== null).map(r => {
     const riskPenalty = r.competitionRisk === 'HIGH' ? .65 : r.competitionRisk === 'MEDIUM' ? .82 : 1
@@ -1613,10 +1693,38 @@ export default function App() {
   }).sort((a,b)=>b.gatherScore-a.gatherScore).slice(0,3), [gatheringRows])
 
   const afkTop3 = useMemo(() => {
-    const proc = rows.filter(r => r.unlocked && r.verifiedF2P && ['LOW','AFK'].includes(r.attentionLevel) && (r.profit ?? -Infinity) >= 0).map(r => ({ kind:'processing', ...r, afkScore: (r.afkSecondsPerRun ?? 20) + Math.max(r.xpPerRun ?? 0,0)/100 + Math.max(r.profitPerRun ?? 0,0)/1000 }))
+    const proc = rows.filter(r => r.unlocked && (mode==='F2P'?r.verifiedF2P:(r.f2p?r.verifiedF2P:r.verifiedP2P)) && ['LOW','AFK'].includes(r.attentionLevel) && (r.profit ?? -Infinity) >= 0).map(r => ({ kind:'processing', ...r, afkScore: (r.afkSecondsPerRun ?? 20) + Math.max(r.xpPerRun ?? 0,0)/100 + Math.max(r.profitPerRun ?? 0,0)/1000 }))
     const gat = gatheringRows.filter(r => r.unlocked && ['LOW','AFK'].includes(r.attentionLevel)).map(r => ({ kind:'gathering', ...r, profitPerRun:null, xpPerRun:null, afkSecondsPerRun:null, profit:r.netSell, afkScore: (r.attentionLevel==='AFK'?100:60) + r.xpHour/1000 + Math.max(r.gpHour ?? 0,0)/10000 }))
     return [...proc, ...gat].sort((a,b)=>(b.afkScore??0)-(a.afkScore??0)).slice(0,3)
   }, [rows, gatheringRows])
+
+
+  const bondTarget = (bond ?? 0) + bondReserve
+  const remainingBondGp = bond ? Math.max(bond - gp, 0) : 0
+  const remainingSafeGp = bond ? Math.max(bondTarget - gp, 0) : 0
+  const allOpenMethods = [
+    ...rows.filter(r=>r.unlocked && (r.gpHour??0)>0).map(r=>({id:r.id,name:r.name,gpHour:r.gpHour??0,source:r.speedSource,attention:r.attentionLevel})),
+    ...gatheringRows.filter(r=>r.unlocked && (r.gpHour??0)>0).map(r=>({id:r.id,name:r.name,gpHour:r.gpHour??0,source:r.speedSource,attention:r.attentionLevel}))
+  ]
+  const preferenceWeight=(m:any)=> playerMode==='ACTIVE' ? (m.gpHour*(m.attention==='HIGH'?1.08:1)) : playerMode==='CHILL' ? (m.gpHour*(m.attention==='AFK'?1.25:m.attention==='LOW'?1.12:.75)) : m.gpHour
+  const bondSustainTop3=[...allOpenMethods].sort((a,b)=>preferenceWeight(b)-preferenceWeight(a)).slice(0,3)
+  const chosenBondMethod=allOpenMethods.find(x=>x.id===selectedBondMethod) || bondSustainTop3[0]
+  const realisticGpHour=chosenBondMethod?.gpHour || 0
+  const days=Math.max(1,membershipDaysRemaining||1)
+  const requiredGpPerDay=remainingSafeGp/days
+  const requiredGpPerWeek=requiredGpPerDay*7
+  const requiredHours=realisticGpHour>0?remainingSafeGp/realisticGpHour:null
+  const requiredMinutesPerDay=requiredHours!==null?requiredHours*60/days:null
+  const requirementNames=Array.from(new Set([...RECIPES.flatMap(r=>[r.questRequirement,r.accessRequirement,r.regionRequirement,r.diaryRequirement,r.minigameRequirement,r.equipment]),...GATHERING.flatMap(a=>[a.questRequirement,a.accessRequirement,a.regionRequirement,a.equipment])].filter(Boolean))) as string[]
+  const buyOrderTop3=rows.filter(r=>r.unlocked && r.kind!=='alchemy' && r.inputs.length===1 && r.inputCost>0).map(r=>{
+    const target=methodData[r.id]?.targetBuyPrice
+    const baseBuy=buy(r.inputs[0].name)
+    const targetInput=target&&target>0?target*r.inputs[0].qty:null
+    const targetProfit=targetInput!==null&&r.outputNet!==null?r.outputNet-targetInput-(r.fee||0):null
+    const targetRoi=targetProfit!==null&&targetInput!>0?targetProfit/targetInput!*100:null
+    return {...r,targetBuy:target,targetProfit,targetRoi,targetRun:targetProfit!==null?targetProfit*r.itemsPerRun:null,baseBuy}
+  }).filter(r=>r.targetProfit!==null&&r.targetProfit>0).sort((a,b)=>(b.targetRun??0)-(a.targetRun??0)).slice(0,Math.max(1,geSlots))
+  const nextUnlocks=rows.filter(r=>!r.unlocked && !r.membersLocked && r.levelLocked && (r.profit??0)>0).map(r=>({...r,levelsMissing:Math.max(0,r.level-r.currentLevel)})).sort((a,b)=>a.levelsMissing-b.levelsMissing).slice(0,5)
 
 
 
@@ -1624,7 +1732,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS F2P Money Scanner V2.4.0</h1>
+          <h1>OSRS Money Scanner V2.5 — Bond Sustain</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -1650,7 +1758,7 @@ export default function App() {
             style={{ width: '100%' }}
           >
             <option value="F2P">F2P</option>
-            <option value="P2P">P2P</option>
+            <option value="MEMBER">MEMBER</option>
           </select>
         </div>
 
@@ -1722,6 +1830,30 @@ export default function App() {
         </div>
       </section>
 
+      <section style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+        <div style={{fontWeight:'bold',color:'#e3b341',marginBottom:8}}>BOND SUSTAINABILITY</div>
+        <div style={{display:'flex',flexWrap:'wrap',gap:8,fontSize:11}}>
+          <label>Kalan member gün <input type="number" min="1" value={membershipDaysRemaining} onChange={e=>setMembershipDaysRemaining(Math.max(1,Number(e.target.value)||1))} style={{width:65}}/></label>
+          <label>Bond reserve <input type="number" min="0" step="100000" value={bondReserve} onChange={e=>setBondReserve(Math.max(0,Number(e.target.value)||0))} style={{width:110}}/></label>
+          <label>Yorgunluk <select value={playerMode} onChange={e=>setPlayerMode(e.target.value as PlayerMode)}><option>ACTIVE</option><option>NORMAL</option><option>CHILL</option></select></label>
+          <label>GE slot <input type="number" min="1" max="8" value={geSlots} onChange={e=>setGeSlots(clamp(Number(e.target.value)||3,1,8))} style={{width:45}}/></label>
+          <label>Bond yöntemi <select value={selectedBondMethod} onChange={e=>setSelectedBondMethod(e.target.value)}><option value="">Otomatik en iyi</option>{allOpenMethods.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
+        </div>
+        <div style={{marginTop:8,fontSize:11,lineHeight:1.7}}>
+          Bond {fmt(bond)} • Reserve {fmt(bondReserve)} • Güvenli hedef <b>{fmt(bondTarget)}</b> • Eksik <b>{fmt(remainingSafeGp)}</b><br/>
+          Durum: {bond&&gp>=bond?'✓ Bond alınabilir':'Bond henüz alınamaz'} • {bond&&gp>=bondTarget?'✓ Güvenli şekilde alınabilir':'Reserve dahil hedef tamamlanmadı'}<br/>
+          Günlük gereken <b>{fmt(requiredGpPerDay)}</b> GP • Haftalık <b>{fmt(requiredGpPerWeek)}</b> GP • Seçili: <b>{chosenBondMethod?.name||'—'}</b> ({fmt(realisticGpHour)} GP/h, {chosenBondMethod?.source||'—'})<br/>
+          Gerekli toplam oyun: <b>{requiredHours===null?'—':fmt(requiredHours,1)+' saat'}</b> • Günlük <b>{requiredMinutesPerDay===null?'—':fmt(requiredMinutesPerDay)+' dk'}</b>
+        </div>
+        <div style={{marginTop:8,fontSize:10}}>Hedef dağılımı: Bond Fund {fmt(bond)} • Working Capital {fmt(bondReserve)} • Progression GP = bu hedefin üzerindeki bakiye.</div>
+      </section>
+
+      {mode==='MEMBER' && <section style={{marginBottom:12,padding:10,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+        <b>MEMBER REQUIREMENTS / UNLOCKS</b><div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:7}}>{requirementNames.map(x=><label key={x} style={{fontSize:10}}><input type="checkbox" checked={!!requirements[x]} onChange={e=>setRequirements(o=>({...o,[x]:e.target.checked}))}/>{x}</label>)}</div>
+      </section>}
+
+      <section style={{marginBottom:12}}><div style={{fontWeight:'bold',fontSize:12,marginBottom:5}}>D — Bond Sustain Top 3</div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:8}}>{bondSustainTop3.map((m,i)=><div key={m.id} style={{background:'#12261a',border:'1px solid #8957e5',borderRadius:7,padding:9,fontSize:11}}><b>#{i+1} — {m.name}</b><div>{fmt(m.gpHour)} GP/h • {m.source} • {m.attention}</div></div>)}</div></section>
+
       <section style={{ marginBottom: 12 }}>
         {[
           ['A — Processing / Crafting Top 3', processingTop3, '#238636'],
@@ -1746,6 +1878,14 @@ export default function App() {
         ))}
       </section>
 
+
+      <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #30363d',borderRadius:7,fontSize:11}}>
+        <b>BUY ORDER OPPORTUNITY — {geSlots} slot</b><div style={{marginTop:6}}>Processing satırındaki ölçüm/düzenleme alanında hedef alış fiyatı girebilirsin. En iyi hedef marjlar:</div>
+        {buyOrderTop3.length?buyOrderTop3.map((r,i)=><div key={r.id}>#{i+1} {r.name}: hedef {fmt(r.targetBuy)} • {fmt(r.targetProfit)} GP/adet • {fmt(r.targetRun)} GP/tur • {r.targetRoi?.toFixed(1)}% ROI</div>):<div>Henüz hedef alış fiyatı girilmiş kârlı order yok.</div>}
+      </section>
+      <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #30363d',borderRadius:7,fontSize:11}}><b>Bir sonraki kârlı unlock</b>{nextUnlocks.length?nextUnlocks.map(r=><div key={r.id}>{r.name}: {r.skill} {r.currentLevel}→{r.level} ({r.levelsMissing} level / {fmt(r.xpMissing)} XP) • canlı {fmt(r.profit)} GP/adet • {fmt(r.profitPerRun)} GP/tur</div>):<div>Canlı fiyatlarla yakın pozitif skill unlock bulunamadı.</div>}</section>
+
+      {(mode==='MEMBER' || (bond&&gp>=bond)) && <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #8957e5',borderRadius:7,fontSize:11}}><b>FIRST BOND TRANSITION PLAN</b><div>1) Member skill seviyelerini gir ve yalnızca gerçekten sahip olduğun quest/access kutularını işaretle.</div><div>2) İlk hedef: Bond + reserve için <b>{fmt(bondTarget)}</b> GP çalışma tabanı.</div><div>3) Şu an ekonomik rota: <b>{bondSustainTop3[0]?.name||'ölçüm/veri gerekli'}</b>{bondSustainTop3[0]?` — ${fmt(bondSustainTop3[0].gpHour)} GP/h`:''}.</div><div>4) Bond+reserve güvenceye girdikten sonraki GP <b>Progression GP</b> olarak quest/gear/skill gelişimine ayrılır.</div></section>}
 
       <section className="filters">
         <label>
@@ -2166,13 +2306,17 @@ export default function App() {
                               const successful=Number((document.getElementById(`cook-ok-${r.id}`) as HTMLInputElement)?.value||0)
                               const burnt=Number((document.getElementById(`cook-burn-${r.id}`) as HTMLInputElement)?.value||0)
                               if(total>0 && successful>=0 && burnt>=0 && successful+burnt<=total){
-                                updateMethodData(r.id,{actualSuccessByLevel:{...(r.userData.actualSuccessByLevel||{}),[String(r.currentLevel)]:{total,successful,burnt,rate:successful/total}}})
+                                updateMethodData(r.id,{actualSuccessByLevel:{...(r.userData.actualSuccessByLevel||{}),[String(r.currentLevel)]:{total,successful,burnt,rate:successful/total}}}); addMeasurement(r.id,{date:new Date().toISOString(),skillLevel:r.currentLevel,quantity:total,minutes:r.userData.measuredMinutes||0,itemsPerHour:r.userData.actualItemsPerHour||0,successful,burnt,failed:burnt})
                               }
                             }}>Cooking başarısını kaydet @ Lv{r.currentLevel}</button>
                             {r.successAtLevel && <button type="button" style={{fontSize:9}} onClick={()=>{
                               const next={...(r.userData.actualSuccessByLevel||{})}; delete next[String(r.currentLevel)]; updateMethodData(r.id,{actualSuccessByLevel:next})
                             }}>Bu level ölçümünü sil</button>}
                           </>}
+                          <label style={{fontSize:9}}>Hedef buy order / girdi maliyeti<input type="number" min="0" value={r.userData.targetBuyPrice??''} onChange={e=>updateMethodData(r.id,{targetBuyPrice:e.target.value===''?undefined:Number(e.target.value)})} style={{width:'100%'}} /></label>
+                          <label style={{fontSize:9}}>Ort. müdahale aralığı (sn)<input type="number" min="0" value={r.userData.averageSecondsBetweenInteractions??''} onChange={e=>updateMethodData(r.id,{averageSecondsBetweenInteractions:e.target.value===''?undefined:Number(e.target.value)})} style={{width:'100%'}} /></label>
+                          <div style={{fontSize:9,color:'#8b949e'}}>History: {historySummary(r.id).count} test • son {fmt(historySummary(r.id).last?.itemsPerHour)} /h • ağırlıklı {fmt(historySummary(r.id).weighted)} /h</div>
+                          <button type="button" style={{fontSize:9}} onClick={()=>{const q=r.userData.measuredQuantity||0,m=r.userData.measuredMinutes||0;if(q>0&&m>0)addMeasurement(r.id,{date:new Date().toISOString(),skillLevel:r.currentLevel,quantity:q,minutes:m,itemsPerHour:q/m*60,buyPrice:r.userData.actualBuyCost,sellPrice:r.userData.actualSellPrice,profit:r.profit??undefined,xp:r.xpForQty??undefined})}}>Bu hız testini history'ye ekle</button>
                           <div style={{ display: 'flex', gap: 5, alignItems: 'end' }}>
                             <button type="button" onClick={() => clearActualSpeed(r.id)} style={{ fontSize: 9, padding: '4px 6px' }}>Hızı sil</button>
                             <button type="button" onClick={() => clearActualPrices(r.id)} style={{ fontSize: 9, padding: '4px 6px' }}>Fiyatı sil</button>
@@ -2350,6 +2494,9 @@ export default function App() {
               <input type="number" placeholder="Gerçek adet/h" value={r.userData.actualItemsPerHour??''} onChange={(e)=>setGatheringData(old=>({...old,[r.id]:{...(old[r.id]||{}),actualItemsPerHour:e.target.value===''?undefined:Number(e.target.value)}}))} />
               <input type="number" placeholder="Toplanan adet" value={r.userData.measuredQuantity??''} onChange={(e)=>{const q=e.target.value===''?undefined:Number(e.target.value); const m=r.userData.measuredMinutes; setGatheringData(old=>({...old,[r.id]:{...(old[r.id]||{}),measuredQuantity:q,actualItemsPerHour:q&&m?(q/m)*60:r.userData.actualItemsPerHour}}))}} />
               <input type="number" placeholder="Dakika" value={r.userData.measuredMinutes??''} onChange={(e)=>{const m=e.target.value===''?undefined:Number(e.target.value); const q=r.userData.measuredQuantity; setGatheringData(old=>({...old,[r.id]:{...(old[r.id]||{}),measuredMinutes:m,actualItemsPerHour:q&&m?(q/m)*60:r.userData.actualItemsPerHour}}))}} />
+              <div style={{fontSize:10,color:'#8b949e'}}>History: {historySummary(r.id).count} test • son {fmt(historySummary(r.id).last?.itemsPerHour)} /h • ağırlıklı {fmt(historySummary(r.id).weighted)} /h</div>
+              <button onClick={()=>{const q=r.userData.measuredQuantity||0,m=r.userData.measuredMinutes||0;if(q>0&&m>0)addMeasurement(r.id,{date:new Date().toISOString(),skillLevel:r.currentLevel,quantity:q,minutes:m,itemsPerHour:q/m*60,outputs:mixedSamples[r.id]})}}>Bu gathering testini history'ye ekle</button>
+              {r.secondaryItem && <div style={{fontSize:10}}>Gerçek dağılım (birikimli): {r.item} <input type="number" min="0" style={{width:70}} value={mixedSamples[r.id]?.[r.item]??''} onChange={e=>setMixedSamples(o=>({...o,[r.id]:{...(o[r.id]||{}),[r.item]:Number(e.target.value)||0}}))}/> • {r.secondaryItem} <input type="number" min="0" style={{width:70}} value={mixedSamples[r.id]?.[r.secondaryItem]??''} onChange={e=>setMixedSamples(o=>({...o,[r.id]:{...(o[r.id]||{}),[r.secondaryItem!]:Number(e.target.value)||0}}))}/> • n={r.sampleTotal}</div>}
               <button onClick={()=>setGatheringData(old=>({...old,[r.id]:{...(old[r.id]||{}),actualItemsPerHour:undefined,measuredQuantity:undefined,measuredMinutes:undefined}}))}>Ölçümü sil</button>
             </div>}
           </td><td>{r.unlocked?'✓ AÇIK':`🔒 ${r.skill.toUpperCase()} ${r.requiredLevel}`}</td><td>{r.skill} {r.currentLevel}/{r.requiredLevel}</td><td>{fmt(r.netSell)}</td><td>{fmt(r.planningItemsPerHour)}</td><td>{fmt(r.gpHour)}</td><td>{fmt(r.xpHour)}</td><td>{r.attentionLevel}</td><td>{r.competitionRisk}</td><td>{r.speedSource}</td>
