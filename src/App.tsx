@@ -1720,7 +1720,8 @@ export default function App() {
   const requiredGpPerWeek=requiredGpPerDay*7
   const requiredHours=realisticGpHour>0?remainingSafeGp/realisticGpHour:null
   const requiredMinutesPerDay=requiredHours!==null?requiredHours*60/days:null
-  const requirementNames=Array.from(new Set([...RECIPES.flatMap(r=>[r.questRequirement,r.accessRequirement,r.regionRequirement,r.diaryRequirement,r.minigameRequirement,r.equipment]),...GATHERING.flatMap(a=>[a.questRequirement,a.accessRequirement,a.regionRequirement,a.equipment])].filter(Boolean))) as string[]
+  const v4RequirementNames = V4_ACTIVITY_DATABASE.flatMap(a => [...(a.requirements.quests ?? []), ...(a.requirements.areas ?? []), ...(a.requirements.gear ?? []), ...(a.requirements.diary ?? []), ...(a.requirements.minigame ?? [])])
+  const requirementNames=Array.from(new Set([...RECIPES.flatMap(r=>[r.questRequirement,r.accessRequirement,r.regionRequirement,r.diaryRequirement,r.minigameRequirement,r.equipment]),...GATHERING.flatMap(a=>[a.questRequirement,a.accessRequirement,a.regionRequirement,a.equipment]),...v4RequirementNames].filter(Boolean))) as string[]
   const buyOrderTop3=rows.filter(r=>r.unlocked && r.kind!=='alchemy' && r.inputs.length===1 && r.inputCost>0).map(r=>{
     const target=methodData[r.id]?.targetBuyPrice
     const baseBuy=buy(r.inputs[0].name)
@@ -1753,6 +1754,7 @@ export default function App() {
     return {
       total:evaluated.length,
       verified:evaluated.filter(x=>x.activity.verified==='VERIFIED').length,
+      members:evaluated.filter(x=>!x.activity.f2p && x.activity.members).length,
       open:evaluated.filter(x=>x.access.open).length,
       locked:evaluated.filter(x=>!x.access.open).length,
     }
@@ -2542,7 +2544,7 @@ export default function App() {
           <select value={v4KindFilter} onChange={e=>setV4KindFilter(e.target.value)}><option value="ALL">Tüm türler</option><option value="PROCESSING">Processing</option><option value="GATHERING">Gathering</option><option value="COMBAT">Combat</option><option value="MAGIC">Magic</option><option value="UTILITY">Utility</option></select>
           <label style={{fontSize:10}}><input type="checkbox" checked={v4ShowLocked} onChange={e=>setV4ShowLocked(e.target.checked)} /> LOCKED göster</label>
           <button type="button" onClick={()=>setV4ViewAll(x=>!x)}>{v4ViewAll?'View All kapat':'View All'}</button>
-          <span style={{fontSize:10,color:'#8b949e'}}>Database: {v4Stats.total} • Verified: {v4Stats.verified} • OPEN: {v4Stats.open} • LOCKED: {v4Stats.locked}</span>
+          <span style={{fontSize:10,color:'#8b949e'}}>Database: {v4Stats.total} • Verified: {v4Stats.verified} • Members: {v4Stats.members} • OPEN: {v4Stats.open} • LOCKED: {v4Stats.locked}</span>
         </div>
         {(v4Search || v4ViewAll) && <div className="tableBox" style={{marginTop:8}}><table><thead><tr><th>Activity</th><th>Tür</th><th>Skill</th><th>Durum</th><th>Risk</th><th>Doğrulama</th></tr></thead><tbody>
           {v4SearchResults.map(({activity,access})=><tr key={activity.id} className={!access.open?'lockedRow':''}>
