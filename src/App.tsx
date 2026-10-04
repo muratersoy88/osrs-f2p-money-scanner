@@ -997,6 +997,7 @@ export default function App() {
   const [sort, setSort] = useState('profit')
   const [targetHours, setTargetHours] = useState(1)
   const [methodData, setMethodData] = useState<Record<string, MethodUserData>>(loadMethodData)
+  const [editingMethodId, setEditingMethodId] = useState<string | null>(null)
 
   const updateMethodData = (id: string, patch: Partial<MethodUserData>) => {
     setMethodData((old) => ({
@@ -1442,7 +1443,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS F2P Money Scanner V2.2</h1>
+          <h1>OSRS F2P Money Scanner V2.2.1</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -1819,110 +1820,125 @@ export default function App() {
                       <b>{fmt(r.timeXp)}</b>
                     </div>
 
-                    <details style={{ marginTop: 5, fontWeight: 'normal' }}>
-                      <summary style={{ cursor: 'pointer', color: '#58a6ff', fontSize: 10 }}>
-                        Gerçek hız / fiyat gir-düzenle
-                      </summary>
-                      <div
+                    <div style={{ marginTop: 5, fontWeight: 'normal' }}>
+                      <button
+                        type="button"
+                        onClick={() => setEditingMethodId(editingMethodId === r.id ? null : r.id)}
                         style={{
-                          marginTop: 6,
-                          padding: 7,
-                          border: '1px solid #30363d',
+                          fontSize: 10,
+                          padding: '4px 8px',
+                          border: '1px solid #388bfd',
                           borderRadius: 5,
-                          display: 'grid',
-                          gridTemplateColumns: 'repeat(2, minmax(110px, 1fr))',
-                          gap: 6,
-                          minWidth: 260,
+                          background: editingMethodId === r.id ? '#1f6feb' : '#0d1117',
+                          color: '#58a6ff',
+                          cursor: 'pointer',
                         }}
                       >
-                        <label style={{ fontSize: 9 }}>
-                          Gerçek adet/saat
-                          <input
-                            type="number"
-                            min="0"
-                            placeholder={String(Math.round(r.theoreticalItemsPerHour))}
-                            value={r.userData.actualItemsPerHour ?? ''}
-                            onChange={(e) => {
-                              const v = e.target.value === '' ? undefined : Math.max(0, Number(e.target.value))
-                              updateMethodData(r.id, { actualItemsPerHour: v })
-                            }}
-                            style={{ width: '100%' }}
-                          />
-                        </label>
-                        <div style={{ fontSize: 9, alignSelf: 'end' }}>
-                          Teorik: <b>{fmt(r.theoreticalItemsPerHour)}</b>/h<br />
-                          Etkin: <b>{fmt(r.effectiveItemsPerHour)}</b>/h
+                        {editingMethodId === r.id ? '− ÖLÇÜMÜ KAPAT' : '+ ÖLÇÜM / DÜZENLE'}
+                      </button>
+
+                      {editingMethodId === r.id && (
+<div
+                          style={{
+                            marginTop: 6,
+                            padding: 7,
+                            border: '1px solid #30363d',
+                            borderRadius: 5,
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(2, minmax(110px, 1fr))',
+                            gap: 6,
+                            minWidth: 260,
+                          }}
+                        >
+                          <label style={{ fontSize: 9 }}>
+                            Gerçek adet/saat
+                            <input
+                              type="number"
+                              min="0"
+                              placeholder={String(Math.round(r.theoreticalItemsPerHour))}
+                              value={r.userData.actualItemsPerHour ?? ''}
+                              onChange={(e) => {
+                                const v = e.target.value === '' ? undefined : Math.max(0, Number(e.target.value))
+                                updateMethodData(r.id, { actualItemsPerHour: v })
+                              }}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <div style={{ fontSize: 9, alignSelf: 'end' }}>
+                            Teorik: <b>{fmt(r.theoreticalItemsPerHour)}</b>/h<br />
+                            Etkin: <b>{fmt(r.effectiveItemsPerHour)}</b>/h
+                          </div>
+                          <label style={{ fontSize: 9 }}>
+                            Ölçülen adet
+                            <input
+                              type="number"
+                              min="0"
+                              value={r.userData.measuredQuantity ?? ''}
+                              onChange={(e) => {
+                                const q = e.target.value === '' ? undefined : Math.max(0, Number(e.target.value))
+                                const m = r.userData.measuredMinutes
+                                const speed = q && m ? (q / m) * 60 : r.userData.actualItemsPerHour
+                                updateMethodData(r.id, { measuredQuantity: q, actualItemsPerHour: speed })
+                              }}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <label style={{ fontSize: 9 }}>
+                            Geçen süre (dk)
+                            <input
+                              type="number"
+                              min="0"
+                              value={r.userData.measuredMinutes ?? ''}
+                              onChange={(e) => {
+                                const m = e.target.value === '' ? undefined : Math.max(0, Number(e.target.value))
+                                const q = r.userData.measuredQuantity
+                                const speed = q && m ? (q / m) * 60 : r.userData.actualItemsPerHour
+                                updateMethodData(r.id, { measuredMinutes: m, actualItemsPerHour: speed })
+                              }}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <label style={{ fontSize: 9 }}>
+                            Gerçek girdi maliyeti/adet
+                            <input
+                              type="number"
+                              min="0"
+                              placeholder={String(Math.round(r.wikiInputCost || 0))}
+                              value={r.userData.actualBuyCost ?? ''}
+                              onChange={(e) => updateMethodData(r.id, { actualBuyCost: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <label style={{ fontSize: 9 }}>
+                            Gerçek satış/alch değeri
+                            <input
+                              type="number"
+                              min="0"
+                              placeholder={String(Math.round(r.outputPrice || 0))}
+                              value={r.userData.actualSellPrice ?? ''}
+                              onChange={(e) => updateMethodData(r.id, { actualSellPrice: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <label style={{ fontSize: 9 }}>
+                            Yöntem türü
+                            <select
+                              value={r.purpose}
+                              onChange={(e) => updateMethodData(r.id, { purpose: e.target.value as MethodPurpose })}
+                              style={{ width: '100%' }}
+                            >
+                              <option>MONEY</option>
+                              <option>SKILL + PROFIT</option>
+                              <option>XP</option>
+                            </select>
+                          </label>
+                          <div style={{ display: 'flex', gap: 5, alignItems: 'end' }}>
+                            <button type="button" onClick={() => clearActualSpeed(r.id)} style={{ fontSize: 9, padding: '4px 6px' }}>Hızı sil</button>
+                            <button type="button" onClick={() => clearActualPrices(r.id)} style={{ fontSize: 9, padding: '4px 6px' }}>Fiyatı sil</button>
+                          </div>
                         </div>
-                        <label style={{ fontSize: 9 }}>
-                          Ölçülen adet
-                          <input
-                            type="number"
-                            min="0"
-                            value={r.userData.measuredQuantity ?? ''}
-                            onChange={(e) => {
-                              const q = e.target.value === '' ? undefined : Math.max(0, Number(e.target.value))
-                              const m = r.userData.measuredMinutes
-                              const speed = q && m ? (q / m) * 60 : r.userData.actualItemsPerHour
-                              updateMethodData(r.id, { measuredQuantity: q, actualItemsPerHour: speed })
-                            }}
-                            style={{ width: '100%' }}
-                          />
-                        </label>
-                        <label style={{ fontSize: 9 }}>
-                          Geçen süre (dk)
-                          <input
-                            type="number"
-                            min="0"
-                            value={r.userData.measuredMinutes ?? ''}
-                            onChange={(e) => {
-                              const m = e.target.value === '' ? undefined : Math.max(0, Number(e.target.value))
-                              const q = r.userData.measuredQuantity
-                              const speed = q && m ? (q / m) * 60 : r.userData.actualItemsPerHour
-                              updateMethodData(r.id, { measuredMinutes: m, actualItemsPerHour: speed })
-                            }}
-                            style={{ width: '100%' }}
-                          />
-                        </label>
-                        <label style={{ fontSize: 9 }}>
-                          Gerçek girdi maliyeti/adet
-                          <input
-                            type="number"
-                            min="0"
-                            placeholder={String(Math.round(r.wikiInputCost || 0))}
-                            value={r.userData.actualBuyCost ?? ''}
-                            onChange={(e) => updateMethodData(r.id, { actualBuyCost: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
-                            style={{ width: '100%' }}
-                          />
-                        </label>
-                        <label style={{ fontSize: 9 }}>
-                          Gerçek satış/alch değeri
-                          <input
-                            type="number"
-                            min="0"
-                            placeholder={String(Math.round(r.outputPrice || 0))}
-                            value={r.userData.actualSellPrice ?? ''}
-                            onChange={(e) => updateMethodData(r.id, { actualSellPrice: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
-                            style={{ width: '100%' }}
-                          />
-                        </label>
-                        <label style={{ fontSize: 9 }}>
-                          Yöntem türü
-                          <select
-                            value={r.purpose}
-                            onChange={(e) => updateMethodData(r.id, { purpose: e.target.value as MethodPurpose })}
-                            style={{ width: '100%' }}
-                          >
-                            <option>MONEY</option>
-                            <option>SKILL + PROFIT</option>
-                            <option>XP</option>
-                          </select>
-                        </label>
-                        <div style={{ display: 'flex', gap: 5, alignItems: 'end' }}>
-                          <button type="button" onClick={() => clearActualSpeed(r.id)} style={{ fontSize: 9, padding: '4px 6px' }}>Hızı sil</button>
-                          <button type="button" onClick={() => clearActualPrices(r.id)} style={{ fontSize: 9, padding: '4px 6px' }}>Fiyatı sil</button>
-                        </div>
-                      </div>
-                    </details>
+                      )}
+                    </div>
 
                     {r.note && (
                       <div
