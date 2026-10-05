@@ -2048,17 +2048,28 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.3.1 — Live GE Build Fix</h1>
+          <h1>OSRS Economy Scanner V5.3.2 — Price Refresh Status</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
         </div>
 
-        <button onClick={refresh} disabled={loading}>
-          {loading
-            ? 'Güncelleniyor...'
-            : '↻ Fiyatları Güncelle'}
-        </button>
+        <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',justifyContent:'flex-end'}}>
+          <button onClick={refresh} disabled={loading}>
+            {loading
+              ? 'Güncelleniyor...'
+              : '↻ Fiyatları Güncelle'}
+          </button>
+          <div style={{fontSize:11,color:error?'#f85149':updated?'#3fb950':'#8b949e',minWidth:190}}>
+            {loading
+              ? 'OSRS Wiki fiyatları alınıyor...'
+              : error
+                ? `Güncelleme başarısız${updated ? ` • Son başarılı: ${updated.toLocaleString('tr-TR')}` : ''}`
+                : updated
+                  ? `Son fiyat güncelleme: ${updated.toLocaleString('tr-TR')}`
+                  : 'Henüz fiyat güncellemesi yapılmadı'}
+          </div>
+        </div>
       </header>
 
       <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:8,flexWrap:'wrap',padding:'10px 0',background:'#0d1117',borderBottom:'1px solid #30363d'}}>
@@ -2437,7 +2448,7 @@ export default function App() {
         <b>Ölçülmemiş hız planı:</b> %{planningFactor} &nbsp;•&nbsp;
         <b>Güncelleme:</b>{' '}
         {updated
-          ? updated.toLocaleTimeString('tr-TR')
+          ? updated.toLocaleString('tr-TR')
           : '—'}
       </div>
 
