@@ -1183,7 +1183,7 @@ export default function App() {
     } catch { return {[`gather-${recipeId('Bait fish Sardine / Herring')}`]:{actualItemsPerHour:557,measuredQuantity:130,measuredMinutes:14}} }
   })
   const [editingGatheringId, setEditingGatheringId] = useState<string | null>(null)
-  const [membershipDaysRemaining, setMembershipDaysRemaining] = useState(() => Number(localStorage.getItem('osrs-member-days-v25') || 14))
+  const [membershipDaysRemaining] = useState(() => Number(localStorage.getItem('osrs-member-days-v25') || 14))
   const [bondReserve, setBondReserve] = useState(() => Number(localStorage.getItem('osrs-bond-reserve-v25') || 2000000))
   const [emergencyBuffer, setEmergencyBuffer] = useState(() => Number(localStorage.getItem('osrs-emergency-buffer-v44') || 500000))
   const [bondHoursBudget, setBondHoursBudget] = useState(() => Number(localStorage.getItem('osrs-bond-hours-budget-v44') || 40))
@@ -1192,7 +1192,7 @@ export default function App() {
   const [bondScenario, setBondScenario] = useState<BondScenario>(() => (localStorage.getItem('osrs-bond-scenario-v44') as BondScenario) || 'CONSERVATIVE')
   const [progressionPriority, setProgressionPriority] = useState<ProgressionPriority>(() => (localStorage.getItem('osrs-progression-priority-v44') as ProgressionPriority) || 'BALANCED')
   const [playerMode, setPlayerMode] = useState<PlayerMode>(() => (localStorage.getItem('osrs-player-mode-v25') as PlayerMode) || 'NORMAL')
-  const [geSlots, setGeSlots] = useState(() => Number(localStorage.getItem('osrs-ge-slots-v25') || 3))
+  const [geSlots] = useState(() => Number(localStorage.getItem('osrs-ge-slots-v25') || 3))
   const [requirements, setRequirements] = useState<Record<string,boolean>>(() => { try{return JSON.parse(localStorage.getItem('osrs-requirements-v25')||'{}')}catch{return{}} })
   const [v4Search, setV4Search] = useState('')
   const [v4ShowLocked, setV4ShowLocked] = useState(true)
@@ -1794,9 +1794,7 @@ export default function App() {
   const realisticGpHour=chosenBondMethod?.gpHour || 0
   const days=Math.max(1,membershipDaysRemaining||1)
   const requiredGpPerDay=remainingSafeGp/days
-  const requiredGpPerWeek=requiredGpPerDay*7
   const requiredHours=realisticGpHour>0?remainingSafeGp/realisticGpHour:null
-  const requiredMinutesPerDay=requiredHours!==null?requiredHours*60/days:null
   const requiredNetGp40=remainingSafeGp/40
   const requiredNetGp50=remainingSafeGp/50
   const requiredNetGpBudget=remainingSafeGp/Math.max(1,bondHoursBudget)
@@ -1894,7 +1892,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V4.4 — Bond Sustainability</h1>
+          <h1>OSRS Economy Scanner V4.4.1 — Bond Sustainability</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
