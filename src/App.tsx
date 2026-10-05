@@ -13,6 +13,8 @@ type AttentionLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'AFK'
 type ActivityType = 'Processing' | 'Gathering' | 'Cooking' | 'Combat'
 type CompetitionRisk = 'LOW' | 'MEDIUM' | 'HIGH'
 type PlayerMode = 'ACTIVE' | 'NORMAL' | 'CHILL'
+type BondScenario = 'EXPECTED' | 'CONSERVATIVE'
+type ProgressionPriority = 'PROFIT' | 'BALANCED' | 'PROGRESSION'
 type Measurement = { date:string; skillLevel:number; quantity:number; minutes:number; itemsPerHour:number; buyPrice?:number; sellPrice?:number; profit?:number; xp?:number; successful?:number; failed?:number; burnt?:number; outputs?:Record<string,number> }
 
 type MethodUserData = {
@@ -1183,6 +1185,12 @@ export default function App() {
   const [editingGatheringId, setEditingGatheringId] = useState<string | null>(null)
   const [membershipDaysRemaining, setMembershipDaysRemaining] = useState(() => Number(localStorage.getItem('osrs-member-days-v25') || 14))
   const [bondReserve, setBondReserve] = useState(() => Number(localStorage.getItem('osrs-bond-reserve-v25') || 2000000))
+  const [emergencyBuffer, setEmergencyBuffer] = useState(() => Number(localStorage.getItem('osrs-emergency-buffer-v44') || 500000))
+  const [bondHoursBudget, setBondHoursBudget] = useState(() => Number(localStorage.getItem('osrs-bond-hours-budget-v44') || 40))
+  const [bondActiveDays, setBondActiveDays] = useState(() => Number(localStorage.getItem('osrs-bond-active-days-v44') || 10))
+  const [dailyMaxHours, setDailyMaxHours] = useState(() => Number(localStorage.getItem('osrs-daily-max-hours-v44') || 4))
+  const [bondScenario, setBondScenario] = useState<BondScenario>(() => (localStorage.getItem('osrs-bond-scenario-v44') as BondScenario) || 'CONSERVATIVE')
+  const [progressionPriority, setProgressionPriority] = useState<ProgressionPriority>(() => (localStorage.getItem('osrs-progression-priority-v44') as ProgressionPriority) || 'BALANCED')
   const [playerMode, setPlayerMode] = useState<PlayerMode>(() => (localStorage.getItem('osrs-player-mode-v25') as PlayerMode) || 'NORMAL')
   const [geSlots, setGeSlots] = useState(() => Number(localStorage.getItem('osrs-ge-slots-v25') || 3))
   const [requirements, setRequirements] = useState<Record<string,boolean>>(() => { try{return JSON.parse(localStorage.getItem('osrs-requirements-v25')||'{}')}catch{return{}} })
@@ -1242,6 +1250,38 @@ export default function App() {
     })
   }
 
+
+  const downloadFullBackup = () => {
+    const data:Record<string,string> = {}
+    for (let i=0;i<localStorage.length;i++) {
+      const key=localStorage.key(i)
+      if (key && key.startsWith('osrs-')) data[key]=localStorage.getItem(key) ?? ''
+    }
+    const payload={backupVersion:1,appVersion:'V4.4',createdAt:new Date().toISOString(),data}
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'})
+    const url=URL.createObjectURL(blob)
+    const link=document.createElement('a')
+    link.href=url
+    link.download=`osrs-economy-backup-${new Date().toISOString().slice(0,10)}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const restoreFullBackup = async (file:File) => {
+    try {
+      const parsed=JSON.parse(await file.text())
+      if (!parsed || parsed.backupVersion!==1 || typeof parsed.data!=='object') throw new Error('invalid')
+      const entries=Object.entries(parsed.data as Record<string,string>).filter(([k])=>k.startsWith('osrs-'))
+      if (!entries.length) throw new Error('empty')
+      if (!window.confirm(`${entries.length} OSRS ayarı/verisi geri yüklenecek. Devam?`)) return
+      entries.forEach(([k,v])=>localStorage.setItem(k,String(v)))
+      window.alert('Yedek geri yüklendi. Sayfa yeniden açılacak.')
+      window.location.reload()
+    } catch {
+      window.alert('Geçersiz veya desteklenmeyen OSRS yedek dosyası.')
+    }
+  }
+
   const refresh = async () => {
     setLoading(true)
     setError('')
@@ -1285,12 +1325,18 @@ export default function App() {
     localStorage.setItem('osrs-gathering-data-v24', JSON.stringify(gatheringData))
     localStorage.setItem('osrs-member-days-v25', String(membershipDaysRemaining))
     localStorage.setItem('osrs-bond-reserve-v25', String(bondReserve))
+    localStorage.setItem('osrs-emergency-buffer-v44', String(emergencyBuffer))
+    localStorage.setItem('osrs-bond-hours-budget-v44', String(bondHoursBudget))
+    localStorage.setItem('osrs-bond-active-days-v44', String(bondActiveDays))
+    localStorage.setItem('osrs-daily-max-hours-v44', String(dailyMaxHours))
+    localStorage.setItem('osrs-bond-scenario-v44', bondScenario)
+    localStorage.setItem('osrs-progression-priority-v44', progressionPriority)
     localStorage.setItem('osrs-player-mode-v25', playerMode)
     localStorage.setItem('osrs-ge-slots-v25', String(geSlots))
     localStorage.setItem('osrs-requirements-v25', JSON.stringify(requirements))
     localStorage.setItem('osrs-measurement-history-v25', JSON.stringify(measurementHistory))
     localStorage.setItem('osrs-mixed-samples-v25', JSON.stringify(mixedSamples))
-  }, [gp, quantity, levels, mode, methodData, targetHours, planningFactor, gatheringData, membershipDaysRemaining, bondReserve, playerMode, geSlots, requirements, measurementHistory, mixedSamples])
+  }, [gp, quantity, levels, mode, methodData, targetHours, planningFactor, gatheringData, membershipDaysRemaining, bondReserve, emergencyBuffer, bondHoursBudget, bondActiveDays, dailyMaxHours, bondScenario, progressionPriority, playerMode, geSlots, requirements, measurementHistory, mixedSamples])
 
   useEffect(() => {
     const savedHours = Number(localStorage.getItem('osrs-target-hours-v22'))
@@ -1736,7 +1782,7 @@ export default function App() {
   }, [rows, gatheringRows])
 
 
-  const bondTarget = (bond ?? 0) + bondReserve
+  const bondTarget = (bond ?? 0) + bondReserve + emergencyBuffer
   const remainingSafeGp = bond ? Math.max(bondTarget - gp, 0) : 0
   const allOpenMethods = [
     ...rows.filter(r=>r.unlocked && (r.gpHour??0)>0).map(r=>({id:r.id,name:r.name,gpHour:r.gpHour??0,source:r.speedSource,attention:r.attentionLevel})),
@@ -1751,6 +1797,27 @@ export default function App() {
   const requiredGpPerWeek=requiredGpPerDay*7
   const requiredHours=realisticGpHour>0?remainingSafeGp/realisticGpHour:null
   const requiredMinutesPerDay=requiredHours!==null?requiredHours*60/days:null
+  const requiredNetGp40=remainingSafeGp/40
+  const requiredNetGp50=remainingSafeGp/50
+  const requiredNetGpBudget=remainingSafeGp/Math.max(1,bondHoursBudget)
+  const scenarioFactor=bondScenario==='CONSERVATIVE'?.80:1
+  const sustainableGpHour=realisticGpHour*scenarioFactor
+  const sustainableHours=sustainableGpHour>0?remainingSafeGp/sustainableGpHour:null
+  const sustainabilityStatus = sustainableHours===null ? 'NO DATA'
+    : sustainableHours>50 ? 'NOT SUSTAINABLE'
+    : sustainableHours>40 ? 'BARELY SUSTAINABLE'
+    : sustainableHours>20 ? 'SUSTAINABLE'
+    : sustainableHours>=10 ? 'COMFORTABLE'
+    : 'VERY COMFORTABLE'
+  const planCapacityHours=Math.max(1,bondActiveDays)*Math.max(.25,dailyMaxHours)
+  const expectedCompletionDays=sustainableGpHour>0?Math.ceil((remainingSafeGp/sustainableGpHour)/Math.max(.25,dailyMaxHours)):null
+  const bufferDays=expectedCompletionDays===null?null:Math.max(0,14-expectedCompletionDays)
+  const primaryMoneyMaker=bondSustainTop3[0]
+  const lowAttentionBackup=[...allOpenMethods].filter(m=>['LOW','AFK'].includes(m.attention)).sort((x,y)=>y.gpHour-x.gpHour)[0]
+  const marketBackup=[...allOpenMethods].filter(m=>m.id!==primaryMoneyMaker?.id && m.id!==lowAttentionBackup?.id).sort((x,y)=>y.gpHour-x.gpHour)[0]
+  const measuredMethodCount=allOpenMethods.filter(m=>m.source==='GERÇEK').length
+  const measurementCount=Object.values(measurementHistory).reduce((n,list)=>n+list.length,0)
+  const measurementConfidence=measurementCount>=8?'HIGH':measurementCount>=4?'MEDIUM':'LOW'
   const v4RequirementNames = V4_ACTIVITY_DATABASE.flatMap(a => [...(a.requirements.quests ?? []), ...(a.requirements.areas ?? []), ...(a.requirements.diary ?? []), ...(a.requirements.minigame ?? [])])
   const requirementNames=Array.from(new Set([...RECIPES.flatMap(r=>[r.questRequirement,r.accessRequirement,r.regionRequirement,r.diaryRequirement,r.minigameRequirement,r.equipment]),...GATHERING.flatMap(a=>[a.questRequirement,a.accessRequirement,a.regionRequirement,a.equipment]),...v4RequirementNames].filter(Boolean))) as string[]
   const requirementGroups = useMemo(() => {
@@ -1827,7 +1894,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V4.3 — Account Planner</h1>
+          <h1>OSRS Economy Scanner V4.4 — Bond Sustainability</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -1934,21 +2001,45 @@ export default function App() {
       </section>
 
       <section id="bond-planner" style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
-        <div style={{fontWeight:'bold',color:'#e3b341',marginBottom:8}}>BOND SUSTAINABILITY</div>
-        <div style={{display:'flex',flexWrap:'wrap',gap:8,fontSize:11}}>
-          <label>Kalan member gün <input type="number" min="1" value={membershipDaysRemaining} onChange={e=>setMembershipDaysRemaining(Math.max(1,Number(e.target.value)||1))} style={{width:65}}/></label>
-          <label>Bond reserve <input type="number" min="0" step="100000" value={bondReserve} onChange={e=>setBondReserve(Math.max(0,Number(e.target.value)||0))} style={{width:110}}/></label>
+        <div style={{display:'flex',justifyContent:'space-between',gap:10,flexWrap:'wrap',alignItems:'center'}}>
+          <div style={{fontWeight:'bold',color:'#e3b341'}}>BOND SUSTAINABILITY ENGINE — V4.4</div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            <button type="button" onClick={downloadFullBackup}>Tam Yedek Al</button>
+            <label><span style={{display:'inline-block',padding:'5px 9px',border:'1px solid #30363d',borderRadius:5,cursor:'pointer'}}>Yedeği Geri Yükle</span><input type="file" accept=".json,application/json" style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0];if(f)restoreFullBackup(f);e.currentTarget.value=''}}/></label>
+          </div>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:8,marginTop:10}}>
+          <div style={{padding:9,border:'1px solid #30363d',borderRadius:6}}><div style={{fontSize:9,color:'#8b949e'}}>SURVIVAL STATUS</div><b style={{fontSize:15}}>{sustainabilityStatus}</b><div style={{fontSize:9}}>Senaryo: {bondScenario}</div></div>
+          <div style={{padding:9,border:'1px solid #30363d',borderRadius:6}}><div style={{fontSize:9,color:'#8b949e'}}>40 / 50 SAAT EŞİĞİ</div><b>{fmt(requiredNetGp40)} / {fmt(requiredNetGp50)} GP/h</b><div style={{fontSize:9}}>Minimum sürdürülebilir net hız</div></div>
+          <div style={{padding:9,border:'1px solid #30363d',borderRadius:6}}><div style={{fontSize:9,color:'#8b949e'}}>ÖLÇÜM GÜVENİ</div><b>{measurementConfidence}</b><div style={{fontSize:9}}>{measurementCount} ölçüm • {measuredMethodCount} gerçek hızlı yöntem</div></div>
+          <div style={{padding:9,border:'1px solid #30363d',borderRadius:6}}><div style={{fontSize:9,color:'#8b949e'}}>SAFE BOND READY</div><b>{bond&&gp>=bondTarget?'EVET':'HAYIR'}</b><div style={{fontSize:9}}>Bond + capital + buffer</div></div>
+        </div>
+        <div style={{display:'flex',flexWrap:'wrap',gap:8,fontSize:11,marginTop:10}}>
+          <label>Aktif gün <input type="number" min="1" max="14" value={bondActiveDays} onChange={e=>setBondActiveDays(clamp(Number(e.target.value)||10,1,14))} style={{width:50}}/></label>
+          <label>Günlük max <select value={dailyMaxHours} onChange={e=>setDailyMaxHours(Number(e.target.value))}><option value={1}>1h</option><option value={2}>2h</option><option value={3}>3h</option><option value={4}>4h</option><option value={5}>5h</option></select></label>
+          <label>Saat bütçesi <select value={bondHoursBudget} onChange={e=>setBondHoursBudget(Number(e.target.value))}><option value={20}>20h</option><option value={30}>30h</option><option value={40}>40h</option><option value={50}>50h</option></select></label>
+          <label>Senaryo <select value={bondScenario} onChange={e=>setBondScenario(e.target.value as BondScenario)}><option value="CONSERVATIVE">Conservative</option><option value="EXPECTED">Expected</option></select></label>
+          <label>Öncelik <select value={progressionPriority} onChange={e=>setProgressionPriority(e.target.value as ProgressionPriority)}><option value="PROFIT">Profit</option><option value="BALANCED">Balanced</option><option value="PROGRESSION">Progression</option></select></label>
+          <label>Working capital <input type="number" min="0" step="100000" value={bondReserve} onChange={e=>setBondReserve(Math.max(0,Number(e.target.value)||0))} style={{width:100}}/></label>
+          <label>Emergency buffer <input type="number" min="0" step="100000" value={emergencyBuffer} onChange={e=>setEmergencyBuffer(Math.max(0,Number(e.target.value)||0))} style={{width:100}}/></label>
           <label>Yorgunluk <select value={playerMode} onChange={e=>setPlayerMode(e.target.value as PlayerMode)}><option>ACTIVE</option><option>NORMAL</option><option>CHILL</option></select></label>
-          <label>GE slot <input type="number" min="1" max="8" value={geSlots} onChange={e=>setGeSlots(clamp(Number(e.target.value)||3,1,8))} style={{width:45}}/></label>
           <label>Bond yöntemi <select value={selectedBondMethod} onChange={e=>setSelectedBondMethod(e.target.value)}><option value="">Otomatik en iyi</option>{allOpenMethods.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
         </div>
-        <div style={{marginTop:8,fontSize:11,lineHeight:1.7}}>
-          Bond {fmt(bond)} • Reserve {fmt(bondReserve)} • Güvenli hedef <b>{fmt(bondTarget)}</b> • Eksik <b>{fmt(remainingSafeGp)}</b><br/>
-          Durum: {bond&&gp>=bond?'✓ Bond alınabilir':'Bond henüz alınamaz'} • {bond&&gp>=bondTarget?'✓ Güvenli şekilde alınabilir':'Reserve dahil hedef tamamlanmadı'}<br/>
-          Günlük gereken <b>{fmt(requiredGpPerDay)}</b> GP • Haftalık <b>{fmt(requiredGpPerWeek)}</b> GP • Seçili: <b>{chosenBondMethod?.name||'—'}</b> ({fmt(realisticGpHour)} GP/h, {chosenBondMethod?.source||'—'})<br/>
-          Gerekli toplam oyun: <b>{requiredHours===null?'—':fmt(requiredHours,1)+' saat'}</b> • Günlük <b>{requiredMinutesPerDay===null?'—':fmt(requiredMinutesPerDay)+' dk'}</b>
+        <div style={{marginTop:10,fontSize:11,lineHeight:1.65}}>
+          Bond {fmt(bond)} + Working Capital {fmt(bondReserve)} + Buffer {fmt(emergencyBuffer)} = <b>{fmt(bondTarget)} GP güvenli hedef</b> • Eksik <b>{fmt(remainingSafeGp)}</b><br/>
+          Seçili: <b>{chosenBondMethod?.name||'—'}</b> • {chosenBondMethod?.source||'—'} • Ham {fmt(realisticGpHour)} GP/h • Senaryo sonrası <b>{fmt(sustainableGpHour)} GP/h</b><br/>
+          {bondHoursBudget} saat bütçesinde gereken <b>{fmt(requiredNetGpBudget)} GP/h</b> • Tahmini <b>{sustainableHours===null?'—':fmt(sustainableHours,1)+' saat'}</b>
         </div>
-        <div style={{marginTop:8,fontSize:10}}>Hedef dağılımı: Bond Fund {fmt(bond)} • Working Capital {fmt(bondReserve)} • Progression GP = bu hedefin üzerindeki bakiye.</div>
+        <div style={{marginTop:10,padding:9,border:'1px solid #30363d',borderRadius:6,fontSize:10}}>
+          <b>10-DAY PLAN CHECK</b><br/>Kapasite: {bondActiveDays} gün × {dailyMaxHours}h = <b>{fmt(planCapacityHours,1)} saat</b> • Tahmini bitiş <b>{expectedCompletionDays===null?'—':`Day ${expectedCompletionDays}`}</b> • Buffer <b>{bufferDays===null?'—':bufferDays+' gün'}</b><br/>
+          {sustainableHours!==null && sustainableHours<=planCapacityHours ? '✓ Plan seçili zaman bütçesine sığıyor.' : '⚠ Plan zaman bütçesine sığmıyor veya veri yetersiz.'}
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:8,marginTop:10,fontSize:10}}>
+          <div style={{padding:8,border:'1px solid #238636',borderRadius:6}}><b>PRIMARY MONEY MAKER</b><div>{primaryMoneyMaker?.name||'NEEDS DATA'}</div><div>{primaryMoneyMaker?`${fmt(primaryMoneyMaker.gpHour)} GP/h • ${primaryMoneyMaker.source}`:'—'}</div></div>
+          <div style={{padding:8,border:'1px solid #9e6a03',borderRadius:6}}><b>LOW-ATTENTION BACKUP</b><div>{lowAttentionBackup?.name||'NEEDS DATA'}</div><div>{lowAttentionBackup?`${fmt(lowAttentionBackup.gpHour)} GP/h • ${lowAttentionBackup.attention}`:'—'}</div></div>
+          <div style={{padding:8,border:'1px solid #1f6feb',borderRadius:6}}><b>MARKET / LIMIT BACKUP</b><div>{marketBackup?.name||'NEEDS DATA'}</div><div>{marketBackup?`${fmt(marketBackup.gpHour)} GP/h • ${marketBackup.source}`:'—'}</div></div>
+        </div>
+        <details style={{marginTop:10,fontSize:10}}><summary style={{cursor:'pointer',fontWeight:700}}>High Alch Scanner / Basket — veri durumu</summary><div style={{padding:8,border:'1px solid #30363d',borderRadius:6,marginTop:6}}><b>NEEDS DATA:</b> Güvenilir High Alch value + buy limit dataset'i olmadığı için otomatik basket uydurulmadı. Mevcut High Alch yöntemleri Money Methods içinde çalışmaya devam eder.</div></details>
       </section>
 
       {mode==='MEMBER' && <section style={{marginBottom:12,padding:10,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
