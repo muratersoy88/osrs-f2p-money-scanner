@@ -1994,24 +1994,46 @@ export default function App() {
     })
   },[v5Rows,legacyMeasuredRanking])
   const v5Top=useMemo(()=>unifiedRanking.slice(0,10),[unifiedRanking])
-  const v5BuyOrderTop=useMemo(()=>v5Rows
-    .filter(x=>x.open&&x.hasTarget&&x.targetProfitEach!==null&&x.targetProfitEach>0&&x.economy.outputNet!==null)
-    .map(x=>{
-      const currentProfit=x.economy.profitEach
-      const gain=currentProfit===null?null:x.targetProfitEach!-currentProfit
-      const roi=x.targetInputCost&&x.targetInputCost>0?x.targetProfitEach!/x.targetInputCost*100:null
-      const targetInputs=x.economy.inputs.filter(inp=>(x.targets[inp.name]??0)>0).map(inp=>{
-        const target=x.targets[inp.name] as number
+  const v5BuyOrderItems=useMemo(()=>{
+    type RecipeUse={name:string;targetGpHour:number}
+    type ItemOpportunity={
+      name:string;live:number;target:number;gap:number;gapPct:number;proximity:number;
+      targetHit:boolean;bestTargetGpHour:number;recipes:RecipeUse[]
+    }
+    const byItem=new Map<string,ItemOpportunity>()
+    v5Rows.filter(x=>x.open&&x.economy.hasPrices).forEach(x=>{
+      x.economy.inputs.forEach(inp=>{
+        const target=v5BuyTargets[inp.name]
+        if(!(target>0)||inp.price===null) return
+        // Item is eligible only if this OPEN recipe is profitable when the global target(s) are used.
+        if(x.targetProfitEach===null||x.targetProfitEach<=0||x.targetGpHour===null||x.targetGpHour<=0) return
         const live=inp.price
-        const gap=live===null?null:live-target
-        const gapPct=gap===null||target<=0?null:gap/target*100
-        return {name:inp.name,target,live,gap,gapPct}
+        const gap=live-target
+        const gapPct=target>0?gap/target*100:0
+        const proximity=live>0?target/live*100:100
+        const use={name:x.name,targetGpHour:x.targetGpHour}
+        const existing=byItem.get(inp.name)
+        if(existing){
+          if(!existing.recipes.some(r=>r.name===x.name)) existing.recipes.push(use)
+          existing.bestTargetGpHour=Math.max(existing.bestTargetGpHour,x.targetGpHour)
+        } else {
+          byItem.set(inp.name,{
+            name:inp.name,live,target,gap,gapPct,proximity,
+            targetHit:live<=target,bestTargetGpHour:x.targetGpHour,recipes:[use]
+          })
+        }
       })
-      const closestPct=targetInputs.length?Math.min(...targetInputs.map(t=>Math.abs(t.gapPct??999))):null
-      return {...x,gain,targetRoi:roi,targetInputs,closestPct}
     })
-    .sort((a,b)=>(b.targetGpHour??0)-(a.targetGpHour??0))
-    .slice(0,Math.max(1,geSlots)),[v5Rows,geSlots])
+    return [...byItem.values()]
+      .map(item=>({...item,recipes:[...item.recipes].sort((a,b)=>b.targetGpHour-a.targetGpHour).slice(0,3)}))
+      .sort((a,b)=>{
+        if(a.targetHit!==b.targetHit) return a.targetHit?-1:1
+        const proximityDiff=Math.abs(b.proximity-a.proximity)
+        if(proximityDiff>0.05) return b.proximity-a.proximity
+        return b.bestTargetGpHour-a.bestTargetGpHour
+      })
+      .slice(0,10)
+  },[v5Rows,v5BuyTargets])
 
   const v5PageRows=useMemo(()=>{
     const rows=v5Rows
@@ -2087,7 +2109,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.4.2 — Global Buy Targets</h1>
+          <h1>OSRS Economy Scanner V5.5 — Item Buy Order Board</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2317,16 +2339,31 @@ export default function App() {
       </section>
 
 
-      <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #30363d',borderRadius:7,fontSize:11}}>
-        <b>BUY ORDER OPPORTUNITY — {geSlots} slot</b>
-        <div style={{marginTop:6,color:'#8b949e'}}>V5 Skill ekranında Edit → Buy Order hedef alış fiyatları alanından beslenir. Hedefler ITEM bazlı globaldir; aynı item tüm reçetelerde aynı hedefi kullanır.</div>
-        {v5BuyOrderTop.length?v5BuyOrderTop.map((r,i)=><div key={r.id} style={{marginTop:7,paddingTop:7,borderTop:i?'1px solid #30363d':'none'}}>
-          <b>#{i+1} {r.name}</b> • hedef <b>{fmt(r.targetProfitEach)} GP/adet</b> • <b>{fmt(r.targetGpHour)} GP/h</b>{r.targetRoi!==null&&<> • {r.targetRoi.toFixed(1)}% ROI</>}
-          <div style={{fontSize:10,color:'#8b949e'}}>{r.targetInputs.map(t=>`${t.name}: canlı ${fmt(t.live)} • hedef ${fmt(t.target)} • fark ${t.gap===null?'?':`${t.gap>=0?'+':''}${fmt(t.gap)} GP`} ${t.gapPct===null?'':`(${t.gapPct>=0?'+':''}${t.gapPct.toFixed(1)}%)`}`).join(' • ')}</div>
-          <div style={{fontSize:10}}>Canlı kâr: {fmt(r.economy.profitEach)} → hedef kâr: <b>{fmt(r.targetProfitEach)} GP/adet</b>{r.gain!==null&&<> • fark {r.gain>=0?'+':''}{fmt(r.gain)} GP/adet</>}</div>
-          {r.closestPct!==null&&<div style={{fontSize:10}}>Hedefe yakınlık: <b>{r.closestPct<=3?'ÇOK YAKIN':r.closestPct<=7?'YAKIN':r.closestPct<=15?'ORTA':'UZAK'}</b> • en yakın hedef farkı %{r.closestPct.toFixed(1)}</div>}
-        </div>):<div style={{marginTop:6}}>Henüz V5 Skill ekranından hedef alış fiyatı girilmiş kârlı order yok.</div>}
-        {buyOrderTop3.length>0&&<details style={{marginTop:8}}><summary>Legacy V4 buy order adayları ({buyOrderTop3.length})</summary>{buyOrderTop3.map((r,i)=><div key={r.id}>#{i+1} {r.name}: hedef {fmt(r.targetBuy)} • {fmt(r.targetProfit)} GP/adet • {fmt(r.targetRun)} GP/tur • {r.targetRoi?.toFixed(1)}% ROI</div>)}</details>}
+      <section style={{marginBottom:10,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+          <b style={{fontSize:14}}>BUY ORDER OPPORTUNITY — En Yakın 10 Malzeme</b>
+          <span style={{fontSize:10,color:'#8b949e'}}>Global item hedefleri • unique input item • açık + hedef fiyatta kârlı reçeteler</span>
+        </div>
+        {v5BuyOrderItems.length?v5BuyOrderItems.map((item,i)=>{
+          const status=item.targetHit?'HEDEF FİYAT GELDİ':item.proximity>=95?'ÇOK YAKIN':item.proximity>=90?'YAKIN':item.proximity>=80?'ORTA':item.proximity>=70?'UZAK':'ÇOK UZAK'
+          const color=item.targetHit?'#238636':item.proximity>=95?'#1f6f3d':item.proximity>=90?'#2ea043':item.proximity>=80?'#d29922':item.proximity>=70?'#db6d28':'#da3633'
+          return <div key={item.name} style={{marginTop:10,padding:12,border:`2px solid ${color}`,borderRadius:8,background:'#0d1117'}}>
+            {item.targetHit&&<div style={{fontSize:15,fontWeight:900,color:'#3fb950',marginBottom:4}}>🔥 HEDEF FİYAT GELDİ</div>}
+            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+              <div>
+                <div style={{fontSize:18,fontWeight:900}}>#{i+1} {item.name}</div>
+                <div style={{fontSize:15,fontWeight:800,marginTop:3}}>Canlı: {fmt(item.live)} GP → Hedef: {fmt(item.target)} GP</div>
+                <div style={{fontSize:12,marginTop:3}}>Hedefe fark: {item.gap>=0?'+':''}{fmt(item.gap)} GP | {item.gapPct>=0?'+':''}{item.gapPct.toFixed(1)}%</div>
+              </div>
+              <div style={{minWidth:170,textAlign:'center',padding:'8px 12px',borderRadius:8,border:`2px solid ${color}`}}>
+                <div style={{fontSize:26,fontWeight:900,color}}>%{item.proximity.toFixed(1)}</div>
+                <div style={{fontSize:11,fontWeight:900,color}}>{status}</div>
+                <div style={{fontSize:9,color:'#8b949e'}}>HEDEFE YAKIN</div>
+              </div>
+            </div>
+            <div style={{fontSize:10,color:'#8b949e',marginTop:8}}><b>En kârlı kullanım:</b> {item.recipes.map(r=>r.name).join(' • ')}</div>
+          </div>
+        }):<div style={{marginTop:8,fontSize:11}}>Henüz global hedef alış fiyatı tanımlanmış ve hedef fiyatta kârlı en az bir açık reçetede kullanılan item yok.</div>}
       </section>
       <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #30363d',borderRadius:7,fontSize:11}}><b>Bir sonraki kârlı unlock</b>{nextUnlocks.length?nextUnlocks.map(r=><div key={r.id}>{r.name}: {r.skill} {r.currentLevel}→{r.level} ({r.levelsMissing} level / {fmt(r.xpMissing)} XP) • canlı {fmt(r.profit)} GP/adet • {fmt(r.profitPerRun)} GP/tur</div>):<div>Canlı fiyatlarla yakın pozitif skill unlock bulunamadı.</div>}</section>
 
