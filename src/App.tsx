@@ -2004,7 +2004,7 @@ export default function App() {
         const target=x.targets[inp.name] as number
         const live=inp.price
         const gap=live===null?null:live-target
-        const gapPct=live===null||target<=0?null:gap/target*100
+        const gapPct=gap===null||target<=0?null:gap/target*100
         return {name:inp.name,target,live,gap,gapPct}
       })
       const closestPct=targetInputs.length?Math.min(...targetInputs.map(t=>Math.abs(t.gapPct??999))):null
@@ -2087,7 +2087,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.4.1 — Global Buy Targets</h1>
+          <h1>OSRS Economy Scanner V5.4.2 — Global Buy Targets</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
