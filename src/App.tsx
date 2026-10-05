@@ -1793,8 +1793,6 @@ export default function App() {
   const chosenBondMethod=allOpenMethods.find(x=>x.id===selectedBondMethod) || bondSustainTop3[0]
   const realisticGpHour=chosenBondMethod?.gpHour || 0
   const days=Math.max(1,membershipDaysRemaining||1)
-  const requiredGpPerDay=remainingSafeGp/days
-  const requiredHours=realisticGpHour>0?remainingSafeGp/realisticGpHour:null
   const requiredNetGp40=remainingSafeGp/40
   const requiredNetGp50=remainingSafeGp/50
   const requiredNetGpBudget=remainingSafeGp/Math.max(1,bondHoursBudget)
@@ -1892,7 +1890,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V4.4.1 — Bond Sustainability</h1>
+          <h1>OSRS Economy Scanner V4.4.2 — Bond Sustainability</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
