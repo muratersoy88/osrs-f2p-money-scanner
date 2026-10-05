@@ -1859,14 +1859,90 @@ export default function App() {
 
 
 
+  const v5LiveEconomy=(a:V5Activity)=>{
+    type Leg={name:string;qty:number;price:number|null}
+    let inputs:Leg[]=[]
+    let outputName:string|undefined=a.output
+    let outputQty=1
+    let liveEligible=false
+
+    const addInputs=(parts:{name:string;qty:number}[])=>{inputs=parts.map(p=>({...p,price:buy(p.name)}));liveEligible=true}
+
+    // Exact 1:1 / explicit V5 recipes.
+    if(a.input&&a.output){
+      const parts=a.input.split('+').map(s=>s.trim()).filter(Boolean)
+      addInputs(parts.map(name=>({name,qty:1})))
+    }
+
+    // Generated smithing equipment: V5 text previously omitted the real bar quantity.
+    const smith=a.name.match(/^Smith (Bronze|Iron|Steel|Mithril|Adamant|Rune) (.+)$/)
+    if(smith){
+      const barName=smith[1]==='Adamant'?'Adamantite bar':smith[1]==='Rune'?'Runite bar':`${smith[1]} bar`
+      const form=smith[2]
+      const qtyMap:Record<string,number>={dagger:1,axe:1,mace:1,'med helm':1,sword:1,'dart tips':1,nails:1,scimitar:2,arrowtips:1,limbs:1,longsword:2,'full helm':2,'throwing knives':1,'sq shield':2,warhammer:3,battleaxe:3,chainbody:3,kiteshield:3,claws:2,'2h sword':3,plateskirt:3,platelegs:3,platebody:5}
+      if(qtyMap[form]){addInputs([{name:barName,qty:qtyMap[form]}]);outputName=`${smith[1]} ${form}`}
+    }
+
+    // Standard bar smelting recipes.
+    const smelt=a.name.match(/^Smelt (Bronze|Iron|Silver|Steel|Gold|Mithril|Adamantite|Runite) bar$/)
+    if(smelt){
+      const recipes:Record<string,{name:string;qty:number}[]>={
+        Bronze:[{name:'Copper ore',qty:1},{name:'Tin ore',qty:1}],
+        Iron:[{name:'Iron ore',qty:1}],Silver:[{name:'Silver ore',qty:1}],
+        Steel:[{name:'Iron ore',qty:1},{name:'Coal',qty:2}],Gold:[{name:'Gold ore',qty:1}],
+        Mithril:[{name:'Mithril ore',qty:1},{name:'Coal',qty:4}],
+        Adamantite:[{name:'Adamantite ore',qty:1},{name:'Coal',qty:6}],
+        Runite:[{name:'Runite ore',qty:1},{name:'Coal',qty:8}]
+      }
+      addInputs(recipes[smelt[1]]||[]);outputName=`${smelt[1]} bar`
+    }
+
+    // Gathering outputs that are unambiguous item drops.
+    if(a.kind==='GATHERING'){
+      const prefixes=['Fish ','Mine ','Cut ']
+      const p=prefixes.find(p=>a.name.startsWith(p))
+      if(p){
+        let candidate=a.name.slice(p.length)
+        // Woodcutting activity names already contain "logs"; fishing/mining names are item names.
+        outputName=candidate
+        liveEligible=true
+        inputs=[]
+      }
+    }
+
+    // Firemaking is a live cost method: logs are consumed, no sell output.
+    if(a.pages.includes('firemaking')&&a.input){
+      addInputs([{name:a.input,qty:1}]);outputName=undefined
+    }
+
+    const inputCost=inputs.length&&inputs.every(x=>x.price!==null)
+      ? inputs.reduce((n,x)=>n+(x.price||0)*x.qty,0)
+      : inputs.length?null:0
+    const outputPrice=outputName?sell(outputName):null
+    const outputNet=outputPrice===null?null:outputPrice*outputQty-geTax(outputPrice)*outputQty
+    const hasPrices=liveEligible&&inputCost!==null&&(!outputName||outputNet!==null)
+    const profitEach=hasPrices?(outputNet??0)-(inputCost??0):null
+    const inputText=inputs.map(x=>`${x.qty}× ${x.name}: ${x.price===null?'?':fmt(x.price)} GP`).join(' • ')
+    const outputText=outputName?`${outputName}: ${outputPrice===null?'?':fmt(outputPrice)} GP${outputPrice!==null?` (net ${fmt(outputNet)} GP)`:''}`:'Tüketim / satış çıktısı yok'
+    return {inputs,outputName,inputCost,outputPrice,outputNet,profitEach,hasPrices,liveEligible,inputText,outputText}
+  }
+
   const v5Rows=useMemo(()=>V5_CATALOGUE.map(a=>{
     const edit=v5Edits[a.id]||{}
     const current=Math.max(...a.skills.map(s=>levels[s]||1))
     const open=(!a.member||mode==='MEMBER')&&current>=a.level
-    const gp=edit.measuredGpHour??edit.theoryGpHour??a.theoryGpHour
     const rate=edit.measuredRate??edit.theoryRate??a.theoryRate
-    return {...a,edit,current,open,gp,rate,source:edit.measuredGpHour!==undefined||edit.measuredRate!==undefined?'MEASURED':edit.theoryGpHour!==undefined||edit.theoryRate!==undefined?'USER THEORY':'THEORY'}
-  }),[mode,levels,v5Edits])
+    const economy=v5LiveEconomy(a)
+    const liveGp=economy.profitEach!==null?economy.profitEach*rate:null
+    const explicitGp=edit.measuredGpHour??edit.theoryGpHour
+    const gp=explicitGp??liveGp??a.theoryGpHour
+    const source=edit.measuredGpHour!==undefined?'MEASURED'
+      :edit.theoryGpHour!==undefined?'USER THEORY'
+      :liveGp!==null?(edit.measuredRate!==undefined?'LIVE GE + MEASURED RATE':edit.theoryRate!==undefined?'LIVE GE + USER RATE':'LIVE GE + THEORY RATE')
+      :edit.measuredRate!==undefined?'MEASURED RATE / THEORY GP'
+      :edit.theoryRate!==undefined?'USER THEORY':'THEORY'
+    return {...a,edit,current,open,gp,rate,source,economy,liveGp}
+  }),[mode,levels,v5Edits,prices,mapping])
   const legacyMeasuredRanking=useMemo(()=>{
     const recipeRows=rows.filter(r=>r.unlocked&&(r.gpHour??0)>0).map(r=>({
       id:`legacy-recipe-${r.id}`,name:r.name,skills:[r.skill],level:r.level,kind:'PROCESSING',
@@ -1885,7 +1961,7 @@ export default function App() {
   const unifiedRanking=useMemo(()=>{
     const v5=v5Rows.filter(x=>x.open&&x.gp>0).map(x=>({...x,legacy:false}))
     const all=[...v5,...legacyMeasuredRanking]
-    const priority=(s:string)=>s==='MEASURED'?3:s==='USER THEORY'?2:s==='GERÇEK'?3:s==='LIVE/ESTIMATE'?2:1
+    const priority=(s:string)=>s==='MEASURED'||s==='GERÇEK'||s==='LIVE GE + MEASURED RATE'?4:s.startsWith('LIVE GE')?3:s==='USER THEORY'||s==='LIVE/ESTIMATE'?2:1
     const byName=new Map<string,any>()
     all.forEach(x=>{
       const key=x.name.trim().toLowerCase()
@@ -1972,7 +2048,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.2.2 — Unified Ranking Build Fix</h1>
+          <h1>OSRS Economy Scanner V5.3 — Live GE Economy Integration</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2005,10 +2081,10 @@ export default function App() {
                 </div>
               </section>
               <section style={{marginBottom:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
-                <h3 style={{marginTop:0}}>V5.2 — Unified Economy Top 10</h3>
-                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Tüm ekonomi havuzu birlikte taranır: mevcut gerçek V4 ölçümleri + V5 kayıtları. Aynı yöntemde öncelik MEASURED/GERÇEK {'>'} USER THEORY/LIVE {'>'} THEORY; sıralama efektif GP/h ile yapılır.</div>
+                <h3 style={{marginTop:0}}>V5.3 — Live Economy Top 10</h3>
+                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Tüm ekonomi havuzu birlikte taranır. V5 reçetesi fiyatlandırılabiliyorsa canlı GE alış/satış fiyatı ve GE tax ile kâr hesaplanır; measured rate varsa canlı fiyat × measured rate kullanılır. Fiyat modeli olmayan kayıtta THEORY korunur.</div>
                 <div className="tableBox"><table><thead><tr><th>#</th><th>Activity</th><th>Skill</th><th>Tür</th><th>GP/h</th><th>Rate/h</th><th>Kaynak</th></tr></thead><tbody>
-                {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}</td><td>{x.skills.join(', ')} {x.level}</td><td>{x.kind}</td><td>{fmt(x.gp)}</td><td>{fmt(x.rate)}</td><td>{x.source}</td></tr>)}
+                {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}{x.economy&&<div style={{fontSize:9,color:'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div>{x.economy.profitEach!==null&&<div>Kâr/adet: <b>{fmt(x.economy.profitEach)} GP</b></div>}</>:<div>Canlı fiyat modeli: {x.economy.liveEligible?'fiyat eşleşmesi eksik':'henüz tanımlı değil'}</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{x.kind}</td><td>{fmt(x.gp)}</td><td>{fmt(x.rate)}</td><td>{x.source}</td></tr>)}
                 {!v5Top.length&&<tr><td colSpan={7}>Mevcut level/mod ile pozitif GP/h adayı yok.</td></tr>}
                 </tbody></table></div>
                 <div style={{fontSize:10,marginTop:6}}>V5 katalog: <b>{V5_CATALOGUE.length}</b> activity • OPEN: <b>{v5Rows.filter(x=>x.open).length}</b> • Editlenmiş: <b>{Object.keys(v5Edits).length}</b></div>
@@ -2221,7 +2297,7 @@ export default function App() {
           <div style={{fontSize:10,color:'#8b949e',margin:'7px 0'}}>Kayıt: {v5PageRows.length} • OPEN {v5PageRows.filter(x=>x.open).length}. THEORY değerleri başlangıç planlama tahminidir; Edit ile theory/measurement değerlerini değiştirebilirsin.</div>
           <div className="tableBox"><table><thead><tr><th>Activity</th><th>F2P/P2P</th><th>Level</th><th>Tür</th><th>Theory GP/h</th><th>Effective GP/h</th><th>Rate/h</th><th>XP/h</th><th>Dikkat</th><th>Durum</th><th>Veri</th><th>Edit</th></tr></thead><tbody>
           {v5PageRows.map(x=><tr key={x.id} className={!x.open?'lockedRow':''}>
-            <td className="name">{x.name}<div style={{fontSize:9,color:'#8b949e'}}>{x.input?`In: ${x.input}`:''}{x.output?` → Out: ${x.output}`:''}</div>{(x.edit.note||x.note)&&<div style={{fontSize:9,color:'#8b949e'}}>{x.edit.note||x.note}</div>}</td>
+            <td className="name">{x.name}<div style={{fontSize:9,color:'#8b949e'}}>{x.input?`In: ${x.input}`:''}{x.output?` → Out: ${x.output}`:''}</div><div style={{fontSize:9,color:x.economy.hasPrices?'#3fb950':'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div>{x.economy.profitEach!==null&&<div>Kâr/adet: {fmt(x.economy.profitEach)} GP • Canlı GP/h: {fmt(x.liveGp)}</div>}</>:<div>Canlı fiyat: {x.economy.liveEligible?'eşleşme/veri eksik':'reçete modeli henüz tanımlı değil — THEORY korunuyor'}</div>}</div>{(x.edit.note||x.note)&&<div style={{fontSize:9,color:'#8b949e'}}>{x.edit.note||x.note}</div>}</td>
             <td>{x.member?'MEMBER':'F2P'}</td><td>{x.skills.join(', ')} {x.level}<div style={{fontSize:9}}>Sen: {x.current}</div></td><td>{x.kind}</td>
             <td>{fmt(x.edit.theoryGpHour??x.theoryGpHour)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{fmt(x.xpHour)}</td><td>{x.attention}</td>
             <td><b>{x.open?'OPEN':'LOCKED'}</b>{!x.open&&<div style={{fontSize:9}}>{x.member&&mode==='F2P'?'Membership':x.current<x.level?`${x.level-x.current} level eksik`:x.requirement||'Requirement'}</div>}</td>
@@ -2237,7 +2313,7 @@ export default function App() {
             <label>Measured GP/h <input type="number" value={x.edit.measuredGpHour??''} onChange={e=>v5Update(x.id,{measuredGpHour:e.target.value===''?undefined:Number(e.target.value)})}/></label>
             <label style={{minWidth:280}}>Not <input style={{width:'100%'}} value={x.edit.note??''} onChange={e=>v5Update(x.id,{note:e.target.value})}/></label>
             <button type="button" onClick={()=>v5Reset(x.id)}>Override sıfırla</button></div>
-            <div style={{fontSize:9,color:'#8b949e',marginTop:5}}>Orijinal theory: {fmt(x.theoryRate)}/h • {fmt(x.theoryGpHour)} GP/h. Override silinince bu değerlere döner.</div>
+            <div style={{fontSize:9,color:'#8b949e',marginTop:5}}>Orijinal theory: {fmt(x.theoryRate)}/h • {fmt(x.theoryGpHour)} GP/h. GP/h override yoksa ve canlı reçete/fiyat mevcutsa sistem canlı GE kârını × rate/h kullanır; canlı model yoksa theory'ye döner.</div><div style={{fontSize:10,marginTop:5}}>{x.economy.hasPrices?<><b>Canlı fiyat:</b> {x.economy.inputText||'Girdi yok'} → {x.economy.outputText} • <b>{fmt(x.economy.profitEach)} GP/adet</b></>:<><b>Canlı fiyat modeli:</b> henüz eksik. Bu kayıtta GP/h THEORY/override üzerinden kalır.</>}</div>
           </div>})()}
         </section>
       </div>}
@@ -2255,7 +2331,7 @@ export default function App() {
           </div>
           <div style={{fontSize:10,marginBottom:6}}>OPEN + pozitif GP/h: <b>{v5MoneyRows.length}</b> yöntem. Örn. Herblore level yükseldiğinde uygun potion kayıtları burada otomatik açılır.</div>
           <div className="tableBox"><table><thead><tr><th>#</th><th>Yöntem</th><th>Skill</th><th>Tür</th><th>GP/h</th><th>Rate/h</th><th>XP/h</th><th>Dikkat</th><th>Veri</th><th>F2P/P2P</th></tr></thead><tbody>
-          {v5MoneyRows.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}<div style={{fontSize:9,color:'#8b949e'}}>{x.input?`In: ${x.input}`:''}{x.output?` → Out: ${x.output}`:''}</div></td><td>{x.skills.join(', ')} {x.level}</td><td>{x.kind}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{fmt(x.xpHour)}</td><td>{x.attention}</td><td>{x.source}</td><td>{x.member?'MEMBER':'F2P'}</td></tr>)}
+          {v5MoneyRows.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}<div style={{fontSize:9,color:'#8b949e'}}>{x.input?`In: ${x.input}`:''}{x.output?` → Out: ${x.output}`:''}</div>{x.economy&&<div style={{fontSize:9,color:x.economy.hasPrices?'#3fb950':'#8b949e'}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div>{x.economy.profitEach!==null&&<div>Kâr/adet: {fmt(x.economy.profitEach)} GP</div>}</>:<div>Canlı fiyat modeli yok / eksik</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{x.kind}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{fmt(x.xpHour)}</td><td>{x.attention}</td><td>{x.source}</td><td>{x.member?'MEMBER':'F2P'}</td></tr>)}
           {!v5MoneyRows.length&&<tr><td colSpan={10}>Filtrelere uyan OPEN ve pozitif GP/h yöntemi yok.</td></tr>}
           </tbody></table></div>
         </section>
