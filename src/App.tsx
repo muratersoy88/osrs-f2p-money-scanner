@@ -1859,14 +1859,7 @@ export default function App() {
     if(legacy.length) groups.push({title:'Legacy / Other',items:legacy})
     return groups.filter(g=>g.items.length)
   }, [requirementNames.join('|')])
-  const buyOrderTop3=rows.filter(r=>r.unlocked && r.kind!=='alchemy' && r.inputs.length===1 && r.inputCost>0).map(r=>{
-    const target=methodData[r.id]?.targetBuyPrice
-    const baseBuy=buy(r.inputs[0].name)
-    const targetInput=target&&target>0?target*r.inputs[0].qty:null
-    const targetProfit=targetInput!==null&&r.outputNet!==null?r.outputNet-targetInput-(r.fee||0):null
-    const targetRoi=targetProfit!==null&&targetInput!>0?targetProfit/targetInput!*100:null
-    return {...r,targetBuy:target,targetProfit,targetRoi,targetRun:targetProfit!==null?targetProfit*r.itemsPerRun:null,baseBuy}
-  }).filter(r=>r.targetProfit!==null&&r.targetProfit>0).sort((a,b)=>(b.targetRun??0)-(a.targetRun??0)).slice(0,Math.max(1,geSlots))
+
   const nextUnlocks=rows.filter(r=>!r.unlocked && !r.membersLocked && r.levelLocked && (r.profit??0)>0).map(r=>({...r,levelsMissing:Math.max(0,r.level-r.currentLevel),xpMissing:Math.max(0,xpForLevel(r.level)-xpForLevel(r.currentLevel))})).sort((a,b)=>a.levelsMissing-b.levelsMissing).slice(0,5)
 
 
@@ -2109,7 +2102,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.5 — Item Buy Order Board</h1>
+          <h1>OSRS Economy Scanner V5.5.1 — Item Buy Order Board</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
