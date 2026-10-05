@@ -3,6 +3,8 @@ import './App.css'
 import { V4_ACTIVITY_DATABASE } from './v4/database'
 import { evaluateActivity } from './v4/requirements'
 import { rankCombat, nextUnlocks as v4NextUnlocks, questUnlockValue, itemChains, readyAfterSimpleRequirements } from './v4/planner'
+import { V5_CATALOGUE, V5_PAGES } from './v5'
+import type { V5Edit, V5PageId } from './v5'
 
 const API = 'https://prices.runescape.wiki/api/v1/osrs'
 
@@ -1199,7 +1201,12 @@ export default function App() {
   const [v4ViewAll, setV4ViewAll] = useState(false)
   const [v4KindFilter, setV4KindFilter] = useState('ALL')
   const [v4PlannerItem, setV4PlannerItem] = useState('')
-  const [activeTab, setActiveTab] = useState<'dashboard'|'money'|'planner'|'database'>('dashboard')
+  const [activeTab, setActiveTab] = useState<'dashboard'|'skills'|'money'|'planner'|'database'>('dashboard')
+  const [v5Page,setV5Page]=useState<V5PageId>('melee')
+  const [v5Search,setV5Search]=useState('')
+  const [v5ShowLocked,setV5ShowLocked]=useState(true)
+  const [v5Edits,setV5Edits]=useState<Record<string,V5Edit>>(()=>{try{return JSON.parse(localStorage.getItem('osrs-v5-edits')||'{}')}catch{return{}}})
+  const [v5Editing,setV5Editing]=useState<string|null>(null)
   const [v4Page, setV4Page] = useState(1)
   const V4_PAGE_SIZE = 30
   const [measurementHistory, setMeasurementHistory] = useState<Record<string,Measurement[]>>(() => {
@@ -1309,6 +1316,8 @@ export default function App() {
       setLoading(false)
     }
   }
+
+  useEffect(()=>{localStorage.setItem('osrs-v5-edits',JSON.stringify(v5Edits))},[v5Edits])
 
   useEffect(() => {
     refresh()
@@ -1839,6 +1848,20 @@ export default function App() {
 
 
 
+  const v5Rows=useMemo(()=>V5_CATALOGUE.map(a=>{
+    const edit=v5Edits[a.id]||{}
+    const current=Math.max(...a.skills.map(s=>levels[s]||1))
+    const open=(!a.member||mode==='MEMBER')&&current>=a.level
+    const gp=edit.measuredGpHour??edit.theoryGpHour??a.theoryGpHour
+    const rate=edit.measuredRate??edit.theoryRate??a.theoryRate
+    return {...a,edit,current,open,gp,rate,source:edit.measuredGpHour!==undefined||edit.measuredRate!==undefined?'MEASURED':edit.theoryGpHour!==undefined||edit.theoryRate!==undefined?'USER THEORY':'THEORY'}
+  }),[mode,levels,v5Edits])
+  const v5Top=useMemo(()=>v5Rows.filter(x=>x.open&&x.gp>0).sort((a,b)=>b.gp-a.gp).slice(0,10),[v5Rows])
+  const v5PageRows=useMemo(()=>v5Rows.filter(x=>x.pages.includes(v5Page)).filter(x=>v5ShowLocked||x.open).filter(x=>!v5Search.trim()||[x.name,x.kind,x.input,x.output,x.note,x.edit.note].join(' ').toLowerCase().includes(v5Search.toLowerCase())).sort((a,b)=>(Number(b.open)-Number(a.open))||(b.gp-a.gp)),[v5Rows,v5Page,v5ShowLocked,v5Search])
+  const v5PageInfo=V5_PAGES.find(p=>p.id===v5Page)!
+  const v5Update=(id:string,patch:Partial<V5Edit>)=>setV5Edits(old=>({...old,[id]:{...(old[id]||{}),...patch}}))
+  const v5Reset=(id:string)=>setV5Edits(old=>{const n={...old};delete n[id];return n})
+
   const v4SearchResults = useMemo(() => {
     const q = v4Search.trim().toLowerCase()
     if (!q && !v4ViewAll) return []
@@ -1889,7 +1912,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V4.4.3 — Bond Sustainability</h1>
+          <h1>OSRS Economy Scanner V5.0 — Full Economy Database</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -1904,7 +1927,7 @@ export default function App() {
 
       <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:8,flexWrap:'wrap',padding:'10px 0',background:'#0d1117',borderBottom:'1px solid #30363d'}}>
         {([
-          ['dashboard','Dashboard'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],
+          ['dashboard','Dashboard'],['skills','21 Skill Views'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],
         ] as const).map(([id,label])=><button key={id} type="button" onClick={()=>setActiveTab(id)}
           style={{fontWeight:activeTab===id?800:500,outline:activeTab===id?'2px solid #58a6ff':'none'}}>{label}</button>)}
       </nav>
@@ -1912,6 +1935,15 @@ export default function App() {
       {error && <div className="error">{error}</div>}
 
             {activeTab==='dashboard'&&<div>
+              <section style={{marginBottom:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+                <h3 style={{marginTop:0}}>V5 — Full Economy Top 10</h3>
+                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Tüm V5 katalog havuzu taranır. THEORY kaba başlangıç verisidir; USER THEORY ve MEASURED override'ları otomatik öncelik alır.</div>
+                <div className="tableBox"><table><thead><tr><th>#</th><th>Activity</th><th>Skill</th><th>Tür</th><th>GP/h</th><th>Rate/h</th><th>Kaynak</th></tr></thead><tbody>
+                {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}</td><td>{x.skills.join(', ')} {x.level}</td><td>{x.kind}</td><td>{fmt(x.gp)}</td><td>{fmt(x.rate)}</td><td>{x.source}</td></tr>)}
+                {!v5Top.length&&<tr><td colSpan={7}>Mevcut level/mod ile pozitif GP/h adayı yok.</td></tr>}
+                </tbody></table></div>
+                <div style={{fontSize:10,marginTop:6}}>V5 katalog: <b>{V5_CATALOGUE.length}</b> activity • OPEN: <b>{v5Rows.filter(x=>x.open).length}</b> • Editlenmiş: <b>{Object.keys(v5Edits).length}</b></div>
+              </section>
 <section id="dashboard" className="cards">
         <div className="card">
           <label>ACCOUNT MODE</label>
@@ -2099,6 +2131,40 @@ export default function App() {
       {(mode==='MEMBER' || (bond&&gp>=bond)) && <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #8957e5',borderRadius:7,fontSize:11}}><b>FIRST BOND TRANSITION PLAN</b><div>1) Member skill seviyelerini gir ve yalnızca gerçekten sahip olduğun quest/access kutularını işaretle.</div><div>2) İlk hedef: Bond + reserve için <b>{fmt(bondTarget)}</b> GP çalışma tabanı.</div><div>3) Şu an ekonomik rota: <b>{bondSustainTop3[0]?.name||'ölçüm/veri gerekli'}</b>{bondSustainTop3[0]?` — ${fmt(bondSustainTop3[0].gpHour)} GP/h`:''}.</div><div>4) Bond+reserve güvenceye girdikten sonraki GP <b>Progression GP</b> olarak quest/gear/skill gelişimine ayrılır.</div></section>}
 
             </div>}
+
+      {activeTab==='skills'&&<div>
+        <section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+          <h3 style={{marginTop:0}}>V5 — 21 Deep Skill / Progression Views</h3>
+          <div style={{display:'flex',gap:5,flexWrap:'wrap',marginBottom:10}}>
+            {V5_PAGES.map(p=><button type="button" key={p.id} onClick={()=>setV5Page(p.id)} style={{fontWeight:v5Page===p.id?800:500,outline:v5Page===p.id?'2px solid #58a6ff':'none'}}>{p.label}</button>)}
+          </div>
+          <div style={{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+            <div><b>{v5PageInfo.label}</b> <span style={{fontSize:10,color:'#8b949e'}}>({v5PageInfo.skills.join(' + ')})</span></div>
+            <div style={{display:'flex',gap:8}}><input value={v5Search} onChange={e=>setV5Search(e.target.value)} placeholder="Bu sayfada ara..."/><label style={{fontSize:10}}><input type="checkbox" checked={v5ShowLocked} onChange={e=>setV5ShowLocked(e.target.checked)}/> LOCKED göster</label></div>
+          </div>
+          <div style={{fontSize:10,color:'#8b949e',margin:'7px 0'}}>Kayıt: {v5PageRows.length} • OPEN {v5PageRows.filter(x=>x.open).length}. THEORY değerleri başlangıç planlama tahminidir; Edit ile theory/measurement değerlerini değiştirebilirsin.</div>
+          <div className="tableBox"><table><thead><tr><th>Activity</th><th>F2P/P2P</th><th>Level</th><th>Tür</th><th>Theory GP/h</th><th>Effective GP/h</th><th>Rate/h</th><th>XP/h</th><th>Dikkat</th><th>Durum</th><th>Veri</th><th>Edit</th></tr></thead><tbody>
+          {v5PageRows.map(x=><tr key={x.id} className={!x.open?'lockedRow':''}>
+            <td className="name">{x.name}<div style={{fontSize:9,color:'#8b949e'}}>{x.input?`In: ${x.input}`:''}{x.output?` → Out: ${x.output}`:''}</div>{(x.edit.note||x.note)&&<div style={{fontSize:9,color:'#8b949e'}}>{x.edit.note||x.note}</div>}</td>
+            <td>{x.member?'MEMBER':'F2P'}</td><td>{x.skills.join(', ')} {x.level}<div style={{fontSize:9}}>Sen: {x.current}</div></td><td>{x.kind}</td>
+            <td>{fmt(x.edit.theoryGpHour??x.theoryGpHour)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{fmt(x.xpHour)}</td><td>{x.attention}</td>
+            <td><b>{x.open?'OPEN':'LOCKED'}</b>{!x.open&&<div style={{fontSize:9}}>{x.member&&mode==='F2P'?'Membership':x.current<x.level?`${x.level-x.current} level eksik`:x.requirement||'Requirement'}</div>}</td>
+            <td>{x.source}</td><td><button type="button" onClick={()=>setV5Editing(v5Editing===x.id?null:x.id)}>Edit</button></td>
+          </tr>)}
+          {!v5PageRows.length&&<tr><td colSpan={12}>Eşleşen activity yok.</td></tr>}
+          </tbody></table></div>
+          {v5Editing&&(()=>{const x=v5Rows.find(r=>r.id===v5Editing);if(!x)return null;return <div style={{marginTop:10,padding:10,border:'1px solid #58a6ff',borderRadius:8}}>
+            <b>Edit — {x.name}</b><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
+            <label>Theory rate/h <input type="number" value={x.edit.theoryRate??x.theoryRate} onChange={e=>v5Update(x.id,{theoryRate:Number(e.target.value)})}/></label>
+            <label>Theory GP/h <input type="number" value={x.edit.theoryGpHour??x.theoryGpHour} onChange={e=>v5Update(x.id,{theoryGpHour:Number(e.target.value)})}/></label>
+            <label>Measured rate/h <input type="number" value={x.edit.measuredRate??''} onChange={e=>v5Update(x.id,{measuredRate:e.target.value===''?undefined:Number(e.target.value)})}/></label>
+            <label>Measured GP/h <input type="number" value={x.edit.measuredGpHour??''} onChange={e=>v5Update(x.id,{measuredGpHour:e.target.value===''?undefined:Number(e.target.value)})}/></label>
+            <label style={{minWidth:280}}>Not <input style={{width:'100%'}} value={x.edit.note??''} onChange={e=>v5Update(x.id,{note:e.target.value})}/></label>
+            <button type="button" onClick={()=>v5Reset(x.id)}>Override sıfırla</button></div>
+            <div style={{fontSize:9,color:'#8b949e',marginTop:5}}>Orijinal theory: {fmt(x.theoryRate)}/h • {fmt(x.theoryGpHour)} GP/h. Override silinince bu değerlere döner.</div>
+          </div>})()}
+        </section>
+      </div>}
 
       {activeTab==='money'&&<div>
 <section className="filters" id="money-methods">
