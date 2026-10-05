@@ -1207,7 +1207,16 @@ export default function App() {
   const [v5ShowLocked,setV5ShowLocked]=useState(true)
   const [v5Edits,setV5Edits]=useState<Record<string,V5Edit>>(()=>{try{return JSON.parse(localStorage.getItem('osrs-v5-edits')||'{}')}catch{return{}}})
   const [v5Editing,setV5Editing]=useState<string|null>(null)
-  const [v5BuyTargets,setV5BuyTargets]=useState<Record<string,Record<string,number>>>(()=>{try{return JSON.parse(localStorage.getItem('osrs-v5-buy-targets')||'{}')}catch{return{}}})
+  const [v5BuyTargets,setV5BuyTargets]=useState<Record<string,number>>(()=>{
+    try {
+      const globalSaved=JSON.parse(localStorage.getItem('osrs-v5-global-buy-targets')||'{}')
+      if(Object.keys(globalSaved).length) return globalSaved
+      const legacy=JSON.parse(localStorage.getItem('osrs-v5-buy-targets')||'{}') as Record<string,Record<string,number>>
+      const migrated:Record<string,number>={}
+      Object.values(legacy).forEach(activity=>Object.entries(activity||{}).forEach(([item,price])=>{if(migrated[item]===undefined&&Number(price)>0)migrated[item]=Number(price)}))
+      return migrated
+    } catch { return {} }
+  })
 
   const [v5AccessFilter,setV5AccessFilter]=useState('ALL')
   const [v5KindFilter,setV5KindFilter]=useState('ALL')
@@ -1331,7 +1340,7 @@ export default function App() {
   }
 
   useEffect(()=>{localStorage.setItem('osrs-v5-edits',JSON.stringify(v5Edits))},[v5Edits])
-  useEffect(()=>{localStorage.setItem('osrs-v5-buy-targets',JSON.stringify(v5BuyTargets))},[v5BuyTargets])
+  useEffect(()=>{localStorage.setItem('osrs-v5-global-buy-targets',JSON.stringify(v5BuyTargets))},[v5BuyTargets])
 
   useEffect(() => {
     refresh()
@@ -1937,7 +1946,7 @@ export default function App() {
     const rate=edit.measuredRate??edit.theoryRate??a.theoryRate
     const economy=v5LiveEconomy(a)
     const liveGp=economy.profitEach!==null?economy.profitEach*rate:null
-    const targets=v5BuyTargets[a.id]||{}
+    const targets=v5BuyTargets
     const targetInputCost=economy.inputs.length&&economy.inputs.every(x=>(targets[x.name]??x.price)!==null)
       ? economy.inputs.reduce((n,x)=>n+((targets[x.name]??x.price) as number)*x.qty,0)
       : null
@@ -1991,7 +2000,15 @@ export default function App() {
       const currentProfit=x.economy.profitEach
       const gain=currentProfit===null?null:x.targetProfitEach!-currentProfit
       const roi=x.targetInputCost&&x.targetInputCost>0?x.targetProfitEach!/x.targetInputCost*100:null
-      return {...x,gain,targetRoi:roi}
+      const targetInputs=x.economy.inputs.filter(inp=>(x.targets[inp.name]??0)>0).map(inp=>{
+        const target=x.targets[inp.name] as number
+        const live=inp.price
+        const gap=live===null?null:live-target
+        const gapPct=live===null||target<=0?null:gap/target*100
+        return {name:inp.name,target,live,gap,gapPct}
+      })
+      const closestPct=targetInputs.length?Math.min(...targetInputs.map(t=>Math.abs(t.gapPct??999))):null
+      return {...x,gain,targetRoi:roi,targetInputs,closestPct}
     })
     .sort((a,b)=>(b.targetGpHour??0)-(a.targetGpHour??0))
     .slice(0,Math.max(1,geSlots)),[v5Rows,geSlots])
@@ -2070,7 +2087,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.4 — V5 Buy Order Integration</h1>
+          <h1>OSRS Economy Scanner V5.4.1 — Global Buy Targets</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2302,11 +2319,12 @@ export default function App() {
 
       <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #30363d',borderRadius:7,fontSize:11}}>
         <b>BUY ORDER OPPORTUNITY — {geSlots} slot</b>
-        <div style={{marginTop:6,color:'#8b949e'}}>V5 Skill ekranında Edit → Buy Order hedef alış fiyatları alanından beslenir. Bir reçetede birden fazla girdi için ayrı hedef girebilirsin.</div>
+        <div style={{marginTop:6,color:'#8b949e'}}>V5 Skill ekranında Edit → Buy Order hedef alış fiyatları alanından beslenir. Hedefler ITEM bazlı globaldir; aynı item tüm reçetelerde aynı hedefi kullanır.</div>
         {v5BuyOrderTop.length?v5BuyOrderTop.map((r,i)=><div key={r.id} style={{marginTop:7,paddingTop:7,borderTop:i?'1px solid #30363d':'none'}}>
           <b>#{i+1} {r.name}</b> • hedef <b>{fmt(r.targetProfitEach)} GP/adet</b> • <b>{fmt(r.targetGpHour)} GP/h</b>{r.targetRoi!==null&&<> • {r.targetRoi.toFixed(1)}% ROI</>}
-          <div style={{fontSize:10,color:'#8b949e'}}>{r.economy.inputs.map(inp=>`${inp.name}: ${fmt(inp.price)} → ${fmt(r.targets[inp.name]??inp.price)} GP`).join(' • ')}</div>
+          <div style={{fontSize:10,color:'#8b949e'}}>{r.targetInputs.map(t=>`${t.name}: canlı ${fmt(t.live)} • hedef ${fmt(t.target)} • fark ${t.gap===null?'?':`${t.gap>=0?'+':''}${fmt(t.gap)} GP`} ${t.gapPct===null?'':`(${t.gapPct>=0?'+':''}${t.gapPct.toFixed(1)}%)`}`).join(' • ')}</div>
           <div style={{fontSize:10}}>Canlı kâr: {fmt(r.economy.profitEach)} → hedef kâr: <b>{fmt(r.targetProfitEach)} GP/adet</b>{r.gain!==null&&<> • fark {r.gain>=0?'+':''}{fmt(r.gain)} GP/adet</>}</div>
+          {r.closestPct!==null&&<div style={{fontSize:10}}>Hedefe yakınlık: <b>{r.closestPct<=3?'ÇOK YAKIN':r.closestPct<=7?'YAKIN':r.closestPct<=15?'ORTA':'UZAK'}</b> • en yakın hedef farkı %{r.closestPct.toFixed(1)}</div>}
         </div>):<div style={{marginTop:6}}>Henüz V5 Skill ekranından hedef alış fiyatı girilmiş kârlı order yok.</div>}
         {buyOrderTop3.length>0&&<details style={{marginTop:8}}><summary>Legacy V4 buy order adayları ({buyOrderTop3.length})</summary>{buyOrderTop3.map((r,i)=><div key={r.id}>#{i+1} {r.name}: hedef {fmt(r.targetBuy)} • {fmt(r.targetProfit)} GP/adet • {fmt(r.targetRun)} GP/tur • {r.targetRoi?.toFixed(1)}% ROI</div>)}</details>}
       </section>
@@ -2354,8 +2372,8 @@ export default function App() {
             <button type="button" onClick={()=>v5Reset(x.id)}>Override sıfırla</button></div>
             {x.economy.inputs.length>0&&<div style={{marginTop:8,padding:8,border:'1px solid #30363d',borderRadius:6}}>
               <b>Buy Order hedef alış fiyatları</b>
-              <div style={{fontSize:9,color:'#8b949e',margin:'3px 0 6px'}}>Boş bırakırsan o girdide canlı alış fiyatı kullanılır. Hedef fiyatlar Dashboard BUY ORDER OPPORTUNITY panelini otomatik besler.</div>
-              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{x.economy.inputs.map(inp=><label key={inp.name}>{inp.name} <span style={{fontSize:9,color:'#8b949e'}}>canlı {fmt(inp.price)} GP</span> <input type="number" min="0" placeholder="Hedef alış" value={x.targets[inp.name]??''} onChange={e=>setV5BuyTargets(old=>{const activity={...(old[x.id]||{})};if(e.target.value==='')delete activity[inp.name];else activity[inp.name]=Math.max(0,Number(e.target.value));return {...old,[x.id]:activity}})}/></label>)}</div>
+              <div style={{fontSize:9,color:'#8b949e',margin:'3px 0 6px'}}>Bu hedef ITEM bazlı ve globaldir: örneğin Ruby = 650 girersen Ruby kullanan tüm reçeteler 650 hedefini kullanır. Boş bırakırsan canlı alış fiyatı kullanılır.</div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{x.economy.inputs.map(inp=><label key={inp.name}>{inp.name} <span style={{fontSize:9,color:'#8b949e'}}>canlı {fmt(inp.price)} GP</span> <input type="number" min="0" placeholder="Hedef alış" value={x.targets[inp.name]??''} onChange={e=>setV5BuyTargets(old=>{const next={...old};if(e.target.value==='')delete next[inp.name];else next[inp.name]=Math.max(0,Number(e.target.value));return next})}/></label>)}</div>
               {x.hasTarget&&<div style={{fontSize:10,marginTop:6}}>Hedef maliyet: <b>{fmt(x.targetInputCost)} GP</b> • Hedef kâr/adet: <b>{fmt(x.targetProfitEach)} GP</b> • Hedef GP/h: <b>{fmt(x.targetGpHour)}</b></div>}
             </div>}
             <div style={{fontSize:9,color:'#8b949e',marginTop:5}}>Orijinal theory: {fmt(x.theoryRate)}/h • {fmt(x.theoryGpHour)} GP/h. GP/h override yoksa ve canlı reçete/fiyat mevcutsa sistem canlı GE kârını × rate/h kullanır; canlı model yoksa theory'ye döner.</div><div style={{fontSize:10,marginTop:5}}>{x.economy.hasPrices?<><b>Canlı fiyat:</b> {x.economy.inputText||'Girdi yok'} → {x.economy.outputText} • <b>{fmt(x.economy.profitEach)} GP/adet</b></>:<><b>Canlı fiyat modeli:</b> henüz eksik. Bu kayıtta GP/h THEORY/override üzerinden kalır.</>}</div>
