@@ -1868,18 +1868,20 @@ export default function App() {
     return {...a,edit,current,open,gp,rate,source:edit.measuredGpHour!==undefined||edit.measuredRate!==undefined?'MEASURED':edit.theoryGpHour!==undefined||edit.theoryRate!==undefined?'USER THEORY':'THEORY'}
   }),[mode,levels,v5Edits])
   const legacyMeasuredRanking=useMemo(()=>{
-    const recipeRows=rows.filter(r=>r.unlocked&&r.netPerHour>0).map(r=>({
-      id:`legacy-recipe-${r.id}`,name:r.name,skills:[r.skill],level:r.level,kind:'PROCESSING',gp:r.netPerHour,
-      rate:r.actualPerHour,source:r.measured?'MEASURED':'LIVE/ESTIMATE',attention:r.attention||'MEDIUM',member:r.membersOnly,
-      open:true,xpHour:r.xpPerHour||0,pages:[] as V5PageId[],legacy:true
+    const recipeRows=rows.filter(r=>r.unlocked&&(r.gpHour??0)>0).map(r=>({
+      id:`legacy-recipe-${r.id}`,name:r.name,skills:[r.skill],level:r.level,kind:'PROCESSING',
+      gp:r.gpHour??0,rate:r.planningItemsPerHour,source:r.speedSource==='GERÇEK'?'MEASURED':'LIVE/ESTIMATE',
+      attention:r.attentionLevel||'MEDIUM',member:!r.f2p,open:true,xpHour:r.xpHour||0,
+      pages:[] as V5PageId[],legacy:true
     }))
-    const gatheringRows=gatherRows.filter(r=>r.unlocked&&r.netPerHour>0).map(r=>({
-      id:`legacy-gather-${r.id}`,name:r.name,skills:[r.skill],level:r.level,kind:'GATHERING',gp:r.netPerHour,
-      rate:r.actualPerHour,source:r.measured?'MEASURED':'LIVE/ESTIMATE',attention:r.attention||'MEDIUM',member:r.membersOnly,
-      open:true,xpHour:r.xpPerHour||0,pages:[] as V5PageId[],legacy:true
+    const gatherLegacy=gatheringRows.filter(r=>r.unlocked&&(r.gpHour??0)>0).map(r=>({
+      id:`legacy-gather-${r.id}`,name:r.name,skills:[r.skill],level:r.requiredLevel,kind:'GATHERING',
+      gp:r.gpHour??0,rate:r.planningItemsPerHour,source:r.speedSource==='GERÇEK'?'MEASURED':'LIVE/ESTIMATE',
+      attention:r.attentionLevel||'MEDIUM',member:!r.f2p,open:true,xpHour:r.xpHour||0,
+      pages:[] as V5PageId[],legacy:true
     }))
-    return [...recipeRows,...gatheringRows]
-  },[rows,gatherRows])
+    return [...recipeRows,...gatherLegacy]
+  },[rows,gatheringRows])
   const unifiedRanking=useMemo(()=>{
     const v5=v5Rows.filter(x=>x.open&&x.gp>0).map(x=>({...x,legacy:false}))
     const all=[...v5,...legacyMeasuredRanking]
@@ -1970,7 +1972,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.2 — Unified Ranking Engine</h1>
+          <h1>OSRS Economy Scanner V5.2.2 — Unified Ranking Build Fix</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
