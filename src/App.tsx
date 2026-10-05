@@ -1867,7 +1867,35 @@ export default function App() {
     const rate=edit.measuredRate??edit.theoryRate??a.theoryRate
     return {...a,edit,current,open,gp,rate,source:edit.measuredGpHour!==undefined||edit.measuredRate!==undefined?'MEASURED':edit.theoryGpHour!==undefined||edit.theoryRate!==undefined?'USER THEORY':'THEORY'}
   }),[mode,levels,v5Edits])
-  const v5Top=useMemo(()=>v5Rows.filter(x=>x.open&&x.gp>0).sort((a,b)=>b.gp-a.gp).slice(0,10),[v5Rows])
+  const legacyMeasuredRanking=useMemo(()=>{
+    const recipeRows=rows.filter(r=>r.unlocked&&r.netPerHour>0).map(r=>({
+      id:`legacy-recipe-${r.id}`,name:r.name,skills:[r.skill],level:r.level,kind:'PROCESSING',gp:r.netPerHour,
+      rate:r.actualPerHour,source:r.measured?'MEASURED':'LIVE/ESTIMATE',attention:r.attention||'MEDIUM',member:r.membersOnly,
+      open:true,xpHour:r.xpPerHour||0,pages:[] as V5PageId[],legacy:true
+    }))
+    const gatheringRows=gatherRows.filter(r=>r.unlocked&&r.netPerHour>0).map(r=>({
+      id:`legacy-gather-${r.id}`,name:r.name,skills:[r.skill],level:r.level,kind:'GATHERING',gp:r.netPerHour,
+      rate:r.actualPerHour,source:r.measured?'MEASURED':'LIVE/ESTIMATE',attention:r.attention||'MEDIUM',member:r.membersOnly,
+      open:true,xpHour:r.xpPerHour||0,pages:[] as V5PageId[],legacy:true
+    }))
+    return [...recipeRows,...gatheringRows]
+  },[rows,gatherRows])
+  const unifiedRanking=useMemo(()=>{
+    const v5=v5Rows.filter(x=>x.open&&x.gp>0).map(x=>({...x,legacy:false}))
+    const all=[...v5,...legacyMeasuredRanking]
+    const priority=(s:string)=>s==='MEASURED'?3:s==='USER THEORY'?2:s==='GERÇEK'?3:s==='LIVE/ESTIMATE'?2:1
+    const byName=new Map<string,any>()
+    all.forEach(x=>{
+      const key=x.name.trim().toLowerCase()
+      const prev=byName.get(key)
+      if(!prev||priority(x.source)>priority(prev.source)||(priority(x.source)===priority(prev.source)&&x.gp>prev.gp)) byName.set(key,x)
+    })
+    return Array.from(byName.values()).sort((a,b)=>{
+      const d=b.gp-a.gp
+      return d!==0?d:priority(b.source)-priority(a.source)
+    })
+  },[v5Rows,legacyMeasuredRanking])
+  const v5Top=useMemo(()=>unifiedRanking.slice(0,10),[unifiedRanking])
   const v5PageRows=useMemo(()=>{
     const rows=v5Rows
       .filter(x=>x.pages.includes(v5Page))
@@ -1880,16 +1908,14 @@ export default function App() {
       .filter(x=>!v5Search.trim()||[x.name,x.kind,x.input,x.output,x.note,x.edit.note].join(' ').toLowerCase().includes(v5Search.toLowerCase()))
     return rows.sort((a,b)=>v5Sort==='GP_ASC'?a.gp-b.gp:v5Sort==='LEVEL_ASC'?a.level-b.level:v5Sort==='RATE_DESC'?b.rate-a.rate:(b.gp-a.gp))
   },[v5Rows,v5Page,v5ShowLocked,v5Search,v5AccessFilter,v5KindFilter,v5AttentionFilter,v5DataFilter,v5ProfitFilter,v5Sort])
-  const v5MoneySkills=useMemo(()=>Array.from(new Set(v5Rows.flatMap(x=>x.skills))).sort(),[v5Rows])
-  const v5MoneyRows=useMemo(()=>v5Rows
-    .filter(x=>x.open)
-    .filter(x=>x.gp>0)
+  const v5MoneySkills=useMemo(()=>Array.from(new Set([...v5Rows,...legacyMeasuredRanking].flatMap(x=>x.skills))).sort(),[v5Rows,legacyMeasuredRanking])
+  const v5MoneyRows=useMemo(()=>unifiedRanking
     .filter(x=>v5MoneySkill==='ALL'||x.skills.includes(v5MoneySkill))
     .filter(x=>v5MoneyKind==='ALL'||x.kind===v5MoneyKind)
     .filter(x=>v5MoneyAttention==='ALL'||x.attention===v5MoneyAttention)
-    .filter(x=>v5MoneyData==='ALL'||x.source===v5MoneyData)
-    .filter(x=>!v5MoneySearch.trim()||[x.name,x.kind,x.input,x.output,x.note,x.edit.note].join(' ').toLowerCase().includes(v5MoneySearch.toLowerCase()))
-    .sort((a,b)=>b.gp-a.gp),[v5Rows,v5MoneySkill,v5MoneyKind,v5MoneyAttention,v5MoneyData,v5MoneySearch])
+    .filter(x=>v5MoneyData==='ALL'||x.source===v5MoneyData||(v5MoneyData==='MEASURED'&&(x.source==='GERÇEK'||x.source==='MEASURED')))
+    .filter(x=>!v5MoneySearch.trim()||[x.name,x.kind,(x.input||''),(x.output||''),(x.note||''),(x.edit?.note||'')].join(' ').toLowerCase().includes(v5MoneySearch.toLowerCase()))
+  ,[unifiedRanking,v5MoneySkill,v5MoneyKind,v5MoneyAttention,v5MoneyData,v5MoneySearch])
   const v5PageInfo=V5_PAGES.find(p=>p.id===v5Page)!
   const v5Update=(id:string,patch:Partial<V5Edit>)=>setV5Edits(old=>({...old,[id]:{...(old[id]||{}),...patch}}))
   const v5Reset=(id:string)=>setV5Edits(old=>{const n={...old};delete n[id];return n})
@@ -1944,7 +1970,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.1 — Unified Skill Economy</h1>
+          <h1>OSRS Economy Scanner V5.2 — Unified Ranking Engine</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -1977,8 +2003,8 @@ export default function App() {
                 </div>
               </section>
               <section style={{marginBottom:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
-                <h3 style={{marginTop:0}}>V5 — Full Economy Top 10</h3>
-                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Tüm V5 katalog havuzu taranır. THEORY kaba başlangıç verisidir; USER THEORY ve MEASURED override'ları otomatik öncelik alır.</div>
+                <h3 style={{marginTop:0}}>V5.2 — Unified Economy Top 10</h3>
+                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Tüm ekonomi havuzu birlikte taranır: mevcut gerçek V4 ölçümleri + V5 kayıtları. Aynı yöntemde öncelik MEASURED/GERÇEK > USER THEORY/LIVE > THEORY; sıralama efektif GP/h ile yapılır.</div>
                 <div className="tableBox"><table><thead><tr><th>#</th><th>Activity</th><th>Skill</th><th>Tür</th><th>GP/h</th><th>Rate/h</th><th>Kaynak</th></tr></thead><tbody>
                 {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}</td><td>{x.skills.join(', ')} {x.level}</td><td>{x.kind}</td><td>{fmt(x.gp)}</td><td>{fmt(x.rate)}</td><td>{x.source}</td></tr>)}
                 {!v5Top.length&&<tr><td colSpan={7}>Mevcut level/mod ile pozitif GP/h adayı yok.</td></tr>}
