@@ -2004,7 +2004,7 @@ export default function App() {
               </section>
               <section style={{marginBottom:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
                 <h3 style={{marginTop:0}}>V5.2 — Unified Economy Top 10</h3>
-                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Tüm ekonomi havuzu birlikte taranır: mevcut gerçek V4 ölçümleri + V5 kayıtları. Aynı yöntemde öncelik MEASURED/GERÇEK > USER THEORY/LIVE > THEORY; sıralama efektif GP/h ile yapılır.</div>
+                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Tüm ekonomi havuzu birlikte taranır: mevcut gerçek V4 ölçümleri + V5 kayıtları. Aynı yöntemde öncelik MEASURED/GERÇEK {'>'} USER THEORY/LIVE {'>'} THEORY; sıralama efektif GP/h ile yapılır.</div>
                 <div className="tableBox"><table><thead><tr><th>#</th><th>Activity</th><th>Skill</th><th>Tür</th><th>GP/h</th><th>Rate/h</th><th>Kaynak</th></tr></thead><tbody>
                 {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}</td><td>{x.skills.join(', ')} {x.level}</td><td>{x.kind}</td><td>{fmt(x.gp)}</td><td>{fmt(x.rate)}</td><td>{x.source}</td></tr>)}
                 {!v5Top.length&&<tr><td colSpan={7}>Mevcut level/mod ile pozitif GP/h adayı yok.</td></tr>}
