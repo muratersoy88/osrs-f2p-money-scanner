@@ -1207,6 +1207,17 @@ export default function App() {
   const [v5ShowLocked,setV5ShowLocked]=useState(true)
   const [v5Edits,setV5Edits]=useState<Record<string,V5Edit>>(()=>{try{return JSON.parse(localStorage.getItem('osrs-v5-edits')||'{}')}catch{return{}}})
   const [v5Editing,setV5Editing]=useState<string|null>(null)
+  const [v5AccessFilter,setV5AccessFilter]=useState('ALL')
+  const [v5KindFilter,setV5KindFilter]=useState('ALL')
+  const [v5AttentionFilter,setV5AttentionFilter]=useState('ALL')
+  const [v5DataFilter,setV5DataFilter]=useState('ALL')
+  const [v5ProfitFilter,setV5ProfitFilter]=useState('ALL')
+  const [v5Sort,setV5Sort]=useState('GP_DESC')
+  const [v5MoneySkill,setV5MoneySkill]=useState('ALL')
+  const [v5MoneyKind,setV5MoneyKind]=useState('ALL')
+  const [v5MoneyAttention,setV5MoneyAttention]=useState('ALL')
+  const [v5MoneyData,setV5MoneyData]=useState('ALL')
+  const [v5MoneySearch,setV5MoneySearch]=useState('')
   const [v4Page, setV4Page] = useState(1)
   const V4_PAGE_SIZE = 30
   const [measurementHistory, setMeasurementHistory] = useState<Record<string,Measurement[]>>(() => {
@@ -1857,7 +1868,28 @@ export default function App() {
     return {...a,edit,current,open,gp,rate,source:edit.measuredGpHour!==undefined||edit.measuredRate!==undefined?'MEASURED':edit.theoryGpHour!==undefined||edit.theoryRate!==undefined?'USER THEORY':'THEORY'}
   }),[mode,levels,v5Edits])
   const v5Top=useMemo(()=>v5Rows.filter(x=>x.open&&x.gp>0).sort((a,b)=>b.gp-a.gp).slice(0,10),[v5Rows])
-  const v5PageRows=useMemo(()=>v5Rows.filter(x=>x.pages.includes(v5Page)).filter(x=>v5ShowLocked||x.open).filter(x=>!v5Search.trim()||[x.name,x.kind,x.input,x.output,x.note,x.edit.note].join(' ').toLowerCase().includes(v5Search.toLowerCase())).sort((a,b)=>(Number(b.open)-Number(a.open))||(b.gp-a.gp)),[v5Rows,v5Page,v5ShowLocked,v5Search])
+  const v5PageRows=useMemo(()=>{
+    const rows=v5Rows
+      .filter(x=>x.pages.includes(v5Page))
+      .filter(x=>v5ShowLocked||x.open)
+      .filter(x=>v5AccessFilter==='ALL'||(v5AccessFilter==='F2P'?!x.member:x.member))
+      .filter(x=>v5KindFilter==='ALL'||x.kind===v5KindFilter)
+      .filter(x=>v5AttentionFilter==='ALL'||x.attention===v5AttentionFilter)
+      .filter(x=>v5DataFilter==='ALL'||x.source===v5DataFilter)
+      .filter(x=>v5ProfitFilter==='ALL'||(v5ProfitFilter==='PROFIT'?x.gp>0:x.gp<=0))
+      .filter(x=>!v5Search.trim()||[x.name,x.kind,x.input,x.output,x.note,x.edit.note].join(' ').toLowerCase().includes(v5Search.toLowerCase()))
+    return rows.sort((a,b)=>v5Sort==='GP_ASC'?a.gp-b.gp:v5Sort==='LEVEL_ASC'?a.level-b.level:v5Sort==='RATE_DESC'?b.rate-a.rate:(b.gp-a.gp))
+  },[v5Rows,v5Page,v5ShowLocked,v5Search,v5AccessFilter,v5KindFilter,v5AttentionFilter,v5DataFilter,v5ProfitFilter,v5Sort])
+  const v5MoneySkills=useMemo(()=>Array.from(new Set(v5Rows.flatMap(x=>x.skills))).sort(),[v5Rows])
+  const v5MoneyRows=useMemo(()=>v5Rows
+    .filter(x=>x.open)
+    .filter(x=>x.gp>0)
+    .filter(x=>v5MoneySkill==='ALL'||x.skills.includes(v5MoneySkill))
+    .filter(x=>v5MoneyKind==='ALL'||x.kind===v5MoneyKind)
+    .filter(x=>v5MoneyAttention==='ALL'||x.attention===v5MoneyAttention)
+    .filter(x=>v5MoneyData==='ALL'||x.source===v5MoneyData)
+    .filter(x=>!v5MoneySearch.trim()||[x.name,x.kind,x.input,x.output,x.note,x.edit.note].join(' ').toLowerCase().includes(v5MoneySearch.toLowerCase()))
+    .sort((a,b)=>b.gp-a.gp),[v5Rows,v5MoneySkill,v5MoneyKind,v5MoneyAttention,v5MoneyData,v5MoneySearch])
   const v5PageInfo=V5_PAGES.find(p=>p.id===v5Page)!
   const v5Update=(id:string,patch:Partial<V5Edit>)=>setV5Edits(old=>({...old,[id]:{...(old[id]||{}),...patch}}))
   const v5Reset=(id:string)=>setV5Edits(old=>{const n={...old};delete n[id];return n})
@@ -1912,7 +1944,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.0 — Full Economy Database</h1>
+          <h1>OSRS Economy Scanner V5.1 — Unified Skill Economy</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -1935,6 +1967,15 @@ export default function App() {
       {error && <div className="error">{error}</div>}
 
             {activeTab==='dashboard'&&<div>
+              <section style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+                <h3 style={{marginTop:0,marginBottom:8}}>Skill Seviyelerim</h3>
+                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Buradaki seviyeler Dashboard, 21 Skill Views ve Money Methods sonuçlarını birlikte günceller.</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:7}}>
+                  {Object.keys(levels).map(s=><label key={s} style={{display:'flex',alignItems:'center',gap:4,fontSize:11}}>{s}
+                    <input type="number" min="1" max="99" value={levels[s]} onChange={e=>setLevels(old=>({...old,[s]:clamp(Number(e.target.value),1,99)}))} style={{width:50,background:'#0d1117',color:'white',border:'1px solid #30363d',borderRadius:4,padding:4}}/>
+                  </label>)}
+                </div>
+              </section>
               <section style={{marginBottom:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
                 <h3 style={{marginTop:0}}>V5 — Full Economy Top 10</h3>
                 <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Tüm V5 katalog havuzu taranır. THEORY kaba başlangıç verisidir; USER THEORY ve MEASURED override'ları otomatik öncelik alır.</div>
@@ -2138,9 +2179,16 @@ export default function App() {
           <div style={{display:'flex',gap:5,flexWrap:'wrap',marginBottom:10}}>
             {V5_PAGES.map(p=><button type="button" key={p.id} onClick={()=>setV5Page(p.id)} style={{fontWeight:v5Page===p.id?800:500,outline:v5Page===p.id?'2px solid #58a6ff':'none'}}>{p.label}</button>)}
           </div>
-          <div style={{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap',alignItems:'center'}}>
-            <div><b>{v5PageInfo.label}</b> <span style={{fontSize:10,color:'#8b949e'}}>({v5PageInfo.skills.join(' + ')})</span></div>
-            <div style={{display:'flex',gap:8}}><input value={v5Search} onChange={e=>setV5Search(e.target.value)} placeholder="Bu sayfada ara..."/><label style={{fontSize:10}}><input type="checkbox" checked={v5ShowLocked} onChange={e=>setV5ShowLocked(e.target.checked)}/> LOCKED göster</label></div>
+          <div><b>{v5PageInfo.label}</b> <span style={{fontSize:10,color:'#8b949e'}}>({v5PageInfo.skills.join(' + ')})</span></div>
+          <div style={{display:'flex',gap:7,flexWrap:'wrap',alignItems:'center',marginTop:8}}>
+            <input value={v5Search} onChange={e=>setV5Search(e.target.value)} placeholder="Bu sayfada ara..."/>
+            <select value={v5AccessFilter} onChange={e=>setV5AccessFilter(e.target.value)}><option value="ALL">F2P + Member</option><option value="F2P">F2P</option><option value="MEMBER">Member</option></select>
+            <select value={v5KindFilter} onChange={e=>setV5KindFilter(e.target.value)}><option value="ALL">Tüm türler</option><option>GATHERING</option><option>PROCESSING</option><option>COMBAT</option><option>TRAINING</option><option>RECURRING</option><option>UTILITY</option></select>
+            <select value={v5AttentionFilter} onChange={e=>setV5AttentionFilter(e.target.value)}><option value="ALL">Tüm dikkat</option><option>AFK</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option></select>
+            <select value={v5DataFilter} onChange={e=>setV5DataFilter(e.target.value)}><option value="ALL">Tüm veri</option><option value="THEORY">THEORY</option><option value="USER THEORY">USER THEORY</option><option value="MEASURED">MEASURED</option></select>
+            <select value={v5ProfitFilter} onChange={e=>setV5ProfitFilter(e.target.value)}><option value="ALL">Kâr/Zarar: Tümü</option><option value="PROFIT">Kârlı</option><option value="LOSS">Zarar / 0</option></select>
+            <select value={v5Sort} onChange={e=>setV5Sort(e.target.value)}><option value="GP_DESC">GP/h ↓</option><option value="GP_ASC">GP/h ↑</option><option value="LEVEL_ASC">Level ↑</option><option value="RATE_DESC">Rate/h ↓</option></select>
+            <label style={{fontSize:10}}><input type="checkbox" checked={v5ShowLocked} onChange={e=>setV5ShowLocked(e.target.checked)}/> LOCKED göster</label>
           </div>
           <div style={{fontSize:10,color:'#8b949e',margin:'7px 0'}}>Kayıt: {v5PageRows.length} • OPEN {v5PageRows.filter(x=>x.open).length}. THEORY değerleri başlangıç planlama tahminidir; Edit ile theory/measurement değerlerini değiştirebilirsin.</div>
           <div className="tableBox"><table><thead><tr><th>Activity</th><th>F2P/P2P</th><th>Level</th><th>Tür</th><th>Theory GP/h</th><th>Effective GP/h</th><th>Rate/h</th><th>XP/h</th><th>Dikkat</th><th>Durum</th><th>Veri</th><th>Edit</th></tr></thead><tbody>
@@ -2167,6 +2215,24 @@ export default function App() {
       </div>}
 
       {activeTab==='money'&&<div>
+        <section style={{marginBottom:12,padding:12,border:'1px solid #58a6ff',borderRadius:8}}>
+          <h3 style={{marginTop:0}}>V5 Money Methods — Full Database Ranking</h3>
+          <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Bu tablo artık 21 skill görünümündeki aynı V5 activity kayıtlarından otomatik oluşur. Skill level değişince OPEN havuz ve sıralama anında değişir.</div>
+          <div style={{display:'flex',gap:7,flexWrap:'wrap',marginBottom:8}}>
+            <input value={v5MoneySearch} onChange={e=>setV5MoneySearch(e.target.value)} placeholder="Money method ara..."/>
+            <select value={v5MoneySkill} onChange={e=>setV5MoneySkill(e.target.value)}><option value="ALL">Tüm skill'ler</option>{v5MoneySkills.map(s=><option key={s}>{s}</option>)}</select>
+            <select value={v5MoneyKind} onChange={e=>setV5MoneyKind(e.target.value)}><option value="ALL">Tüm türler</option><option>GATHERING</option><option>PROCESSING</option><option>COMBAT</option><option>TRAINING</option><option>RECURRING</option><option>UTILITY</option></select>
+            <select value={v5MoneyAttention} onChange={e=>setV5MoneyAttention(e.target.value)}><option value="ALL">Tüm dikkat</option><option>AFK</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option></select>
+            <select value={v5MoneyData} onChange={e=>setV5MoneyData(e.target.value)}><option value="ALL">Theory + Measured</option><option value="THEORY">THEORY</option><option value="USER THEORY">USER THEORY</option><option value="MEASURED">MEASURED</option></select>
+          </div>
+          <div style={{fontSize:10,marginBottom:6}}>OPEN + pozitif GP/h: <b>{v5MoneyRows.length}</b> yöntem. Örn. Herblore level yükseldiğinde uygun potion kayıtları burada otomatik açılır.</div>
+          <div className="tableBox"><table><thead><tr><th>#</th><th>Yöntem</th><th>Skill</th><th>Tür</th><th>GP/h</th><th>Rate/h</th><th>XP/h</th><th>Dikkat</th><th>Veri</th><th>F2P/P2P</th></tr></thead><tbody>
+          {v5MoneyRows.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}<div style={{fontSize:9,color:'#8b949e'}}>{x.input?`In: ${x.input}`:''}{x.output?` → Out: ${x.output}`:''}</div></td><td>{x.skills.join(', ')} {x.level}</td><td>{x.kind}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{fmt(x.xpHour)}</td><td>{x.attention}</td><td>{x.source}</td><td>{x.member?'MEMBER':'F2P'}</td></tr>)}
+          {!v5MoneyRows.length&&<tr><td colSpan={10}>Filtrelere uyan OPEN ve pozitif GP/h yöntemi yok.</td></tr>}
+          </tbody></table></div>
+        </section>
+        <details>
+          <summary style={{cursor:'pointer',fontWeight:700,marginBottom:8}}>Legacy V4 Money Methods (canlı GE hesapları)</summary>
 <section className="filters" id="money-methods">
         <label>
           <input
@@ -2257,75 +2323,6 @@ export default function App() {
           <option value="level">Level ↑</option>
         </select>
       </section>
-
-      <div
-        style={{
-          marginTop: 10,
-          padding: 10,
-          background: '#161b22',
-          border: '1px solid #30363d',
-          borderRadius: 7,
-        }}
-      >
-        <div
-          style={{
-            fontWeight: 'bold',
-            marginBottom: 8,
-            color: '#e3b341',
-            fontSize: 12,
-          }}
-        >
-          Skill Seviyelerim
-        </div>
-
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 7,
-          }}
-        >
-          {Object.keys(levels).map((s) => (
-            <label
-              key={s}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                fontSize: 11,
-              }}
-            >
-              {s}
-              <input
-                type="number"
-                min="1"
-                max="99"
-                value={levels[s]}
-                onChange={(e) => {
-                  const n = clamp(
-                    Number(e.target.value),
-                    1,
-                    99
-                  )
-
-                  setLevels((old) => ({
-                    ...old,
-                    [s]: n,
-                  }))
-                }}
-                style={{
-                  width: 50,
-                  background: '#0d1117',
-                  color: 'white',
-                  border: '1px solid #30363d',
-                  borderRadius: 4,
-                  padding: 4,
-                }}
-              />
-            </label>
-          ))}
-        </div>
-      </div>
 
       <div className="explain">
         <b>Input:</b> Wiki HIGH = hızlı alış &nbsp;•&nbsp;
@@ -2784,7 +2781,8 @@ export default function App() {
       </tbody></table></div>
 
 
-            </div>}
+            </details>
+      </div>}
 
       {activeTab==='planner'&&<div>
 <section id="account-planner" style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}}>
