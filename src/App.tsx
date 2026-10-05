@@ -1859,7 +1859,7 @@ export default function App() {
 
 
 
-  const v5LiveEconomy=(a:V5Activity)=>{
+  const v5LiveEconomy=(a:(typeof V5_CATALOGUE)[number])=>{
     type Leg={name:string;qty:number;price:number|null}
     let inputs:Leg[]=[]
     let outputName:string|undefined=a.output
@@ -1870,8 +1870,8 @@ export default function App() {
 
     // Exact 1:1 / explicit V5 recipes.
     if(a.input&&a.output){
-      const parts=a.input.split('+').map(s=>s.trim()).filter(Boolean)
-      addInputs(parts.map(name=>({name,qty:1})))
+      const parts=a.input.split('+').map((s:string)=>s.trim()).filter(Boolean)
+      addInputs(parts.map((name:string)=>({name,qty:1})))
     }
 
     // Generated smithing equipment: V5 text previously omitted the real bar quantity.
@@ -2048,7 +2048,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.3 — Live GE Economy Integration</h1>
+          <h1>OSRS Economy Scanner V5.3.1 — Live GE Build Fix</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
