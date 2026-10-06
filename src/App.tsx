@@ -2147,11 +2147,15 @@ export default function App() {
     const targetProfitEach=hasTarget&&targetInputCost!==null&&economy.outputNet!==null?economy.outputNet-targetInputCost:null
     const targetGpHour=targetProfitEach!==null&&rate>0?targetProfitEach*rate:null
     const targetCapital=targetInputCost!==null?targetInputCost*Math.max(1,Math.floor(rate)):null
-    // Legacy GP/h fields remain readable as backward-compatible explicit overrides. New UI writes gpOverride.
-    const manualGpOverride=edit.gpOverride??edit.measuredGpHour??edit.theoryGpHour
+    // GP/h is DERIVED from current live profit × Effective Rate whenever both are available.
+    // Only the explicit gpOverride field may intentionally replace that automatic value.
+    // Old measuredGpHour/theoryGpHour edit fields are retained in localStorage for backward compatibility,
+    // but must never freeze a live calculation after GE prices change.
+    const manualGpOverride=edit.gpOverride
     const quality=a.quality||'NEEDS_VERIFICATION'
     const rankableQuality=quality==='VERIFIED'
-    const gp=manualGpOverride??liveGp??(rankableQuality?a.theoryGpHour:0)
+    const automaticEffectiveGpHour=liveGp
+    const gp=manualGpOverride??automaticEffectiveGpHour??(rankableQuality?a.theoryGpHour:0)
     const source=manualGpOverride!==undefined?'MANUAL OVERRIDE':rateSource
 
     const outputVolume24h=economy.outputName?volume(economy.outputName):null
@@ -2176,12 +2180,13 @@ export default function App() {
     const marketCapacityPerDay=Math.min(outputMarketCap,...(inputCaps.length?inputCaps:[Infinity]))
     const productionCapacityPerDay=rate>0?rate*Math.max(1,dailyMaxHours):0
     const capacityFactor=productionCapacityPerDay>0&&Number.isFinite(marketCapacityPerDay)?Math.max(0,Math.min(1,marketCapacityPerDay/productionCapacityPerDay)):1
-    const capacityAdjustedGpHour=gp*capacityFactor
+    const capacityBaseGpHour=manualGpOverride??automaticEffectiveGpHour??gp
+    const capacityAdjustedGpHour=capacityBaseGpHour*capacityFactor
     const sustainableHoursPerDay=rate>0&&Number.isFinite(marketCapacityPerDay)?marketCapacityPerDay/rate:null
     const baseLiquidityScore=outputVolume24h===null?null:batchVolumePct!==null?(batchVolumePct<=1?100:batchVolumePct<=5?80:batchVolumePct<=15?60:batchVolumePct<=35?40:20):null
     const liquidityScore=baseLiquidityScore===null?null:Math.max(0,Math.min(100,baseLiquidityScore+(histFillRatio===null?0:(histFillRatio-.5)*30*historyWeight)-(avgSellFillHours!==null&&avgSellFillHours>24?15*historyWeight:0)))
     const liquidityLabel=liquidityScore===null?'DATA REQUIRED':liquidityScore>=80?'HIGH':liquidityScore>=50?'MEDIUM':'LOW'
-    return {...a,edit,current,open,gp,rate,rateSource,source,quality,rankableQuality,economy,liveGp,theoryGpHour,measuredGpHour,measuredRate,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital,manualGpOverride,outputVolume24h,batchSize,batchVolumePct,marketCapacityPerDay,productionCapacityPerDay,capacityFactor,capacityAdjustedGpHour,sustainableHoursPerDay,liquidityScore,liquidityLabel,calibratedParticipation,histFillRatio,avgSellFillHours}
+    return {...a,edit,current,open,gp,rate,rateSource,source,quality,rankableQuality,economy,liveGp,automaticEffectiveGpHour,theoryGpHour,measuredGpHour,measuredRate,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital,manualGpOverride,outputVolume24h,batchSize,batchVolumePct,marketCapacityPerDay,productionCapacityPerDay,capacityFactor,capacityAdjustedGpHour,sustainableHoursPerDay,liquidityScore,liquidityLabel,calibratedParticipation,histFillRatio,avgSellFillHours}
   }),[mode,levels,v5Edits,v5BuyTargets,prices,mapping,volumes,measurementHistory,dailyMaxHours,smartQty,orderHistory])
   type SmartRecipeRow={
     id:string;name:string;skill:string;level:number;member:boolean;open:boolean;status:string;requirements:string[];
@@ -2429,7 +2434,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.8.1 — Economy Engine Fix</h1>
+          <h1>OSRS Economy Scanner V5.8.2 — Live GP/h Recalculation Fix</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
