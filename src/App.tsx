@@ -1083,12 +1083,15 @@ const loadMethodData = (): Record<string, MethodUserData> => {
     if (!parsed[steelId] || parsed[steelId].actualItemsPerHour === 491) {
       parsed[steelId] = { ...(parsed[steelId] || {}), actualItemsPerHour: 453, measuredQuantity: 800, measuredMinutes: 106 }
     }
+    const sapphireId = recipeId('Sapphire amulet (u)')
+    if (!parsed[sapphireId] || !(parsed[sapphireId].actualItemsPerHour > 0)) parsed[sapphireId] = { ...(parsed[sapphireId] || {}), actualItemsPerHour: 880 }
     const anchovyId = recipeId('Raw anchovies → Anchovies')
     if (!parsed[anchovyId]) parsed[anchovyId] = { actualItemsPerHour: 1080, measuredQuantity: 504, measuredMinutes: 28, actualSuccessByLevel: { '28': { total:504, successful:495, burnt:9, rate:495/504 } } }
     return parsed
   } catch {
     return {
       [recipeId('Iron + 2 Coal → Steel bar')]: { actualItemsPerHour: 453, measuredQuantity: 800, measuredMinutes: 106 },
+      [recipeId('Sapphire amulet (u)')]: { actualItemsPerHour: 880 },
       [recipeId('Raw anchovies → Anchovies')]: { actualItemsPerHour: 1080, measuredQuantity: 504, measuredMinutes: 28, actualSuccessByLevel: { '28': { total:504, successful:495, burnt:9, rate:495/504 } } },
     }
   }
@@ -1246,6 +1249,7 @@ export default function App() {
   const [v5MoneyAttention,setV5MoneyAttention]=useState('ALL')
   const [v5MoneyData,setV5MoneyData]=useState('ALL')
   const [v5MoneySearch,setV5MoneySearch]=useState('')
+  const [v5IncludeUnverified,setV5IncludeUnverified]=useState(false)
   const [v4Page, setV4Page] = useState(1)
   const V4_PAGE_SIZE = 30
   const [measurementHistory, setMeasurementHistory] = useState<Record<string,Measurement[]>>(() => {
@@ -1361,6 +1365,31 @@ export default function App() {
   }
 
   useEffect(()=>{localStorage.setItem('osrs-v5-edits',JSON.stringify(v5Edits))},[v5Edits])
+  useEffect(()=>{
+    // Backward-compatible measurement migration: preserve legacy stores and mirror known measurements to canonical IDs.
+    setV5Edits(old=>{
+      const next={...old}; let changed=false
+      const mirror=(id:string,rate:number,note:string)=>{
+        const cur=next[id]||{}
+        if(!(cur.measuredRate&&cur.measuredRate>0)){next[id]={...cur,measuredRate:rate,note:cur.note||note};changed=true}
+      }
+      const sapphireLegacy=methodData[recipeId('Sapphire amulet (u)')]?.actualItemsPerHour
+      const steelLegacy=methodData[recipeId('Iron + 2 Coal → Steel bar')]?.actualItemsPerHour
+      mirror('econ-f2p-sapphire-amulet-u',sapphireLegacy&&sapphireLegacy>0?sapphireLegacy:880,'Gerçek kullanıcı ölçümü: 880/h')
+      mirror('econ-f2p-steel-bar',steelLegacy&&steelLegacy>0?steelLegacy:453,'800 adet gerçek test ≈453/h')
+      mirror('econ-f2p-uncooked-apple-pie',2278,'486 adet / 12:48 gerçek ölçüm')
+      return changed?next:old
+    })
+    setMeasurementHistory(old=>{
+      const next={...old};let changed=false
+      const add=(id:string,m:Measurement)=>{if(!(next[id]?.length)){next[id]=[m];changed=true}}
+      add('econ-f2p-sapphire-amulet-u',{date:new Date().toISOString(),skillLevel:24,quantity:880,minutes:60,itemsPerHour:880})
+      add('econ-f2p-steel-bar',{date:new Date().toISOString(),skillLevel:30,quantity:800,minutes:106,itemsPerHour:453})
+      add('econ-f2p-uncooked-apple-pie',{date:new Date().toISOString(),skillLevel:30,quantity:486,minutes:12.8,itemsPerHour:2278})
+      return changed?next:old
+    })
+  // Run once: never delete or reset legacy measurements.
+  },[])
   useEffect(()=>{localStorage.setItem('osrs-v5-global-buy-targets',JSON.stringify(v5BuyTargets))},[v5BuyTargets])
 
   useEffect(() => {
@@ -2085,32 +2114,75 @@ export default function App() {
     return {inputs,outputName,outputQty,inputCost,outputPrice,outputNet,profitEach,hasPrices,liveEligible,inputText,outputText}
   }
 
+  const resolveEffectiveRate=(a:(typeof V5_CATALOGUE)[number],edit:V5Edit)=>{
+    const history=measurementHistory[a.id]||[]
+    const weighted=weightedSpeed(history)
+    const measured=(edit.measuredRate&&edit.measuredRate>0)?edit.measuredRate:(weighted&&weighted>0?weighted:null)
+    if(measured!==null)return {rate:measured,source:'MEASURED' as const}
+    if(edit.levelAdjustedRate&&edit.levelAdjustedRate>0)return {rate:edit.levelAdjustedRate,source:'LEVEL MODEL' as const}
+    const theory=(edit.theoryRate??a.theoryRate)
+    if(a.quality==='VERIFIED'&&theory>0)return {rate:theory,source:'THEORY' as const}
+    if(theory>0)return {rate:theory,source:'ESTIMATE' as const}
+    return {rate:0,source:'ESTIMATE' as const}
+  }
+
   const v5Rows=useMemo(()=>V5_CATALOGUE.map(a=>{
     const edit=v5Edits[a.id]||{}
     const current=Math.max(...a.skills.map(s=>levels[s]||1))
     const open=(!a.member||mode==='MEMBER')&&current>=a.level
-    const rate=edit.measuredRate??edit.theoryRate??a.theoryRate
+    const resolved=resolveEffectiveRate(a,edit)
+    const rate=resolved.rate
+    const rateSource=resolved.source
     const economy=v5LiveEconomy(a)
-    const liveGp=economy.profitEach!==null?economy.profitEach*rate:null
+    const theoryRate=edit.theoryRate??a.theoryRate
+    const theoryGpHour=economy.profitEach!==null&&theoryRate>0?economy.profitEach*theoryRate:null
+    const measuredRate=edit.measuredRate??(weightedSpeed(measurementHistory[a.id]||[])||null)
+    const measuredGpHour=economy.profitEach!==null&&measuredRate!==null&&measuredRate>0?economy.profitEach*measuredRate:null
+    const liveGp=economy.profitEach!==null&&rate>0?economy.profitEach*rate:null
     const targets=v5BuyTargets
     const targetInputCost=economy.inputs.length&&economy.inputs.every(x=>(targets[x.name]??x.price)!==null)
-      ? economy.inputs.reduce((n,x)=>n+((targets[x.name]??x.price) as number)*x.qty,0)
+      ? economy.inputs.reduce((n,x)=>n+((targets[x.name]??x.price) as number)*x.qty,0)+(a.coinFee||0)
       : null
     const hasTarget=economy.inputs.some(x=>(targets[x.name]??0)>0)
     const targetProfitEach=hasTarget&&targetInputCost!==null&&economy.outputNet!==null?economy.outputNet-targetInputCost:null
-    const targetGpHour=targetProfitEach!==null?targetProfitEach*rate:null
+    const targetGpHour=targetProfitEach!==null&&rate>0?targetProfitEach*rate:null
     const targetCapital=targetInputCost!==null?targetInputCost*Math.max(1,Math.floor(rate)):null
-    const explicitGp=edit.measuredGpHour??edit.theoryGpHour
+    // Legacy GP/h fields remain readable as backward-compatible explicit overrides. New UI writes gpOverride.
+    const manualGpOverride=edit.gpOverride??edit.measuredGpHour??edit.theoryGpHour
     const quality=a.quality||'NEEDS_VERIFICATION'
-    const eligibleEconomicData=quality==='VERIFIED'||quality==='NEEDS_VERIFICATION'
-    const gp=explicitGp??(eligibleEconomicData?liveGp:null)??(quality==='VERIFIED'?a.theoryGpHour:0)
-    const source=edit.measuredGpHour!==undefined?'MEASURED'
-      :edit.theoryGpHour!==undefined?'USER THEORY'
-      :liveGp!==null?(edit.measuredRate!==undefined?'LIVE GE + MEASURED RATE':edit.theoryRate!==undefined?'LIVE GE + USER RATE':'LIVE GE + THEORY RATE')
-      :edit.measuredRate!==undefined?'MEASURED RATE / THEORY GP'
-      :edit.theoryRate!==undefined?'USER THEORY':'THEORY'
-    return {...a,edit,current,open,gp,rate,source,quality,eligibleEconomicData,economy,liveGp,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital}
-  }),[mode,levels,v5Edits,v5BuyTargets,prices,mapping])
+    const rankableQuality=quality==='VERIFIED'
+    const gp=manualGpOverride??liveGp??(rankableQuality?a.theoryGpHour:0)
+    const source=manualGpOverride!==undefined?'MANUAL OVERRIDE':rateSource
+
+    const outputVolume24h=economy.outputName?volume(economy.outputName):null
+    const batchSize=Math.max(1,smartQty)
+    const batchVolumePct=outputVolume24h&&outputVolume24h>0?batchSize/outputVolume24h*100:null
+    const inputCaps=economy.inputs.map(inp=>{
+      const vol=volume(inp.name)
+      const limit=Number(getItem(inp.name)?.limit||0)
+      const volumeCap=vol&&vol>0?vol*.05/inp.qty:Infinity
+      const limitCap=limit>0?limit*6/inp.qty:Infinity
+      return Math.min(volumeCap,limitCap)
+    })
+    const sellHistory=economy.outputName?orderHistory.filter(h=>h.item.toLowerCase()===economy.outputName!.toLowerCase()&&h.side==='SELL'&&h.quantity>0):[]
+    const sellEvidence=sellHistory.slice(-12)
+    const histFillRatio=sellEvidence.length?sellEvidence.reduce((n,h)=>n+Math.max(0,Math.min(1,h.filledQuantity/Math.max(1,h.quantity))),0)/sellEvidence.length:null
+    const histHours=sellEvidence.filter(h=>h.fillHours!==null)
+    const avgSellFillHours=histHours.length?histHours.reduce((n,h)=>n+(h.fillHours||0),0)/histHours.length:null
+    const historyWeight=Math.min(.7,sellEvidence.length/10*.7)
+    const baseParticipation=.05
+    const calibratedParticipation=histFillRatio===null?baseParticipation:Math.max(.015,Math.min(.15,baseParticipation*(1-historyWeight)+(baseParticipation*(.4+1.8*histFillRatio))*historyWeight))
+    const outputMarketCap=outputVolume24h&&outputVolume24h>0?outputVolume24h*calibratedParticipation/Math.max(1,economy.outputQty):Infinity
+    const marketCapacityPerDay=Math.min(outputMarketCap,...(inputCaps.length?inputCaps:[Infinity]))
+    const productionCapacityPerDay=rate>0?rate*Math.max(1,dailyMaxHours):0
+    const capacityFactor=productionCapacityPerDay>0&&Number.isFinite(marketCapacityPerDay)?Math.max(0,Math.min(1,marketCapacityPerDay/productionCapacityPerDay)):1
+    const capacityAdjustedGpHour=gp*capacityFactor
+    const sustainableHoursPerDay=rate>0&&Number.isFinite(marketCapacityPerDay)?marketCapacityPerDay/rate:null
+    const baseLiquidityScore=outputVolume24h===null?null:batchVolumePct!==null?(batchVolumePct<=1?100:batchVolumePct<=5?80:batchVolumePct<=15?60:batchVolumePct<=35?40:20):null
+    const liquidityScore=baseLiquidityScore===null?null:Math.max(0,Math.min(100,baseLiquidityScore+(histFillRatio===null?0:(histFillRatio-.5)*30*historyWeight)-(avgSellFillHours!==null&&avgSellFillHours>24?15*historyWeight:0)))
+    const liquidityLabel=liquidityScore===null?'DATA REQUIRED':liquidityScore>=80?'HIGH':liquidityScore>=50?'MEDIUM':'LOW'
+    return {...a,edit,current,open,gp,rate,rateSource,source,quality,rankableQuality,economy,liveGp,theoryGpHour,measuredGpHour,measuredRate,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital,manualGpOverride,outputVolume24h,batchSize,batchVolumePct,marketCapacityPerDay,productionCapacityPerDay,capacityFactor,capacityAdjustedGpHour,sustainableHoursPerDay,liquidityScore,liquidityLabel,calibratedParticipation,histFillRatio,avgSellFillHours}
+  }),[mode,levels,v5Edits,v5BuyTargets,prices,mapping,volumes,measurementHistory,dailyMaxHours,smartQty,orderHistory])
   type SmartRecipeRow={
     id:string;name:string;skill:string;level:number;member:boolean;open:boolean;status:string;requirements:string[];
     inputs:{name:string;qty:number}[];outputName:string|null;outputQty:number;xpEach:number|null;
@@ -2135,9 +2207,9 @@ export default function App() {
     })
     // V5 broad catalogue adds verified explicit input→output activities not already covered above.
     v5Rows.forEach(x=>{
-      if(!x.eligibleEconomicData||byName.has(x.name)||!x.economy.inputs.length||!x.economy.outputName)return
-      const measured=typeof x.edit.measuredRate==='number'&&x.edit.measuredRate>0
-      const rate:number|null=measured?(x.edit.measuredRate as number):(x.rate>0?x.rate:null)
+      if(x.quality!=='VERIFIED'||byName.has(x.name)||!x.economy.inputs.length||!x.economy.outputName)return
+      const measured=x.rateSource==='MEASURED'
+      const rate:number|null=x.rate>0?x.rate:null
       const reqText=(x as any).requirement
       const reqs=reqText?[String(reqText)]:[]
       const status=x.open?'✓ AÇIK':x.member&&mode==='F2P'?'🔒 MEMBERS':x.current<x.level?`🔒 ${x.skills.join('/')} ${x.level}`:reqs.length?`🔒 ${reqs.join(', ')}`:'🔒 LOCKED'
@@ -2173,7 +2245,12 @@ export default function App() {
     const batchProfit=profit*smartQty
     const xpBatch=selectedSmartRecipe.xpEach===null?null:selectedSmartRecipe.xpEach*smartQty
     const xpHour=selectedSmartRecipe.xpEach===null||rate===null?null:selectedSmartRecipe.xpEach*rate
-    return {inputAdv,outAdv,smartInputCost,grossSell,tax,netSell,profit,roi,rate,gpHour,batchProfit,xpBatch,xpHour}
+    const inputCapital=smartInputCost*smartQty
+    const expectedRevenue=netSell*smartQty
+    const productionMinutes=rate&&rate>0?smartQty/rate*60:null
+    const buyFillWindows=inputAdv.map(x=>x.adv!.buyFill.range)
+    const sellFillWindow=outAdv?.sellFill?.range||null
+    return {inputAdv,outAdv,smartInputCost,grossSell,tax,netSell,profit,roi,rate,gpHour,batchProfit,xpBatch,xpHour,inputCapital,expectedRevenue,productionMinutes,buyFillWindows,sellFillWindow}
   })():null
 
   const loadSmartRecipe=async()=>{
@@ -2198,8 +2275,13 @@ export default function App() {
     return [...recipeRows,...gatherLegacy]
   },[rows,gatheringRows])
   const unifiedRanking=useMemo(()=>{
-    const v5=v5Rows.filter(x=>x.open&&x.gp>0&&(x.eligibleEconomicData||x.edit.measuredGpHour!==undefined||x.edit.measuredRate!==undefined)).map(x=>({...x,legacy:false}))
-    const all=[...v5,...legacyMeasuredRanking]
+    const v5=v5Rows.filter(x=>x.open&&x.gp>0&&x.economy.hasPrices&&(x.quality==='VERIFIED'||v5IncludeUnverified)).map(x=>({...x,legacy:false}))
+    const canonicalVerified=v5Rows.filter(x=>x.quality==='VERIFIED')
+    const legacyFiltered=legacyMeasuredRanking.filter(l=>!canonicalVerified.some(c=>{
+      const ln=l.name.toLowerCase(),cn=c.name.toLowerCase(),out=(c.output||'').toLowerCase()
+      return ln===cn||(out.length>4&&ln.includes(out))||(cn.replace(/^(make|smelt|smith|cook|top)\s+/,'')===ln.replace(/^(make|smelt|smith|cook|top)\s+/,''))
+    }))
+    const all=[...v5,...(v5IncludeUnverified?legacyFiltered:[])]
     const priority=(s:string)=>s==='MEASURED'||s==='GERÇEK'||s==='LIVE GE + MEASURED RATE'?4:s.startsWith('LIVE GE')?3:s==='USER THEORY'||s==='LIVE/ESTIMATE'?2:1
     const byName=new Map<string,any>()
     all.forEach(x=>{
@@ -2211,7 +2293,7 @@ export default function App() {
       const d=b.gp-a.gp
       return d!==0?d:priority(b.source)-priority(a.source)
     })
-  },[v5Rows,legacyMeasuredRanking])
+  },[v5Rows,legacyMeasuredRanking,v5IncludeUnverified])
   const v5Top=useMemo(()=>unifiedRanking.slice(0,10),[unifiedRanking])
   const v5BuyOrderItems=useMemo(()=>{
     type RecipeUse={name:string;targetGpHour:number}
@@ -2220,7 +2302,7 @@ export default function App() {
       targetHit:boolean;bestTargetGpHour:number;recipes:RecipeUse[]
     }
     const byItem=new Map<string,ItemOpportunity>()
-    v5Rows.filter(x=>x.open&&x.eligibleEconomicData&&x.economy.hasPrices).forEach(x=>{
+    v5Rows.filter(x=>x.open&&x.quality==='VERIFIED'&&x.economy.hasPrices).forEach(x=>{
       x.economy.inputs.forEach(inp=>{
         const target=v5BuyTargets[inp.name]
         if(!(target>0)||inp.price===null) return
@@ -2347,7 +2429,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.8 — Coverage Audit</h1>
+          <h1>OSRS Economy Scanner V5.8.1 — Economy Engine Fix</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2391,11 +2473,12 @@ export default function App() {
                 </div>
               </section>
               <section style={{marginBottom:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
-                <h3 style={{marginTop:0}}>V5.3 — Live Economy Top 10</h3>
-                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Tüm ekonomi havuzu birlikte taranır. V5 reçetesi fiyatlandırılabiliyorsa canlı GE alış/satış fiyatı ve GE tax ile kâr hesaplanır; measured rate varsa canlı fiyat × measured rate kullanılır. Fiyat modeli olmayan kayıtta THEORY korunur.</div>
-                <div className="tableBox"><table><thead><tr><th>#</th><th>Activity</th><th>Skill</th><th>Tür</th><th>GP/h</th><th>Rate/h</th><th>Kaynak</th></tr></thead><tbody>
-                {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}{x.economy&&<div style={{fontSize:9,color:'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div>{x.economy.profitEach!==null&&<div>Kâr/adet: <b>{fmt(x.economy.profitEach)} GP</b></div>}</>:<div>Canlı fiyat modeli: {x.economy.liveEligible?'fiyat eşleşmesi eksik':'henüz tanımlı değil'}</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{x.kind}</td><td>{fmt(x.gp)}</td><td>{fmt(x.rate)}</td><td>{x.source}</td></tr>)}
-                {!v5Top.length&&<tr><td colSpan={7}>Mevcut level/mod ile pozitif GP/h adayı yok.</td></tr>}
+                <h3 style={{marginTop:0}}>V5.8.1 — Live Economy Top 10</h3>
+                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Default liste yalnız OPEN + VERIFIED + priceable ekonomik kayıtları kullanır. Effective Rate önceliği MEASURED → LEVEL MODEL → THEORY → ESTIMATE. PLACEHOLDER/DUPLICATE varsayılan sıralamaya girmez.</div>
+                <label style={{fontSize:10,display:'inline-flex',gap:5,alignItems:'center',marginBottom:7}}><input type="checkbox" checked={v5IncludeUnverified} onChange={e=>setV5IncludeUnverified(e.target.checked)}/> Include unverified / research candidates</label>
+                <div className="tableBox"><table><thead><tr><th>#</th><th>Activity</th><th>Skill</th><th>Kâr/adet</th><th>Effective GP/h</th><th>Rate/h</th><th>Rate Source</th><th>Liquidity</th><th>Capacity GP/h</th><th>Quality</th></tr></thead><tbody>
+                {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}{x.economy&&<div style={{fontSize:9,color:'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div></>:<div>Canlı fiyat modeli: {x.economy.liveEligible?'fiyat eşleşmesi eksik':'henüz tanımlı değil'}</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{fmt(x.economy?.profitEach)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{x.rateSource||x.source}</td><td>{x.liquidityLabel||'—'}{x.batchVolumePct!==null&&x.batchVolumePct!==undefined?<div style={{fontSize:9}}>{fmt(x.batchVolumePct,1)}% / {x.batchSize}</div>:null}</td><td>{fmt(x.capacityAdjustedGpHour)}</td><td>{x.quality||'LEGACY'}</td></tr>)}
+                {!v5Top.length&&<tr><td colSpan={10}>Mevcut level/mod ile VERIFIED pozitif GP/h adayı yok.</td></tr>}
                 </tbody></table></div>
                 <div style={{fontSize:10,marginTop:6}}>V5 katalog: <b>{V5_CATALOGUE.length}</b> activity • VERIFIED: <b>{qualityCounts.VERIFIED}</b> • PLACEHOLDER: <b>{qualityCounts.PLACEHOLDER}</b> • OPEN: <b>{v5Rows.filter(x=>x.open).length}</b> • Editlenmiş: <b>{Object.keys(v5Edits).length}</b></div>
               </section>
@@ -2617,7 +2700,7 @@ export default function App() {
           <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'end'}}>
             <label>Item<br/><input value={smartSearch} onChange={e=>setSmartSearch(e.target.value)} placeholder="Ruby, Sapphire..." style={{width:180}}/></label>
             <label>Profil<br/><select value={smartProfile} onChange={e=>setSmartProfile(e.target.value as SmartProfile)}><option>FAST</option><option>BALANCED</option><option>PATIENT</option></select></label>
-            <label>Miktar<br/><select value={smartQtyPreset} onChange={e=>{const v=e.target.value;setSmartQtyPreset(v);if(v!=='CUSTOM')setSmartQty(Number(v))}}><option value="100">100</option><option value="500">500</option><option value="1000">1.000</option><option value="CUSTOM">Özel</option></select></label>
+            <label>Miktar<br/><select value={smartQtyPreset} onChange={e=>{const v=e.target.value;setSmartQtyPreset(v);if(v!=='CUSTOM')setSmartQty(Number(v))}}><option value="100">100</option><option value="250">250</option><option value="500">500</option><option value="1000">1.000</option><option value="CUSTOM">Özel</option></select></label>
             {smartQtyPreset==='CUSTOM'&&<label>Özel miktar<br/><input type="number" min="1" value={smartQty} onChange={e=>setSmartQty(Math.max(1,Number(e.target.value)||1))} style={{width:100}}/></label>}
           </div>
           {smartSearch.trim()&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>
@@ -2653,7 +2736,7 @@ export default function App() {
           {smartRecipeCalc&&<div style={{marginTop:10,padding:10,border:'1px solid #30363d',borderRadius:7}}>
             <div><b>Smart alış:</b> {smartRecipeCalc.inputAdv.map(x=>`${x.inp.name} ${fmt(x.adv!.recBuy)} GP × ${x.inp.qty||1}`).join(' + ')}</div>
             <div><b>Smart satış:</b> {selectedSmartRecipe?.kind==='ALCHEMY'?`High Alchemy sabit çıktı ${fmt(smartRecipeCalc.netSell)} GP`:`${selectedSmartRecipe?.outputName} ${fmt(smartRecipeCalc.outAdv?.recSell)} GP • GE tax ${fmt(smartRecipeCalc.tax)} GP`}</div>
-            <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:7}}><b>Kâr/item: {fmt(smartRecipeCalc.profit)} GP</b><b>Batch ({fmt(smartQty)}): {fmt(smartRecipeCalc.batchProfit)} GP</b><b>ROI: {smartRecipeCalc.roi===null?'?':smartRecipeCalc.roi.toFixed(1)+'%'}</b><b>XP/batch: {fmt(smartRecipeCalc.xpBatch)}</b><b>Expected GP/h: {smartRecipeCalc.gpHour===null?'DATA REQUIRED':fmt(smartRecipeCalc.gpHour)}</b><b>Expected XP/h: {smartRecipeCalc.xpHour===null?'DATA REQUIRED':fmt(smartRecipeCalc.xpHour)}</b><b>{selectedSmartRecipe?.rateSource}{selectedSmartRecipe&&selectedSmartRecipe.rate!==null?` • ${fmt(selectedSmartRecipe.rate)}/h`:''}</b></div>
+            <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:7}}><b>Kâr/item: {fmt(smartRecipeCalc.profit)} GP</b><b>Batch ({fmt(smartQty)}): {fmt(smartRecipeCalc.batchProfit)} GP</b><b>Input Capital: {fmt(smartRecipeCalc.inputCapital)} GP</b><b>Expected Revenue: {fmt(smartRecipeCalc.expectedRevenue)} GP</b><b>ROI: {smartRecipeCalc.roi===null?'?':smartRecipeCalc.roi.toFixed(1)+'%'}</b><b>Production Time: {smartRecipeCalc.productionMinutes===null?'DATA REQUIRED':smartRecipeCalc.productionMinutes.toFixed(1)+' dk'}</b><b>Buy Waiting: {smartRecipeCalc.buyFillWindows.join(' / ')}</b><b>Sell Waiting: {smartRecipeCalc.sellFillWindow||'ALCH / N/A'}</b><b>XP/batch: {fmt(smartRecipeCalc.xpBatch)}</b><b>Production GP/h: {smartRecipeCalc.gpHour===null?'DATA REQUIRED':fmt(smartRecipeCalc.gpHour)}</b><b>Expected XP/h: {smartRecipeCalc.xpHour===null?'DATA REQUIRED':fmt(smartRecipeCalc.xpHour)}</b><b>{selectedSmartRecipe?.rateSource}{selectedSmartRecipe&&selectedSmartRecipe.rate!==null?` • ${fmt(selectedSmartRecipe.rate)}/h`:''}</b></div><div style={{fontSize:9,color:'#8b949e',marginTop:6}}>Production GP/h yalnız aktif üretim hızıdır; BUY/SELL bekleme süresi Full Cycle Return ile aynı şey değildir.</div>
           </div>}
         </section>
 
@@ -2707,19 +2790,22 @@ export default function App() {
           </tbody></table></div>
           {v5Editing&&(()=>{const x=v5Rows.find(r=>r.id===v5Editing);if(!x)return null;return <div style={{marginTop:10,padding:10,border:'1px solid #58a6ff',borderRadius:8}}>
             <b>Edit — {x.name}</b><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
-            <label>Theory rate/h <input type="number" value={x.edit.theoryRate??x.theoryRate} onChange={e=>v5Update(x.id,{theoryRate:Number(e.target.value)})}/></label>
-            <label>Theory GP/h <input type="number" value={x.edit.theoryGpHour??x.theoryGpHour} onChange={e=>v5Update(x.id,{theoryGpHour:Number(e.target.value)})}/></label>
-            <label>Measured rate/h <input type="number" value={x.edit.measuredRate??''} onChange={e=>v5Update(x.id,{measuredRate:e.target.value===''?undefined:Number(e.target.value)})}/></label>
-            <label>Measured GP/h <input type="number" value={x.edit.measuredGpHour??''} onChange={e=>v5Update(x.id,{measuredGpHour:e.target.value===''?undefined:Number(e.target.value)})}/></label>
+            <label>Theory Rate/h <input type="number" value={x.edit.theoryRate??x.theoryRate} onChange={e=>v5Update(x.id,{theoryRate:Number(e.target.value)})}/></label>
+            <label>Theory GP/h <input type="number" readOnly value={x.theoryGpHour??''}/></label>
+            <label>Measured Rate/h <input type="number" value={x.edit.measuredRate??x.measuredRate??''} onChange={e=>v5Update(x.id,{measuredRate:e.target.value===''?undefined:Number(e.target.value)})}/></label>
+            <label>Measured GP/h <input type="number" readOnly value={x.measuredGpHour??''}/></label>
+            <label>Effective Rate/h <input type="number" readOnly value={x.rate}/></label>
+            <label>Effective GP/h <input type="number" readOnly value={x.gp}/></label>
+            <label>Manual GP/h override <input type="number" placeholder="boş = otomatik" value={x.edit.gpOverride??''} onChange={e=>v5Update(x.id,{gpOverride:e.target.value===''?undefined:Number(e.target.value)})}/></label>
             <label style={{minWidth:280}}>Not <input style={{width:'100%'}} value={x.edit.note??''} onChange={e=>v5Update(x.id,{note:e.target.value})}/></label>
             <button type="button" onClick={()=>v5Reset(x.id)}>Override sıfırla</button></div>
             {x.economy.inputs.length>0&&<div style={{marginTop:8,padding:8,border:'1px solid #30363d',borderRadius:6}}>
               <b>Buy Order hedef alış fiyatları</b>
               <div style={{fontSize:9,color:'#8b949e',margin:'3px 0 6px'}}>Bu hedef ITEM bazlı ve globaldir: örneğin Ruby = 650 girersen Ruby kullanan tüm reçeteler 650 hedefini kullanır. Boş bırakırsan canlı alış fiyatı kullanılır.</div>
               <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{x.economy.inputs.map(inp=><label key={inp.name}>{inp.name} <span style={{fontSize:9,color:'#8b949e'}}>canlı {fmt(inp.price)} GP</span> <input type="number" min="0" placeholder="Hedef alış" value={x.targets[inp.name]??''} onChange={e=>setV5BuyTargets(old=>{const next={...old};if(e.target.value==='')delete next[inp.name];else next[inp.name]=Math.max(0,Number(e.target.value));return next})}/></label>)}</div>
-              {x.hasTarget&&<div style={{fontSize:10,marginTop:6}}>Hedef maliyet: <b>{fmt(x.targetInputCost)} GP</b> • Hedef kâr/adet: <b>{fmt(x.targetProfitEach)} GP</b> • Hedef GP/h: <b>{fmt(x.targetGpHour)}</b></div>}
+              {x.hasTarget&&<div style={{fontSize:10,marginTop:6}}>Hedef maliyet: <b>{fmt(x.targetInputCost)} GP</b> • Hedef kâr/adet: <b>{fmt(x.targetProfitEach)} GP</b> • Hedef GP/h: <b>{fmt(x.targetGpHour)}</b> • Effective rate: <b>{fmt(x.rate)}/h {x.rateSource}</b></div>}
             </div>}
-            <div style={{fontSize:9,color:'#8b949e',marginTop:5}}>Orijinal theory: {fmt(x.theoryRate)}/h • {fmt(x.theoryGpHour)} GP/h. GP/h override yoksa ve canlı reçete/fiyat mevcutsa sistem canlı GE kârını × rate/h kullanır; canlı model yoksa theory'ye döner.</div><div style={{fontSize:10,marginTop:5}}>{x.economy.hasPrices?<><b>Canlı fiyat:</b> {x.economy.inputText||'Girdi yok'} → {x.economy.outputText} • <b>{fmt(x.economy.profitEach)} GP/adet</b></>:<><b>Canlı fiyat modeli:</b> henüz eksik. Bu kayıtta GP/h THEORY/override üzerinden kalır.</>}</div>
+            <div style={{fontSize:9,color:'#8b949e',marginTop:5}}>Orijinal theory: {fmt(x.theoryRate)}/h • {fmt(x.theoryGpHour)} GP/h. GP/h override boşsa canlı kâr × Effective Rate otomatik hesaplanır. Measured Rate varsa theory hiçbir ekonomik sıralamada kullanılmaz.</div><div style={{fontSize:10,marginTop:5}}>{x.economy.hasPrices?<><b>Canlı fiyat:</b> {x.economy.inputText||'Girdi yok'} → {x.economy.outputText} • <b>{fmt(x.economy.profitEach)} GP/adet</b></>:<><b>Canlı fiyat modeli:</b> henüz eksik. Bu kayıtta GP/h THEORY/override üzerinden kalır.</>}</div>
           </div>})()}
         </section>
       </div>}
