@@ -3,7 +3,7 @@ import './App.css'
 import { V4_ACTIVITY_DATABASE } from './v4/database'
 import { evaluateActivity } from './v4/requirements'
 import { rankCombat, nextUnlocks as v4NextUnlocks, questUnlockValue, itemChains, readyAfterSimpleRequirements } from './v4/planner'
-import { V5_CATALOGUE, V5_PAGES, V5_CANONICAL_MANIFEST } from './v5'
+import { V5_CATALOGUE, V5_PAGES, V5_CANONICAL_MANIFEST, V5_BULK_SEED_EDITS } from './v5'
 import type { V5Edit, V5PageId } from './v5'
 
 const API = 'https://prices.runescape.wiki/api/v1/osrs'
@@ -1208,7 +1208,15 @@ export default function App() {
   const [v5Page,setV5Page]=useState<V5PageId>('melee')
   const [v5Search,setV5Search]=useState('')
   const [v5ShowLocked,setV5ShowLocked]=useState(true)
-  const [v5Edits,setV5Edits]=useState<Record<string,V5Edit>>(()=>{try{return JSON.parse(localStorage.getItem('osrs-v5-edits')||'{}')}catch{return{}}})
+  const [v5Edits,setV5Edits]=useState<Record<string,V5Edit>>(()=>{
+    try{
+      const saved=JSON.parse(localStorage.getItem('osrs-v5-edits')||'{}') as Record<string,V5Edit>
+      const merged:Record<string,V5Edit>={}
+      Object.entries(V5_BULK_SEED_EDITS).forEach(([id,seed])=>{merged[id]={...seed}})
+      Object.entries(saved).forEach(([id,user])=>{merged[id]={...(merged[id]||{}),...user}})
+      return merged
+    }catch{return {...V5_BULK_SEED_EDITS}}
+  })
   const [v5Editing,setV5Editing]=useState<string|null>(null)
   const [v5BuyTargets,setV5BuyTargets]=useState<Record<string,number>>(()=>{
     try {
@@ -2419,6 +2427,57 @@ export default function App() {
     const blob=new Blob(['\ufeff'+rows],{type:'text/csv;charset=utf-8'})
     const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();URL.revokeObjectURL(url)
   }
+  const parseDelimitedLine=(line:string,delimiter:string)=>{
+    if(delimiter==='\t')return line.split('\t')
+    const out:string[]=[];let cur='';let quoted=false
+    for(let i=0;i<line.length;i++){const c=line[i];if(c==='"'){if(quoted&&line[i+1]==='"'){cur+='"';i++}else quoted=!quoted}else if(c===delimiter&&!quoted){out.push(cur);cur=''}else cur+=c}
+    out.push(cur);return out
+  }
+  const previewCsvText=(text:string)=>{
+    const lines=text.replace(/^\ufeff/,'').split(/\r?\n/).filter(x=>x.trim())
+    if(!lines.length){setBulkPreview([]);return}
+    const delimiter=lines[0].includes('\t')?'\t':','
+    const header=parseDelimitedLine(lines[0],delimiter).map(x=>x.trim())
+    const idx=(name:string)=>header.findIndex(h=>h.toLowerCase()===name.toLowerCase())
+    const full=idx('Activity ID')>=0&&idx('Estimated Rate/h')>=0
+    if(!full){setBulkPaste(text);setTimeout(()=>{},0);return}
+    const preview:BulkPreviewRow[]=[]
+    lines.slice(1).forEach(raw=>{
+      const c=parseDelimitedLine(raw,delimiter), key=(c[idx('Activity ID')]||c[idx('Activity')]||'').trim()
+      const matches=V5_CATALOGUE.filter(a=>a.id===key)
+      const nameMatches=matches.length?matches:V5_CATALOGUE.filter(a=>a.name.trim().toLowerCase()===key.toLowerCase())
+      if(!nameMatches.length){preview.push({raw,key,status:'NOT FOUND'});return}
+      if(nameMatches.length>1){preview.push({raw,key,status:'AMBIGUOUS',message:`${nameMatches.length} matches`});return}
+      const a=nameMatches[0], current=v5Edits[a.id]||{}, patch:Partial<V5Edit>={}
+      const num=(name:string)=>{const j=idx(name);if(j<0||!c[j]?.trim())return undefined;const n=Number(c[j]);return Number.isFinite(n)?n:undefined}
+      const theory=num('Theory Rate/h'),estimate=num('Estimated Rate/h'),measured=num('Measured Rate/h'),xp=num('XP/unit')
+      if(theory!==undefined)patch.theoryRate=theory
+      if(estimate!==undefined)patch.estimatedRate=estimate
+      if(bulkAllowMeasuredOverwrite&&measured!==undefined)patch.measuredRate=measured
+      if(xp!==undefined)patch.xpEach=xp
+      const att=idx('Attention')>=0?(c[idx('Attention')]||'').trim().toUpperCase():''
+      if(['HIGH','MEDIUM','LOW','AFK'].includes(att))patch.attention=att as any
+      const q=idx('Quality')>=0?(c[idx('Quality')]||'').trim():''
+      if(q)patch.quality=q as any
+      const note=idx('Notes')>=0?(c[idx('Notes')]||'').trim():''
+      if(note)patch.note=note
+      const eb=idx('Estimate Basis')>=0?(c[idx('Estimate Basis')]||'').trim():''
+      if(eb)patch.estimateBasis=eb
+      const af=idx('Audit Flag')>=0?(c[idx('Audit Flag')]||'').trim():''
+      if(af)patch.auditFlag=af
+      if(theory!==undefined)patch.rateSource=q==='VERIFIED'?'VERIFIED THEORY':'THEORY'
+      else if(estimate!==undefined)patch.rateSource='ESTIMATE'
+      const changed=Object.entries(patch).some(([k,v])=>(current as any)[k]!==v)
+      preview.push({raw,key,activityId:a.id,activityName:a.name,status:changed?'WOULD UPDATE':'NO CHANGE',patch})
+    })
+    setBulkPreview(preview)
+  }
+  const importCsvFile=async(file:File|null)=>{
+    if(!file)return
+    const text=await file.text()
+    setBulkPaste(text)
+    previewCsvText(text)
+  }
   const parseBulkPreview=()=>{
     const lines=bulkPaste.split(/\r?\n/).map(x=>x.trimEnd()).filter(x=>x.trim())
     const preview:BulkPreviewRow[]=[]
@@ -2552,7 +2611,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.8.3 — Bulk Data Entry</h1>
+          <h1>OSRS Economy Scanner V5.8.4 — CSV Import + Filled Seed</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -3540,6 +3599,7 @@ export default function App() {
             <label style={{display:'flex',gap:4,alignItems:'center'}}><input type="checkbox" checked={bulkMissingOnly} onChange={e=>setBulkMissingOnly(e.target.checked)}/> Rate missing only</label>
             <button onClick={()=>copyText(bulkTsv())}>Copy TSV</button>
             <button onClick={()=>exportCsv(bulkTsv(),'osrs-filtered-activities.csv')}>Export CSV</button>
+            <label style={{display:'inline-block'}}><span style={{display:'inline-block',padding:'6px 10px',border:'1px solid #30363d',borderRadius:6,cursor:'pointer'}}>Import CSV File</span><input type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" style={{display:'none'}} onChange={e=>{importCsvFile(e.target.files?.[0]||null);e.currentTarget.value=''}}/></label>
             <button onClick={()=>copyText(missingRateTsv())}>Export Missing Rate List</button>
           </div>
           <div style={{fontSize:10,color:'#8b949e',marginTop:6}}>{bulkActivityRows.length} activity gösteriliyor.</div>
@@ -3551,7 +3611,7 @@ export default function App() {
               <td><input style={{width:80}} type="number" value={x.edit.theoryRate??''} onChange={e=>v5Update(x.id,{theoryRate:e.target.value===''?undefined:Number(e.target.value),rateSource:e.target.value===''?x.edit.rateSource:(x.quality==='VERIFIED'?'VERIFIED THEORY':'THEORY')})}/></td>
               <td><input style={{width:80}} type="number" value={x.edit.estimatedRate??''} onChange={e=>v5Update(x.id,{estimatedRate:e.target.value===''?undefined:Number(e.target.value),rateSource:e.target.value===''?x.edit.rateSource:'ESTIMATE'})}/></td>
               <td><b>{x.measuredRate??''}</b></td><td><input style={{width:70}} type="number" value={x.xpEach??''} onChange={e=>v5Update(x.id,{xpEach:e.target.value===''?undefined:Number(e.target.value)})}/></td>
-              <td>{x.attention}</td><td>{x.edit.note??x.note??''}</td></tr>)}
+              <td>{x.attention}</td><td>{x.edit.note??x.note??''}{x.edit.estimateBasis&&<div style={{fontSize:9,color:'#8b949e'}}>Basis: {x.edit.estimateBasis}</div>}{x.edit.auditFlag&&<div style={{fontSize:9,color:'#d29922'}}>Audit: {x.edit.auditFlag}</div>}</td></tr>)}
           </tbody></table></div>
         </section>
 
