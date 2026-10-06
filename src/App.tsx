@@ -2343,7 +2343,7 @@ export default function App() {
     return [...recipeRows,...gatherLegacy]
   },[rows,gatheringRows])
   const unifiedRanking=useMemo(()=>{
-    const v5=v5Rows.filter(x=>x.open&&x.economyReady&&x.quality!=='DUPLICATE'&&typeof x.gp==='number'&&x.gp>0&&x.economy.hasPrices&&(v5IncludeUnverified?x.quality!=='DEPRECATED':x.quality==='VERIFIED')).map(x=>({...x,legacy:false}))
+    const v5=v5Rows.filter(x=>x.open&&x.economyReady&&x.quality!=='DUPLICATE'&&(x.gp??0)>0&&x.economy.hasPrices&&(v5IncludeUnverified?x.quality!=='DEPRECATED':x.quality==='VERIFIED')).map(x=>({...x,legacy:false}))
     const canonicalVerified=v5Rows.filter(x=>x.quality==='VERIFIED')
     const legacyFiltered=legacyMeasuredRanking.filter(l=>!canonicalVerified.some(c=>{
       const ln=l.name.toLowerCase(),cn=c.name.toLowerCase(),out=(c.output||'').toLowerCase()
@@ -2355,7 +2355,7 @@ export default function App() {
     all.forEach(x=>{
       const key=x.name.trim().toLowerCase()
       const prev=byName.get(key)
-      if(!prev||priority(x.source)>priority(prev.source)||(priority(x.source)===priority(prev.source)&&x.gp>prev.gp)) byName.set(key,x)
+      if(!prev||priority(x.source)>priority(prev.source)||(priority(x.source)===priority(prev.source)&&(x.gp??0)>(prev.gp??0))) byName.set(key,x)
     })
     return Array.from(byName.values()).sort((a,b)=>{
       const bc=typeof b.capacityAdjustedGpHour==='number'?b.capacityAdjustedGpHour:(b.gp??0)
@@ -2414,9 +2414,9 @@ export default function App() {
       .filter(x=>v5KindFilter==='ALL'||x.kind===v5KindFilter)
       .filter(x=>v5AttentionFilter==='ALL'||x.attention===v5AttentionFilter)
       .filter(x=>v5DataFilter==='ALL'||x.source===v5DataFilter)
-      .filter(x=>v5ProfitFilter==='ALL'||(v5ProfitFilter==='PROFIT'?x.gp>0:x.gp<=0))
+      .filter(x=>v5ProfitFilter==='ALL'||(v5ProfitFilter==='PROFIT'?(x.gp??0)>0:(x.gp??0)<=0))
       .filter(x=>!v5Search.trim()||[x.name,x.kind,x.input,x.output,x.note,x.edit.note].join(' ').toLowerCase().includes(v5Search.toLowerCase()))
-    return rows.sort((a,b)=>v5Sort==='GP_ASC'?a.gp-b.gp:v5Sort==='LEVEL_ASC'?a.level-b.level:v5Sort==='RATE_DESC'?b.rate-a.rate:(b.gp-a.gp))
+    return rows.sort((a,b)=>v5Sort==='GP_ASC'?(a.gp??0)-(b.gp??0):v5Sort==='LEVEL_ASC'?a.level-b.level:v5Sort==='RATE_DESC'?b.rate-a.rate:((b.gp??0)-(a.gp??0)))
   },[v5Rows,v5Page,v5ShowLocked,v5Search,v5AccessFilter,v5KindFilter,v5AttentionFilter,v5DataFilter,v5ProfitFilter,v5Sort])
   const v5MoneySkills=useMemo(()=>Array.from(new Set([...v5Rows,...legacyMeasuredRanking].flatMap(x=>x.skills))).sort(),[v5Rows,legacyMeasuredRanking])
   const v5MoneyRows=useMemo(()=>unifiedRanking
@@ -2670,7 +2670,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.8.6.1 — Nullability Build Fix</h1>
+          <h1>OSRS Economy Scanner V5.8.6.2 — Complete Nullability Fix</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
