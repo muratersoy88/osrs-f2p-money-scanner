@@ -8,7 +8,8 @@ export type V5Activity={
  input?:string; output?:string; requirement?:string; note?:string;
  quality?:V5Quality; inputs?:{name:string;qty:number}[]; outputQty?:number; xpEach?:number|null;
  sourceRef?:string; economicModel?:'GE_PROCESS'|'NPC_PROCESS'|'GATHERING'|'COMBAT'|'RECURRING'|'FIXED_VALUE';
- coinFee?:number; rateSource?:'MEASURED'|'LEVEL_MODEL'|'VERIFIED THEORY'|'THEORY'|'ESTIMATE'|'DATA_REQUIRED'
+ coinFee?:number; rateSource?:'MEASURED'|'LEVEL_MODEL'|'VERIFIED THEORY'|'THEORY'|'ESTIMATE'|'DATA_REQUIRED';
+ economyReady?:boolean; timeGated?:boolean; successModelRequired?:boolean; risk?:'SAFE'|'WILDERNESS'|'DEATH_RISK'
 }
 export type V5Edit={theoryRate?:number;estimatedRate?:number;theoryGpHour?:number;measuredRate?:number;measuredGpHour?:number;gpOverride?:number;levelAdjustedRate?:number;xpEach?:number;attention?:'HIGH'|'MEDIUM'|'LOW'|'AFK';quality?:V5Quality;rateSource?:'VERIFIED THEORY'|'THEORY'|'ESTIMATE';note?:string}
 export type V5Page={id:V5PageId;label:string;skills:string[]}
@@ -39,12 +40,12 @@ const tierGp=(level:number,base=18000)=>Math.round(base+level*level*55)
 const tierXp=(level:number,base=8000)=>Math.round(base+level*900)
 
 // Mining / gathering
-;[['Clay',1],['Copper ore',1],['Tin ore',1],['Iron ore',15],['Silver ore',20],['Coal',30],['Gold ore',40],['Mithril ore',55],['Adamantite ore',70],['Runite ore',85],['Pure essence',30],['Sandstone',35],['Granite',45],['Gem rocks',40],['Volcanic ash',22],['Amethyst',92],['Calcified rocks',41],['Motherlode Mine',30],['Blast mine',43],['Volcanic Mine',50]].forEach(([n,l])=>add('mining',`Mine ${n}`,'Mining',+l,+l>1,'GATHERING',Math.max(60,1400-+l*9),tierGp(+l,22000),tierXp(+l),+l>70?'LOW':'MEDIUM'))
+;[['Clay',1],['Copper ore',1],['Tin ore',1],['Iron ore',15],['Silver ore',20],['Coal',30],['Gold ore',40],['Mithril ore',55],['Adamantite ore',70],['Runite ore',85],['Pure essence',30],['Sandstone',35],['Granite',45],['Gem rocks',40],['Volcanic ash',22],['Amethyst',92],['Calcified rocks',41],['Motherlode Mine',30],['Blast mine',43],['Volcanic Mine',50]].forEach(([n,l],i)=>add('mining',`Mine ${n}`,'Mining',+l,i>=10,'GATHERING',Math.max(60,1400-+l*9),tierGp(+l,22000),tierXp(+l),+l>70?'LOW':'MEDIUM'))
 
 // Woodcutting + firemaking
 ;[['Logs',1],['Oak logs',15],['Willow logs',30],['Teak logs',35],['Maple logs',45],['Mahogany logs',50],['Yew logs',60],['Magic logs',75],['Redwood logs',90],['Arctic pine logs',42],['Sulliuscep',65],['Blisterwood',62]].forEach(([n,l])=>{
- add('woodcutting',`Cut ${n}`,'Woodcutting',+l,+l>30,'GATHERING',Math.max(70,1100-+l*7),tierGp(+l,16000),tierXp(+l),+l>=60?'LOW':'MEDIUM')
- add('firemaking',`Burn ${n}`,'Firemaking',Math.max(1,+l),+l>30,'TRAINING',1100,-Math.round(tierGp(+l,5000)*.35),tierXp(+l,16000),'HIGH',{input:String(n)})
+ add('woodcutting',`Cut ${n}`,'Woodcutting',+l,!['Logs','Oak logs','Willow logs','Maple logs','Yew logs'].includes(String(n)),'GATHERING',Math.max(70,1100-+l*7),tierGp(+l,16000),tierXp(+l),+l>=60?'LOW':'MEDIUM')
+ add('firemaking',`Burn ${n}`,'Firemaking',Math.max(1,+l),!['Logs','Oak logs','Willow logs','Maple logs','Yew logs'].includes(String(n)),'TRAINING',1100,-Math.round(tierGp(+l,5000)*.35),tierXp(+l,16000),'HIGH',{input:String(n)})
 })
 
 // Fishing + cooking fish
@@ -56,15 +57,38 @@ const tierXp=(level:number,base=8000)=>Math.round(base+level*900)
 
 // Smithing generated equipment
 const metals:[string,number,boolean][]=[['Bronze',1,false],['Iron',15,false],['Steel',30,false],['Mithril',50,false],['Adamant',70,false],['Rune',85,false]]
-const forms:[string,number][]=[['dagger',0],['axe',0],['mace',2],['med helm',3],['sword',4],['dart tips',4],['nails',4],['scimitar',5],['arrowtips',5],['limbs',6],['longsword',6],['full helm',7],['throwing knives',7],['sq shield',8],['warhammer',9],['battleaxe',10],['chainbody',11],['kiteshield',12],['claws',13],['2h sword',14],['plateskirt',14],['platelegs',16],['platebody',18]]
-metals.forEach(([m,b,mem])=>forms.forEach(([f,o])=>add('smithing',`Smith ${m} ${f}`,'Smithing',Math.min(99,b+o),mem,'PROCESSING',850,tierGp(Math.min(99,b+o),12000),tierXp(Math.min(99,b+o),18000),'HIGH',{input:`${m} bar`,output:`${m} ${f}`})))
-;[['Bronze bar',1,false],['Iron bar',15,false],['Silver bar',20,false],['Steel bar',30,false],['Gold bar',40,false],['Mithril bar',50,false],['Adamantite bar',70,false],['Runite bar',85,false]].forEach(([n,l,m])=>add('smithing',`Smelt ${n}`,'Smithing',+l,!!m,'PROCESSING',900,tierGp(+l,14000),tierXp(+l,13000),'LOW'))
+const forms:[string,number,number,boolean][]=[
+ ['dagger',0,1,false],['axe',0,1,false],['mace',2,1,false],['med helm',3,1,false],['sword',4,1,false],
+ ['dart tips',4,1,true],['nails',4,1,true],['scimitar',5,2,false],['arrowtips',5,1,true],['limbs',6,1,true],
+ ['longsword',6,2,false],['full helm',7,2,false],['throwing knives',7,1,true],['sq shield',8,2,false],
+ ['warhammer',9,3,false],['battleaxe',10,3,false],['chainbody',11,3,false],['kiteshield',12,3,false],
+ ['claws',13,2,true],['2h sword',14,3,false],['plateskirt',14,3,false],['platelegs',16,3,false],['platebody',18,5,false]
+]
+metals.forEach(([m,b])=>forms.forEach(([f,o,bars,memberOnly])=>add(
+ 'smithing',`Smith ${m} ${f}`,'Smithing',Math.min(99,b+o),memberOnly,'PROCESSING',
+ Math.max(1,Math.round(850/bars)),tierGp(Math.min(99,b+o),12000),tierXp(Math.min(99,b+o),18000),'HIGH',
+ {inputs:[{name:`${m} bar`,qty:bars}],output:`${m} ${f}`,outputQty:1,economicModel:'GE_PROCESS',economyReady:true}
+)))
+const smeltRows:[string,number,{name:string;qty:number}[],boolean?][]=[
+ ['Bronze bar',1,[{name:'Copper ore',qty:1},{name:'Tin ore',qty:1}]],['Iron bar',15,[{name:'Iron ore',qty:1}],true],
+ ['Silver bar',20,[{name:'Silver ore',qty:1}]],['Steel bar',30,[{name:'Iron ore',qty:1},{name:'Coal',qty:2}]],
+ ['Gold bar',40,[{name:'Gold ore',qty:1}]],['Mithril bar',50,[{name:'Mithril ore',qty:1},{name:'Coal',qty:4}]],
+ ['Adamantite bar',70,[{name:'Adamantite ore',qty:1},{name:'Coal',qty:6}]],['Runite bar',85,[{name:'Runite ore',qty:1},{name:'Coal',qty:8}]]
+]
+smeltRows.forEach(([n,l,inputs,needsSuccess])=>add('smithing',`Smelt ${n}`,'Smithing',+l,false,'PROCESSING',900,tierGp(+l,14000),tierXp(+l,13000),'LOW',
+ {inputs,output:String(n),outputQty:1,economicModel:'GE_PROCESS',economyReady:!needsSuccess,successModelRequired:!!needsSuccess,note:needsSuccess?'NEEDS_SUCCESS_MODEL: normal-furnace iron smelting success must be modelled before definitive GP/h.':undefined}
+))
 
 // Crafting jewellery + gems + hides/glass
-const gems:[string,number,boolean][]=[['Sapphire',20,false],['Emerald',27,false],['Ruby',34,false],['Diamond',43,false],['Dragonstone',55,true],['Onyx',67,true],['Zenyte',89,true]]
-gems.forEach(([g,l,mem])=>{
- add('crafting',`Cut ${g}`,'Crafting',l,mem,'PROCESSING',2200,tierGp(l,17000),tierXp(l,24000),'HIGH',{input:`Uncut ${g}`,output:g})
- ;([['ring',0],['necklace',2],['bracelet',3],['amulet (u)',4]] as [string,number][]).forEach(([f,o])=>add('crafting',`Make ${g} ${f}`,'Crafting',Math.min(99,l+o),mem||f==='bracelet','PROCESSING',1100,tierGp(l+o,19000),tierXp(l+o,20000),'LOW',{input:`Gold bar + ${g}`,output:`${g} ${f}`}))
+const gems:[string,number,number,number,boolean][]=[
+ ['Sapphire',20,22,24,false],['Emerald',27,29,31,false],['Ruby',34,40,50,false],['Diamond',43,56,70,false],
+ ['Dragonstone',55,72,80,true],['Onyx',67,82,90,true],['Zenyte',89,92,98,true]
+]
+gems.forEach(([g,ringLvl,neckLvl,amuletLvl,gemMember])=>{
+ add('crafting',`Cut ${g}`,'Crafting',ringLvl,gemMember,'PROCESSING',2200,tierGp(ringLvl,17000),tierXp(ringLvl,24000),'HIGH',{input:`Uncut ${g}`,output:g,economyReady:true})
+ const jewellery:[string,number,boolean][]=[['ring',ringLvl,false],['necklace',neckLvl,false],['bracelet',Math.min(99,ringLvl+3),true],['amulet (u)',amuletLvl,false]]
+ jewellery.forEach(([f,lvl,formMember])=>add('crafting',`Make ${g} ${f}`,'Crafting',lvl,gemMember||formMember,'PROCESSING',1100,tierGp(lvl,19000),tierXp(lvl,20000),'LOW',
+   {inputs:[{name:'Gold bar',qty:1},{name:g,qty:1}],output:`${g} ${f}`,outputQty:1,economicModel:'GE_PROCESS',economyReady:true}))
 })
 ;[['Leather',1,false],['Hard leather',28,false],['Green d\'hide',57,true],['Blue d\'hide',66,true],['Red d\'hide',73,true],['Black d\'hide',79,true]].forEach(([n,l,m])=>['body','chaps','vambraces'].forEach((f,i)=>add('crafting',`${n} ${f}`,'Crafting',Math.min(99,+l+i*2),!!m,'PROCESSING',700,tierGp(+l+i*2,16000),tierXp(+l+i*2,21000),'MEDIUM')))
 ;[['Molten glass',1],['Beer glass',1],['Candle lantern',4],['Oil lamp',12],['Vial',33],['Fishbowl',42],['Unpowered orb',46],['Lantern lens',49],['Light orb',87]].forEach(([n,l])=>add('crafting',`Glassblow ${n}`,'Crafting',+l,+l>1,'PROCESSING',1500,tierGp(+l,11000),tierXp(+l,18000),'HIGH'))
@@ -81,7 +105,7 @@ logs.forEach(([n,l])=>{add('fletching',`Fletch ${n} shortbow (u)`,'Fletching',+l
 ;[['Air rune',1,false],['Mind rune',2,false],['Water rune',5,false],['Earth rune',9,false],['Fire rune',14,false],['Body rune',20,false],['Cosmic rune',27,true],['Chaos rune',35,true],['Astral rune',40,true],['Nature rune',44,true],['Law rune',54,true],['Death rune',65,true],['Blood rune',77,true],['Soul rune',90,true],['Wrath rune',95,true]].forEach(([n,l,m])=>add('runecraft',`Craft ${n}`,'Runecraft',+l,!!m,'PROCESSING',Math.max(500,1800-+l*7),tierGp(+l,23000),tierXp(+l,19000),'MEDIUM'))
 
 // Farming crops / runs
-;[['Potato',1],['Onion',5],['Cabbage',7],['Tomato',12],['Sweetcorn',20],['Strawberry',31],['Watermelon',47],['Guam',9],['Marrentill',14],['Tarromin',19],['Harralander',26],['Ranarr',32],['Toadflax',38],['Irit',44],['Avantoe',50],['Kwuarm',56],['Snapdragon',62],['Cadantine',67],['Lantadyme',73],['Dwarf weed',79],['Torstol',85],['Oak tree',15],['Willow tree',30],['Maple tree',45],['Yew tree',60],['Magic tree',75],['Palm tree',68],['Dragonfruit tree',81],['Cactus',55],['Potato cactus',64],['Seaweed',23],['Giant seaweed',23],['Mushroom',53],['Belladonna',63],['Celastrus',85],['Redwood tree',90]].forEach(([n,l])=>add('farming',`${n} run`,'Farming',+l,true,'RECURRING',1,tierGp(+l,30000),tierXp(+l,15000),'LOW',{note:'Theory GP/h is an editable planning placeholder; recurring profit/run should be measured.'}))
+;[['Potato',1],['Onion',5],['Cabbage',7],['Tomato',12],['Sweetcorn',20],['Strawberry',31],['Watermelon',47],['Guam',9],['Marrentill',14],['Tarromin',19],['Harralander',26],['Ranarr',32],['Toadflax',38],['Irit',44],['Avantoe',50],['Kwuarm',56],['Snapdragon',62],['Cadantine',67],['Lantadyme',73],['Dwarf weed',79],['Torstol',85],['Oak tree',15],['Willow tree',30],['Maple tree',45],['Yew tree',60],['Magic tree',75],['Palm tree',68],['Dragonfruit tree',81],['Cactus',55],['Potato cactus',64],['Seaweed',23],['Giant seaweed',23],['Mushroom',53],['Belladonna',63],['Celastrus',85],['Redwood tree',90]].forEach(([n,l])=>add('farming',`${n} run`,'Farming',+l,true,'RECURRING',1,tierGp(+l,30000),tierXp(+l,15000),'LOW',{timeGated:true,economyReady:false,note:'TIME_GATED: use profit/run + activeMinutes/run + cooldown + runs/day; continuous GP/h disabled.'}))
 
 // Hunter
 ;[['Polar kebbit',1],['Crimson swift',1],['Common kebbit',3],['Golden warbler',5],['Feldip weasel',7],['Copper longtail',9],['Cerulean twitch',11],['Ruby harvest',15],['Tropical wagtail',19],['Wild kebbit',23],['Sapphire glacialis',25],['Ferret',27],['Swamp lizard',29],['Spined larupia',31],['Barb-tailed kebbit',33],['Snowy knight',35],['Prickly kebbit',37],['Horned graahk',41],['Spotted kebbit',43],['Black warlock',45],['Orange salamander',47],['Razor-backed kebbit',49],['Sabre-toothed kebbit',51],['Chinchompa',53],['Grey chinchompa',53],['Red salamander',59],['Red chinchompa',63],['Black salamander',67],['Dashing kebbit',69],['Black chinchompa',73],['Herbiboar',80]].forEach(([n,l])=>add('hunter',`Hunt ${n}`,'Hunter',+l,true,'GATHERING',Math.max(60,500-+l*3),tierGp(+l,26000),tierXp(+l,24000),'MEDIUM'))
@@ -110,15 +134,15 @@ logs.forEach(([n,l])=>{add('fletching',`Fletch ${n} shortbow (u)`,'Fletching',+l
 ;[['Salvage basic wrecks',1],['Deliver coastal cargo',5],['Fish from vessel',10],['Salvage intermediate wrecks',20],['Courier contracts',25],['Resource dredging',30],['Island resource runs',35],['Merchant cargo routes',40],['Advanced salvage',50],['Deep-sea fishing route',55],['High-value cargo contracts',60],['Remote island gathering',65],['Advanced merchant routes',70],['Deep-sea salvage',75],['Elite cargo contracts',80],['Endgame salvage route',90]].forEach(([n,l])=>add('sailing',String(n),'Sailing',+l,true,+l%2?'GATHERING':'RECURRING',Math.max(10,80-+l/2),tierGp(+l,30000),tierXp(+l,25000),'MEDIUM',{note:'Editable theory placeholder; replace with measured data when tested.'}))
 
 
-const verified=(a:V5Activity)=>out.push({...a,quality:'VERIFIED'})
-const needs=(a:V5Activity)=>out.push({...a,quality:'NEEDS_VERIFICATION'})
+const verified=(a:V5Activity)=>out.push({...a,quality:'VERIFIED',economyReady:a.economyReady??true})
+const needs=(a:V5Activity)=>out.push({...a,quality:'NEEDS_VERIFICATION',economyReady:a.economyReady??false})
 
 // Canonical, source-backed economic activities. Explicit IDs are stable for future history links.
 // Rates are intentionally 0 unless a trustworthy rate/model is already available; live GP/h must not fabricate throughput.
 verified({id:'econ-f2p-pastry-dough',name:'Make Pastry dough',pages:['cooking'],skills:['Cooking'],level:1,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Pot of flour',qty:1},{name:'Jug of water',qty:1}],output:'Pastry dough',outputQty:1,xpEach:0,sourceRef:'OSRS Wiki Cooking experience table / Cooking tutor',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
 verified({id:'econ-f2p-pie-shell',name:'Make Pie shell',pages:['cooking'],skills:['Cooking'],level:1,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Pastry dough',qty:1},{name:'Pie dish',qty:1}],output:'Pie shell',outputQty:1,xpEach:0,sourceRef:'OSRS Wiki Cooking experience table / Cooking tutor',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
 verified({id:'econ-f2p-uncooked-apple-pie',name:'Make Uncooked apple pie',pages:['cooking'],skills:['Cooking'],level:30,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Pie shell',qty:1},{name:'Cooking apple',qty:1}],output:'Uncooked apple pie',outputQty:1,xpEach:0,sourceRef:'OSRS Wiki Cooking experience table',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
-verified({id:'econ-f2p-cook-apple-pie',name:'Cook Apple pie',pages:['cooking'],skills:['Cooking'],level:30,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'LOW',inputs:[{name:'Uncooked apple pie',qty:1}],output:'Apple pie',outputQty:1,xpEach:130,sourceRef:'OSRS Wiki Cooking experience table',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED',note:'Burn/failure must use player-level or measured success model; nominal output alone is not valid.'})
+verified({id:'econ-f2p-cook-apple-pie',name:'Cook Apple pie',pages:['cooking'],skills:['Cooking'],level:30,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'LOW',inputs:[{name:'Uncooked apple pie',qty:1}],output:'Apple pie',outputQty:1,xpEach:130,sourceRef:'OSRS Wiki Cooking experience table',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED',successModelRequired:true,economyReady:false,note:'NEEDS_SUCCESS_MODEL: Burn/failure must use player-level or measured success model; nominal output alone is not valid.'})
 verified({id:'econ-f2p-pizza-base',name:'Make Pizza base',pages:['cooking'],skills:['Cooking'],level:35,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Pot of flour',qty:1},{name:'Jug of water',qty:1}],output:'Pizza base',outputQty:1,xpEach:0,sourceRef:'OSRS Wiki Cooking experience table / Cooking tutor',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
 needs({id:'econ-f2p-plain-pizza',name:'Cook Plain pizza',pages:['cooking'],skills:['Cooking'],level:35,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'LOW',input:'Uncooked pizza',output:'Plain pizza',outputQty:1,xpEach:143,sourceRef:'OSRS Wiki Cooking/Pizza',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED',note:'Uncooked pizza is not tradeable; multi-stage tomato+cheese assembly needs structured non-GE intermediate handling before Smart BUY integration.'})
 verified({id:'econ-f2p-meat-pizza',name:'Top Meat pizza',pages:['cooking'],skills:['Cooking'],level:45,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Plain pizza',qty:1},{name:'Cooked meat',qty:1}],output:'Meat pizza',outputQty:1,xpEach:26,sourceRef:'OSRS Wiki Cooking/Pizza',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
@@ -169,10 +193,23 @@ verified({id:'econ-p2p-cannonballs',name:'Smith Cannonballs',pages:['smithing'],
  requirement:'Druidic Ritual',sourceRef:'OSRS Wiki Herblore potion calculator',economicModel:'GE_PROCESS',rateSource:'THEORY'
 }))
 
+// One-time final database audit. Stable IDs are preserved.
+const f2pMiningNames=new Set(['Mine Clay','Mine Copper ore','Mine Tin ore','Mine Iron ore','Mine Silver ore','Mine Coal','Mine Gold ore','Mine Mithril ore','Mine Adamantite ore','Mine Runite ore'])
+const f2pWoodcutNames=new Set(['Cut Logs','Cut Oak logs','Cut Willow logs','Cut Maple logs','Cut Yew logs'])
+const f2pFiremakingNames=new Set(['Burn Logs','Burn Oak logs','Burn Willow logs','Burn Maple logs','Burn Yew logs'])
+out.forEach(a=>{
+ if(f2pMiningNames.has(a.name)||f2pWoodcutNames.has(a.name)||f2pFiremakingNames.has(a.name))a.member=false
+ if(a.pages.includes('farming')){a.timeGated=true;a.economyReady=false}
+ if(a.pages.includes('sailing')){a.quality='PLACEHOLDER';a.economyReady=false}
+ if(a.kind==='COMBAT'||a.pages.includes('slayer')||a.pages.includes('agility')||a.pages.includes('hunter'))a.economyReady=false
+ if(a.kind==='TRAINING'&&!a.economicModel)a.economyReady=false
+ if(a.economyReady===undefined)a.economyReady=!!(a.economicModel||a.kind==='GATHERING'||(a.kind==='PROCESSING'&&(a.inputs?.length||a.input)&&a.output))
+})
+
 // Do not delete duplicate legacy/generated rows: mark older generated copies so edit/history IDs remain stable.
 const verifiedNames=new Set(out.filter(a=>a.quality==='VERIFIED').map(a=>a.name.trim().toLowerCase()))
 out.forEach(a=>{
-  if(a.id.startsWith('v5-')&&verifiedNames.has(a.name.trim().toLowerCase())) a.quality='DUPLICATE'
+  if(a.id.startsWith('v5-')&&verifiedNames.has(a.name.trim().toLowerCase())){a.quality='DUPLICATE';a.economyReady=false}
 })
 
 // Canonical manifest is independent of current database rows. It is intentionally explicit and versioned;
