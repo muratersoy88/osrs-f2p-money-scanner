@@ -1276,6 +1276,8 @@ export default function App() {
   const [bulkCommonNote,setBulkCommonNote]=useState('')
   const [bulkAllowMeasuredOverwrite,setBulkAllowMeasuredOverwrite]=useState(false)
   const [bulkUndo,setBulkUndo]=useState<Record<string,V5Edit>|null>(()=>{try{return JSON.parse(localStorage.getItem('osrs-v5-last-bulk-snapshot')||'null')}catch{return null}})
+  const [bulkValidationErrors,setBulkValidationErrors]=useState<string[]>([])
+  const [bulkReport,setBulkReport]=useState<{restored:number;updated:number;estimates:number;measuredPreserved:number;ignored:string[];errors:number;preview:string[]} | null>(null)
   const [v4Page, setV4Page] = useState(1)
   const V4_PAGE_SIZE = 30
   const [measurementHistory, setMeasurementHistory] = useState<Record<string,Measurement[]>>(() => {
@@ -1391,6 +1393,30 @@ export default function App() {
   }
 
   useEffect(()=>{localStorage.setItem('osrs-v5-edits',JSON.stringify(v5Edits))},[v5Edits])
+  useEffect(()=>{
+    const recoveryKey='osrs-v5-bulk-recovery-v585'
+    if(localStorage.getItem(recoveryKey))return
+    let snapshot:Record<string,V5Edit>|null=null
+    try{snapshot=JSON.parse(localStorage.getItem('osrs-v5-last-bulk-snapshot')||'null')}catch{}
+    if(snapshot){
+      const merged:Record<string,V5Edit>={}
+      Object.entries(V5_BULK_SEED_EDITS).forEach(([id,seed])=>{merged[id]={...seed}})
+      Object.entries(snapshot).forEach(([id,user])=>{merged[id]={...(merged[id]||{}),...user}})
+      const measuredPreserved=Object.values(snapshot).filter(x=>typeof x.measuredRate==='number'&&x.measuredRate>0).length
+      setV5Edits(merged)
+      setBulkUndo(snapshot)
+      setBulkReport({
+        restored:Object.keys(snapshot).length,
+        updated:Object.keys(V5_BULK_SEED_EDITS).length,
+        estimates:Object.values(V5_BULK_SEED_EDITS).filter(x=>typeof x.estimatedRate==='number').length,
+        measuredPreserved,
+        ignored:['Estimate Basis','Audit Flag'],
+        errors:0,
+        preview:V5_CATALOGUE.slice(0,10).map(a=>`${a.id} | ${a.name} | ${a.member?'P2P':'F2P'} | ${a.skills[0]} | ${a.level} | ${a.quality||'NEEDS_VERIFICATION'}`)
+      })
+    }
+    localStorage.setItem(recoveryKey,'1')
+  },[])
   useEffect(()=>{
     // Backward-compatible measurement migration: preserve legacy stores and mirror known measurements to canonical IDs.
     setV5Edits(old=>{
@@ -2435,41 +2461,56 @@ export default function App() {
   }
   const previewCsvText=(text:string)=>{
     const lines=text.replace(/^\ufeff/,'').split(/\r?\n/).filter(x=>x.trim())
-    if(!lines.length){setBulkPreview([]);return}
+    if(!lines.length){setBulkPreview([]);setBulkValidationErrors(['CSV boş.']);return}
     const delimiter=lines[0].includes('\t')?'\t':','
     const header=parseDelimitedLine(lines[0],delimiter).map(x=>x.trim())
-    const idx=(name:string)=>header.findIndex(h=>h.toLowerCase()===name.toLowerCase())
-    const full=idx('Activity ID')>=0&&idx('Estimated Rate/h')>=0
-    if(!full){setBulkPaste(text);setTimeout(()=>{},0);return}
+    const headerMap=new Map(header.map((h,i)=>[h.toLowerCase(),i]))
+    const idx=(name:string)=>headerMap.get(name.toLowerCase())??-1
+    const required=['Activity ID','Activity','F2P/P2P','Skill','Level','Quality','Theory Rate/h','Estimated Rate/h','Measured Rate/h','XP/unit','Attention','Notes']
+    const missingHeaders=required.filter(h=>idx(h)<0)
+    if(missingHeaders.length){setBulkPreview([]);setBulkValidationErrors([`Eksik header: ${missingHeaders.join(', ')}`]);return}
+    const allowedQuality=new Set(['VERIFIED','NEEDS_VERIFICATION','PLACEHOLDER','DUPLICATE','INCOMPLETE','DEPRECATED'])
+    const allowedSkills=new Set(Object.keys(DEFAULT_LEVELS))
+    const validation:string[]=[]
+    const parsed=lines.slice(1).map((raw,rowIndex)=>{
+      const c=parseDelimitedLine(raw,delimiter)
+      const get=(name:string)=>(c[idx(name)]||'').trim()
+      const id=get('Activity ID'),name=get('Activity'),membership=get('F2P/P2P'),skill=get('Skill'),level=get('Level'),quality=get('Quality')
+      if(!id)validation.push(`Satır ${rowIndex+2}: Activity ID boş.`)
+      else if(!(id.startsWith('v5-')||id.startsWith('econ-')))validation.push(`Satır ${rowIndex+2}: Geçersiz Activity ID: ${id}`)
+      if(!name)validation.push(`Satır ${rowIndex+2}: Activity boş.`)
+      if(!['F2P','P2P'].includes(membership))validation.push(`Satır ${rowIndex+2}: F2P/P2P yalnız F2P veya P2P olabilir.`)
+      if(!allowedSkills.has(skill))validation.push(`Satır ${rowIndex+2}: Geçersiz skill: ${skill}`)
+      if(level===''||!Number.isFinite(Number(level)))validation.push(`Satır ${rowIndex+2}: Level numeric olmalı.`)
+      if(!allowedQuality.has(quality))validation.push(`Satır ${rowIndex+2}: Geçersiz Quality: ${quality}`)
+      ;['Theory Rate/h','Estimated Rate/h','Measured Rate/h','XP/unit'].forEach(col=>{const s=get(col);if(s!==''&&!Number.isFinite(Number(s)))validation.push(`Satır ${rowIndex+2}: ${col} numeric veya boş olmalı.`)})
+      return {raw,get,id,name,membership,skill,level,quality}
+    })
+    if(validation.length){setBulkPreview([]);setBulkValidationErrors(validation);setBulkReport(r=>r?{...r,errors:validation.length}:null);return}
     const preview:BulkPreviewRow[]=[]
-    lines.slice(1).forEach(raw=>{
-      const c=parseDelimitedLine(raw,delimiter), key=(c[idx('Activity ID')]||c[idx('Activity')]||'').trim()
-      const matches=V5_CATALOGUE.filter(a=>a.id===key)
-      const nameMatches=matches.length?matches:V5_CATALOGUE.filter(a=>a.name.trim().toLowerCase()===key.toLowerCase())
-      if(!nameMatches.length){preview.push({raw,key,status:'NOT FOUND'});return}
-      if(nameMatches.length>1){preview.push({raw,key,status:'AMBIGUOUS',message:`${nameMatches.length} matches`});return}
-      const a=nameMatches[0], current=v5Edits[a.id]||{}, patch:Partial<V5Edit>={}
-      const num=(name:string)=>{const j=idx(name);if(j<0||!c[j]?.trim())return undefined;const n=Number(c[j]);return Number.isFinite(n)?n:undefined}
+    parsed.forEach(({raw,get,id,name,quality})=>{
+      const idMatches=V5_CATALOGUE.filter(a=>a.id===id)
+      if(!idMatches.length){preview.push({raw,key:id,status:'NOT FOUND',message:'Activity ID database içinde bulunamadı'});return}
+      const a=idMatches[0]
+      if(a.name.trim()!==name.trim()){preview.push({raw,key:id,activityId:a.id,activityName:a.name,status:'AMBIGUOUS',message:`ID eşleşti fakat Activity adı farklı: CSV="${name}" DB="${a.name}"`});return}
+      const current=v5Edits[a.id]||{}, patch:Partial<V5Edit>={}
+      const num=(col:string)=>get(col)===''?undefined:Number(get(col))
       const theory=num('Theory Rate/h'),estimate=num('Estimated Rate/h'),measured=num('Measured Rate/h'),xp=num('XP/unit')
       if(theory!==undefined)patch.theoryRate=theory
       if(estimate!==undefined)patch.estimatedRate=estimate
       if(bulkAllowMeasuredOverwrite&&measured!==undefined)patch.measuredRate=measured
       if(xp!==undefined)patch.xpEach=xp
-      const att=idx('Attention')>=0?(c[idx('Attention')]||'').trim().toUpperCase():''
+      const att=get('Attention').toUpperCase()
       if(['HIGH','MEDIUM','LOW','AFK'].includes(att))patch.attention=att as any
-      const q=idx('Quality')>=0?(c[idx('Quality')]||'').trim():''
-      if(q)patch.quality=q as any
-      const note=idx('Notes')>=0?(c[idx('Notes')]||'').trim():''
-      if(note)patch.note=note
-      const eb=idx('Estimate Basis')>=0?(c[idx('Estimate Basis')]||'').trim():''
-      if(eb)patch.estimateBasis=eb
-      const af=idx('Audit Flag')>=0?(c[idx('Audit Flag')]||'').trim():''
-      if(af)patch.auditFlag=af
-      if(theory!==undefined)patch.rateSource=q==='VERIFIED'?'VERIFIED THEORY':'THEORY'
+      patch.quality=quality as any
+      const note=get('Notes');if(note)patch.note=note
+      // Estimate Basis and Audit Flag are intentionally ignored: they never shift mapping.
+      if(theory!==undefined)patch.rateSource=quality==='VERIFIED'?'VERIFIED THEORY':'THEORY'
       else if(estimate!==undefined)patch.rateSource='ESTIMATE'
       const changed=Object.entries(patch).some(([k,v])=>(current as any)[k]!==v)
-      preview.push({raw,key,activityId:a.id,activityName:a.name,status:changed?'WOULD UPDATE':'NO CHANGE',patch})
+      preview.push({raw,key:id,activityId:a.id,activityName:a.name,status:changed?'WOULD UPDATE':'NO CHANGE',patch})
     })
+    setBulkValidationErrors([])
     setBulkPreview(preview)
   }
   const importCsvFile=async(file:File|null)=>{
@@ -2509,24 +2550,35 @@ export default function App() {
   }
   const snapshotBulk=()=>{localStorage.setItem('osrs-v5-last-bulk-snapshot',JSON.stringify(v5Edits));setBulkUndo(v5Edits)}
   const applyBulkImport=()=>{
+    const blockers=bulkValidationErrors.length+bulkPreview.filter(x=>x.status==='NOT FOUND'||x.status==='AMBIGUOUS').length
+    if(blockers){setBulkReport({restored:0,updated:0,estimates:0,measuredPreserved:0,ignored:['Estimate Basis','Audit Flag'],errors:blockers,preview:[]});return}
     const updates=bulkPreview.filter(x=>x.status==='WOULD UPDATE'&&x.activityId&&x.patch)
     if(!updates.length)return
+    const before=v5Edits
     snapshotBulk()
+    const measuredPreserved=updates.filter(x=>!bulkAllowMeasuredOverwrite&&typeof before[x.activityId!]?.measuredRate==='number').length
     setV5Edits(old=>{
       const next={...old}
       updates.forEach(x=>{
-        const before=next[x.activityId!]||{}
+        const prior=next[x.activityId!]||{}
         const patch={...x.patch!}
         if(!bulkAllowMeasuredOverwrite)delete patch.measuredRate
-        next[x.activityId!]={...before,...patch}
+        next[x.activityId!]={...prior,...patch}
       })
       return next
+    })
+    setBulkReport({
+      restored:0,updated:updates.length,
+      estimates:updates.filter(x=>typeof x.patch?.estimatedRate==='number').length,
+      measuredPreserved,
+      ignored:['Estimate Basis','Audit Flag'],errors:0,
+      preview:bulkPreview.filter(x=>x.activityId).slice(0,10).map(x=>{const a=V5_CATALOGUE.find(a=>a.id===x.activityId)!;return `${a.id} | ${a.name} | ${a.member?'P2P':'F2P'} | ${a.skills[0]} | ${a.level} | ${x.patch?.quality??a.quality??'NEEDS_VERIFICATION'}`})
     })
     setBulkPreview(old=>old.map(x=>x.status==='WOULD UPDATE'?{...x,status:'MATCHED'}:x))
   }
   const undoLastBulk=()=>{
     if(!bulkUndo)return
-    setV5Edits(bulkUndo);localStorage.removeItem('osrs-v5-last-bulk-snapshot');setBulkUndo(null)
+    setV5Edits(bulkUndo);setBulkReport({restored:Object.keys(bulkUndo).length,updated:0,estimates:0,measuredPreserved:Object.values(bulkUndo).filter(x=>typeof x.measuredRate==='number').length,ignored:['Estimate Basis','Audit Flag'],errors:0,preview:[]});localStorage.removeItem('osrs-v5-last-bulk-snapshot');setBulkUndo(null)
   }
   const applyBulkCommon=()=>{
     const ids=Object.keys(bulkSelected).filter(id=>bulkSelected[id])
@@ -2611,7 +2663,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.8.4 — CSV Import + Filled Seed</h1>
+          <h1>OSRS Economy Scanner V5.8.5 — Safe CSV Recovery</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2657,7 +2709,7 @@ export default function App() {
               <section style={{marginBottom:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
                 <h3 style={{marginTop:0}}>V5.8.1 — Live Economy Top 10</h3>
                 <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Default liste yalnız OPEN + VERIFIED + priceable ekonomik kayıtları kullanır. Effective Rate önceliği MEASURED → LEVEL MODEL → THEORY → ESTIMATE. PLACEHOLDER/DUPLICATE varsayılan sıralamaya girmez.</div>
-                <label style={{fontSize:10,display:'inline-flex',gap:5,alignItems:'center',marginBottom:7}}><input type="checkbox" checked={v5IncludeUnverified} onChange={e=>setV5IncludeUnverified(e.target.checked)}/> Include unverified / research candidates</label>
+                <label style={{fontSize:10,display:'inline-flex',gap:5,alignItems:'center',marginBottom:7}}><input type="checkbox" checked={v5IncludeUnverified} onChange={e=>setV5IncludeUnverified(e.target.checked)}/> Experimental / Candidate ranking (include unverified)</label>
                 <div className="tableBox"><table><thead><tr><th>#</th><th>Activity</th><th>Skill</th><th>Kâr/adet</th><th>Effective GP/h</th><th>Rate/h</th><th>Rate Source</th><th>Liquidity</th><th>Capacity GP/h</th><th>Quality</th></tr></thead><tbody>
                 {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}{x.economy&&<div style={{fontSize:9,color:'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div></>:<div>Canlı fiyat modeli: {x.economy.liveEligible?'fiyat eşleşmesi eksik':'henüz tanımlı değil'}</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{fmt(x.economy?.profitEach)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{x.rateSource||x.source}</td><td>{x.liquidityLabel||'—'}{x.batchVolumePct!==null&&x.batchVolumePct!==undefined?<div style={{fontSize:9}}>{fmt(x.batchVolumePct,1)}% / {x.batchSize}</div>:null}</td><td>{fmt(x.capacityAdjustedGpHour)}</td><td>{x.quality||'LEGACY'}</td></tr>)}
                 {!v5Top.length&&<tr><td colSpan={10}>Mevcut level/mod ile VERIFIED pozitif GP/h adayı yok.</td></tr>}
@@ -3606,7 +3658,7 @@ export default function App() {
         </section>
 
         <section style={{marginBottom:12}}>
-          <div className="tableBox"><table><thead><tr><th></th><th>Activity ID</th><th>Activity</th><th>F2P/P2P</th><th>Skill</th><th>Level</th><th>Quality</th><th>Theory Rate/h</th><th>Estimated Rate/h</th><th>Measured Rate/h</th><th>XP/unit</th><th>Attention</th><th>Notes</th></tr></thead><tbody>
+          <div className="tableBox"><table><thead><tr><th>Select</th><th>Activity ID</th><th>Activity</th><th>F2P/P2P</th><th>Skill</th><th>Level</th><th>Quality</th><th>Theory Rate/h</th><th>Estimated Rate/h</th><th>Measured Rate/h</th><th>XP/unit</th><th>Attention</th><th>Notes</th></tr></thead><tbody>
             {bulkActivityRows.map(x=><tr key={x.id}><td><input type="checkbox" checked={!!bulkSelected[x.id]} onChange={e=>setBulkSelected(s=>({...s,[x.id]:e.target.checked}))}/></td><td>{x.id}</td><td className="name">{x.name}</td><td>{x.member?'P2P':'F2P'}</td><td>{x.skills.join('/')}</td><td>{x.level}</td><td>{x.quality}</td>
               <td><input style={{width:80}} type="number" value={x.edit.theoryRate??''} onChange={e=>v5Update(x.id,{theoryRate:e.target.value===''?undefined:Number(e.target.value),rateSource:e.target.value===''?x.edit.rateSource:(x.quality==='VERIFIED'?'VERIFIED THEORY':'THEORY')})}/></td>
               <td><input style={{width:80}} type="number" value={x.edit.estimatedRate??''} onChange={e=>v5Update(x.id,{estimatedRate:e.target.value===''?undefined:Number(e.target.value),rateSource:e.target.value===''?x.edit.rateSource:'ESTIMATE'})}/></td>
@@ -3632,10 +3684,16 @@ export default function App() {
           <textarea value={bulkPaste} onChange={e=>{setBulkPaste(e.target.value);setBulkPreview([])}} rows={8} style={{width:'100%',boxSizing:'border-box'}} placeholder={'Activity ID\tTheory Rate/h\tEstimated Rate/h\tXP/unit\tAttention\tNote'}/>
           <div style={{display:'flex',gap:8,alignItems:'center',marginTop:7,flexWrap:'wrap'}}>
             <button onClick={parseBulkPreview}>Preview Import</button>
-            <button onClick={applyBulkImport} disabled={!bulkPreview.some(x=>x.status==='WOULD UPDATE')}>Confirm Import</button>
+            <button onClick={applyBulkImport} disabled={!!bulkValidationErrors.length||bulkPreview.some(x=>x.status==='NOT FOUND'||x.status==='AMBIGUOUS')||!bulkPreview.some(x=>x.status==='WOULD UPDATE')}>Confirm Import</button>
             <button onClick={undoLastBulk} disabled={!bulkUndo}>Undo Last Bulk Import</button>
             <label style={{display:'flex',gap:4,alignItems:'center'}}><input type="checkbox" checked={bulkAllowMeasuredOverwrite} onChange={e=>setBulkAllowMeasuredOverwrite(e.target.checked)}/> Allow overwrite measured data</label>
           </div>
+          {!!bulkValidationErrors.length&&<div className="error" style={{marginTop:8}}><b>IMPORT DURDURULDU — {bulkValidationErrors.length} validation error</b><div style={{maxHeight:140,overflow:'auto',fontSize:10}}>{bulkValidationErrors.slice(0,50).map((e,i)=><div key={i}>{e}</div>)}</div></div>}
+          {bulkReport&&<div style={{marginTop:10,padding:10,border:'1px solid #30363d',borderRadius:6,fontSize:11}}>
+            <b>Bulk Import Control Report</b>
+            <div>Restored records: {bulkReport.restored}</div><div>Imported/updated records: {bulkReport.updated}</div><div>Estimated rates imported: {bulkReport.estimates}</div><div>Measured rates preserved: {bulkReport.measuredPreserved}</div><div>Ignored extra columns: {bulkReport.ignored.join(', ')}</div><div>Validation errors: {bulkReport.errors}</div>
+            {!!bulkReport.preview.length&&<><div style={{marginTop:6}}><b>First 10 preview</b></div>{bulkReport.preview.map((x,i)=><div key={i} style={{fontFamily:'monospace'}}>{x}</div>)}</>}
+          </div>}
           {!!bulkPreview.length&&<div className="tableBox" style={{marginTop:8}}><table><thead><tr><th>Key</th><th>Activity</th><th>Status</th><th>Change</th></tr></thead><tbody>{bulkPreview.map((x,i)=><tr key={i}><td>{x.key}</td><td>{x.activityName||'—'}</td><td><b>{x.status}</b></td><td>{x.message||Object.entries(x.patch||{}).map(([k,v])=>`${k}=${v}`).join(' • ')}</td></tr>)}</tbody></table></div>}
         </section>
       </div>}
