@@ -2130,15 +2130,15 @@ export default function App() {
     // V5 broad catalogue adds verified explicit input→output activities not already covered above.
     v5Rows.forEach(x=>{
       if(byName.has(x.name)||!x.economy.inputs.length||!x.economy.outputName)return
-      const measured=x.edit.measuredRate!==undefined&&x.edit.measuredRate>0
-      const rate=measured?x.edit.measuredRate:(x.rate>0?x.rate:null)
+      const measured=typeof x.edit.measuredRate==='number'&&x.edit.measuredRate>0
+      const rate:number|null=measured?(x.edit.measuredRate as number):(x.rate>0?x.rate:null)
       const reqText=(x as any).requirement
       const reqs=reqText?[String(reqText)]:[]
       const status=x.open?'✓ AÇIK':x.member&&mode==='F2P'?'🔒 MEMBERS':x.current<x.level?`🔒 ${x.skills.join('/')} ${x.level}`:reqs.length?`🔒 ${reqs.join(', ')}`:'🔒 LOCKED'
       byName.set(x.name,{
         id:`v5:${x.id}`,name:x.name,skill:x.skills.join('/'),level:x.level,member:x.member,open:x.open,status,requirements:reqs,
         inputs:x.economy.inputs.map(i=>({name:i.name,qty:i.qty})),outputName:x.economy.outputName,outputQty:x.economy.outputQty||1,
-        xpEach:typeof x.xpHour==='number'&&x.xpHour>0&&x.rate>0?x.xpHour/x.rate:null,rate,rateSource:measured?'GERÇEK ÖLÇÜM':rate?'TEORİK':'DATA REQUIRED',kind:'PROCESS',fixedOutputNet:null
+        xpEach:typeof x.xpHour==='number'&&x.xpHour>0&&rate!==null&&rate>0?x.xpHour/rate:null,rate,rateSource:measured?'GERÇEK ÖLÇÜM':rate?'TEORİK':'DATA REQUIRED',kind:'PROCESS',fixedOutputNet:null
       })
     })
     return [...byName.values()].sort((a,b)=>Number(b.open)-Number(a.open)||a.skill.localeCompare(b.skill)||a.level-b.level||a.name.localeCompare(b.name))
@@ -2322,7 +2322,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.7.1 — Smart Order Advisor+</h1>
+          <h1>OSRS Economy Scanner V5.7.2 — Smart Order Advisor+</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
