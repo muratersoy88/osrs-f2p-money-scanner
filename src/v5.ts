@@ -206,6 +206,27 @@ out.forEach(a=>{
  if(a.economyReady===undefined)a.economyReady=!!(a.economicModel||a.kind==='GATHERING'||(a.kind==='PROCESSING'&&(a.inputs?.length||a.input)&&a.output))
 })
 
+// V6 freeze anchors: known economy families are represented without pretending unverified recipe data is VERIFIED.
+// They stay out of all real-money rankings until their exact recipe/requirements are source-verified.
+needs({id:'canonical-high-alch-basket',name:'High Alchemy basket engine',pages:['magic'],skills:['Magic'],level:55,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',economicModel:'FIXED_VALUE',rateSource:'DATA_REQUIRED',economyReady:false,note:'Basket/scanner family. Existing legacy High Alch methods remain available; canonical basket needs verified item acquisition/alch-value/limit dataset before ranking.'})
+needs({id:'canonical-superheat',name:'Superheat Item',pages:['magic'],skills:['Magic'],level:43,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',rateSource:'DATA_REQUIRED',economyReady:false,note:'Family anchor only; ore/bar recipe variants must be source-verified before economic ranking.'})
+needs({id:'canonical-bow-stringing',name:'Bow stringing family',pages:['fletching'],skills:['Fletching'],level:1,member:true,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',rateSource:'DATA_REQUIRED',economyReady:false,note:'Family anchor; generated bow rows are retained for ID/history safety and require source verification.'})
+needs({id:'canonical-battlestaff-orb',name:'Battlestaff / orb processing family',pages:['crafting'],skills:['Crafting'],level:1,member:true,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',rateSource:'DATA_REQUIRED',economyReady:false,note:'Family anchor; exact orb/staff recipes and levels require source verification.'})
+needs({id:'canonical-member-jewellery',name:'Member jewellery family',pages:['crafting'],skills:['Crafting'],level:1,member:true,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',rateSource:'DATA_REQUIRED',economyReady:false,note:'Family anchor; member-only jewellery variants require source verification.'})
+
+// Generated-family safety audit: correct only stable requirements we can assert from the canonical family model;
+// uncertain generated records remain non-VERIFIED and therefore cannot enter Live Money/Bond recommendations.
+const bowLevelFix:Record<string,number>={
+ 'Fletch Logs shortbow (u)':5,'Fletch Logs longbow (u)':10,'String Logs longbow':10,
+ 'Fletch Oak shortbow (u)':20,'Fletch Oak longbow (u)':25,'String Oak longbow':25,
+ 'Fletch Willow shortbow (u)':35,'Fletch Willow longbow (u)':40,'String Willow longbow':40,
+ 'Fletch Maple shortbow (u)':50,'Fletch Maple longbow (u)':55,'String Maple longbow':55,
+ 'Fletch Yew shortbow (u)':65,'Fletch Yew longbow (u)':70,'String Yew longbow':70,
+ 'Fletch Magic shortbow (u)':80,'Fletch Magic longbow (u)':85,'String Magic longbow':85
+}
+out.forEach(a=>{if(bowLevelFix[a.name]!==undefined)a.level=bowLevelFix[a.name]})
+out.forEach(a=>{if(a.name.includes('Redwood')&&(a.name.includes('shortbow')||a.name.includes('longbow'))){a.quality='NEEDS_VERIFICATION';a.economyReady=false;a.note='Generated family row retained for ID safety; not eligible for economy ranking.'}})
+
 // Do not delete duplicate legacy/generated rows: mark older generated copies so edit/history IDs remain stable.
 const verifiedNames=new Set(out.filter(a=>a.quality==='VERIFIED').map(a=>a.name.trim().toLowerCase()))
 out.forEach(a=>{
