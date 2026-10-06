@@ -1204,7 +1204,7 @@ export default function App() {
   const [v4ViewAll, setV4ViewAll] = useState(false)
   const [v4KindFilter, setV4KindFilter] = useState('ALL')
   const [v4PlannerItem, setV4PlannerItem] = useState('')
-  const [activeTab, setActiveTab] = useState<'dashboard'|'smart'|'skills'|'money'|'planner'|'database'|'coverage'>('dashboard')
+  const [activeTab, setActiveTab] = useState<'dashboard'|'smart'|'skills'|'money'|'planner'|'database'|'coverage'|'bulk'>('dashboard')
   const [v5Page,setV5Page]=useState<V5PageId>('melee')
   const [v5Search,setV5Search]=useState('')
   const [v5ShowLocked,setV5ShowLocked]=useState(true)
@@ -1235,6 +1235,7 @@ export default function App() {
   const [smartLoading,setSmartLoading]=useState<Record<string,boolean>>({})
   const [smartError,setSmartError]=useState('')
   const [smartRecipeId,setSmartRecipeId]=useState('')
+  const [smartRecipeSearch,setSmartRecipeSearch]=useState('')
   const [orderHistory,setOrderHistory]=useState<OrderHistoryRow[]>(()=>{try{return JSON.parse(localStorage.getItem('osrs-order-history-v56')||'[]')}catch{return[]}})
   const [historyDraft,setHistoryDraft]=useState({item:'',side:'BUY' as OrderSide,quantity:500,orderPrice:0,filledQuantity:0,fillHours:'',status:'FILLED' as OrderStatus,averageFillPrice:''})
 
@@ -1250,6 +1251,23 @@ export default function App() {
   const [v5MoneyData,setV5MoneyData]=useState('ALL')
   const [v5MoneySearch,setV5MoneySearch]=useState('')
   const [v5IncludeUnverified,setV5IncludeUnverified]=useState(false)
+  type BulkPreviewStatus='MATCHED'|'NOT FOUND'|'AMBIGUOUS'|'WOULD UPDATE'|'NO CHANGE'
+  type BulkPreviewRow={raw:string;key:string;activityId?:string;activityName?:string;status:BulkPreviewStatus;patch?:Partial<V5Edit>;message?:string}
+  const [bulkMode,setBulkMode]=useState('ALL')
+  const [bulkSkill,setBulkSkill]=useState('ALL')
+  const [bulkAccess,setBulkAccess]=useState('ALL')
+  const [bulkQuality,setBulkQuality]=useState('ALL')
+  const [bulkMissingOnly,setBulkMissingOnly]=useState(false)
+  const [bulkSearch,setBulkSearch]=useState('')
+  const [bulkPaste,setBulkPaste]=useState('')
+  const [bulkPreview,setBulkPreview]=useState<BulkPreviewRow[]>([])
+  const [bulkSelected,setBulkSelected]=useState<Record<string,boolean>>({})
+  const [bulkCommonAttention,setBulkCommonAttention]=useState('')
+  const [bulkCommonQuality,setBulkCommonQuality]=useState('')
+  const [bulkCommonSource,setBulkCommonSource]=useState('')
+  const [bulkCommonNote,setBulkCommonNote]=useState('')
+  const [bulkAllowMeasuredOverwrite,setBulkAllowMeasuredOverwrite]=useState(false)
+  const [bulkUndo,setBulkUndo]=useState<Record<string,V5Edit>|null>(()=>{try{return JSON.parse(localStorage.getItem('osrs-v5-last-bulk-snapshot')||'null')}catch{return null}})
   const [v4Page, setV4Page] = useState(1)
   const V4_PAGE_SIZE = 30
   const [measurementHistory, setMeasurementHistory] = useState<Record<string,Measurement[]>>(() => {
@@ -2120,9 +2138,14 @@ export default function App() {
     const measured=(edit.measuredRate&&edit.measuredRate>0)?edit.measuredRate:(weighted&&weighted>0?weighted:null)
     if(measured!==null)return {rate:measured,source:'MEASURED' as const}
     if(edit.levelAdjustedRate&&edit.levelAdjustedRate>0)return {rate:edit.levelAdjustedRate,source:'LEVEL MODEL' as const}
-    const theory=(edit.theoryRate??a.theoryRate)
-    if(a.quality==='VERIFIED'&&theory>0)return {rate:theory,source:'THEORY' as const}
-    if(theory>0)return {rate:theory,source:'ESTIMATE' as const}
+    const quality=edit.quality??a.quality
+    const theory=edit.theoryRate
+    if(theory!==undefined&&theory>0&&edit.rateSource==='VERIFIED THEORY')return {rate:theory,source:'VERIFIED THEORY' as const}
+    if(theory!==undefined&&theory>0)return {rate:theory,source:'THEORY' as const}
+    if(a.theoryRate>0&&quality==='VERIFIED')return {rate:a.theoryRate,source:'VERIFIED THEORY' as const}
+    const estimate=edit.estimatedRate
+    if(estimate!==undefined&&estimate>0)return {rate:estimate,source:'ESTIMATE' as const}
+    if(a.theoryRate>0)return {rate:a.theoryRate,source:'ESTIMATE' as const}
     return {rate:0,source:'ESTIMATE' as const}
   }
 
@@ -2152,7 +2175,7 @@ export default function App() {
     // Old measuredGpHour/theoryGpHour edit fields are retained in localStorage for backward compatibility,
     // but must never freeze a live calculation after GE prices change.
     const manualGpOverride=edit.gpOverride
-    const quality=a.quality||'NEEDS_VERIFICATION'
+    const quality=edit.quality??a.quality??'NEEDS_VERIFICATION'
     const rankableQuality=quality==='VERIFIED'
     const automaticEffectiveGpHour=liveGp
     const gp=manualGpOverride??automaticEffectiveGpHour??(rankableQuality?a.theoryGpHour:0)
@@ -2186,7 +2209,7 @@ export default function App() {
     const baseLiquidityScore=outputVolume24h===null?null:batchVolumePct!==null?(batchVolumePct<=1?100:batchVolumePct<=5?80:batchVolumePct<=15?60:batchVolumePct<=35?40:20):null
     const liquidityScore=baseLiquidityScore===null?null:Math.max(0,Math.min(100,baseLiquidityScore+(histFillRatio===null?0:(histFillRatio-.5)*30*historyWeight)-(avgSellFillHours!==null&&avgSellFillHours>24?15*historyWeight:0)))
     const liquidityLabel=liquidityScore===null?'DATA REQUIRED':liquidityScore>=80?'HIGH':liquidityScore>=50?'MEDIUM':'LOW'
-    return {...a,edit,current,open,gp,rate,rateSource,source,quality,rankableQuality,economy,liveGp,automaticEffectiveGpHour,theoryGpHour,measuredGpHour,measuredRate,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital,manualGpOverride,outputVolume24h,batchSize,batchVolumePct,marketCapacityPerDay,productionCapacityPerDay,capacityFactor,capacityAdjustedGpHour,sustainableHoursPerDay,liquidityScore,liquidityLabel,calibratedParticipation,histFillRatio,avgSellFillHours}
+    return {...a,attention:edit.attention??a.attention,xpEach:edit.xpEach??a.xpEach,edit,current,open,gp,rate,rateSource,source,quality,rankableQuality,economy,liveGp,automaticEffectiveGpHour,theoryGpHour,measuredGpHour,measuredRate,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital,manualGpOverride,outputVolume24h,batchSize,batchVolumePct,marketCapacityPerDay,productionCapacityPerDay,capacityFactor,capacityAdjustedGpHour,sustainableHoursPerDay,liquidityScore,liquidityLabel,calibratedParticipation,histFillRatio,avgSellFillHours}
   }),[mode,levels,v5Edits,v5BuyTargets,prices,mapping,volumes,measurementHistory,dailyMaxHours,smartQty,orderHistory])
   type SmartRecipeRow={
     id:string;name:string;skill:string;level:number;member:boolean;open:boolean;status:string;requirements:string[];
@@ -2226,6 +2249,10 @@ export default function App() {
     })
     return [...byName.values()].sort((a,b)=>Number(b.open)-Number(a.open)||a.skill.localeCompare(b.skill)||a.level-b.level||a.name.localeCompare(b.name))
   },[rows,v5Rows,mode])
+  const filteredSmartRecipes=useMemo(()=>{
+    const q=smartRecipeSearch.trim().toLowerCase()
+    return q?smartRecipes.filter(x=>[x.name,x.skill,x.member?'members':'f2p',String(x.level)].join(' ').toLowerCase().includes(q)):smartRecipes
+  },[smartRecipes,smartRecipeSearch])
   const selectedSmartRecipe=smartRecipes.find(x=>x.id===smartRecipeId)||null
   const smartRecipeCalc=selectedSmartRecipe?(()=>{
     const inputAdv=selectedSmartRecipe.inputs.map(inp=>({inp,adv:smartAdvice(inp.name,smartProfile,smartQty)}))
@@ -2363,6 +2390,97 @@ export default function App() {
   ,[unifiedRanking,v5MoneySkill,v5MoneyKind,v5MoneyAttention,v5MoneyData,v5MoneySearch])
   const v5PageInfo=V5_PAGES.find(p=>p.id===v5Page)!
   const v5Update=(id:string,patch:Partial<V5Edit>)=>setV5Edits(old=>({...old,[id]:{...(old[id]||{}),...patch}}))
+  const bulkActivityRows=useMemo(()=>v5Rows.filter(x=>{
+    if(bulkMode==='F2P'&&x.member)return false
+    if(bulkMode==='MEMBER'&&!x.member)return false
+    if(bulkSkill!=='ALL'&&!x.skills.includes(bulkSkill))return false
+    if(bulkAccess==='OPEN'&&!x.open)return false
+    if(bulkAccess==='LOCKED'&&x.open)return false
+    if(bulkQuality!=='ALL'&&x.quality!==bulkQuality)return false
+    if(bulkMissingOnly&&x.rate>0)return false
+    if(bulkSearch.trim()){
+      const q=bulkSearch.trim().toLowerCase()
+      if(![x.id,x.name,...x.skills].join(' ').toLowerCase().includes(q))return false
+    }
+    return true
+  }),[v5Rows,bulkMode,bulkSkill,bulkAccess,bulkQuality,bulkMissingOnly,bulkSearch])
+  const bulkSkills=useMemo(()=>Array.from(new Set(V5_CATALOGUE.flatMap(x=>x.skills))).sort(),[])
+  const bulkTsv=(rows=bulkActivityRows)=>[
+    ['Activity ID','Activity','F2P/P2P','Skill','Level','Quality','Theory Rate/h','Estimated Rate/h','Measured Rate/h','XP/unit','Attention','Notes'].join('\t'),
+    ...rows.map(x=>[x.id,x.name,x.member?'P2P':'F2P',x.skills.join('/'),x.level,x.quality,x.edit.theoryRate??'',x.edit.estimatedRate??'',x.measuredRate??'',x.xpEach??'',x.attention,x.edit.note??x.note??''].join('\t'))
+  ].join('\n')
+  const missingRateTsv=()=>[
+    ['Activity ID','Activity','F2P/P2P','Skill','Level','Current Theory Rate','Current Measured Rate','Quality'].join('\t'),
+    ...bulkActivityRows.filter(x=>x.rate<=0||x.quality==='PLACEHOLDER'||x.rateSource==='THEORY'||x.rateSource==='ESTIMATE').map(x=>[x.id,x.name,x.member?'P2P':'F2P',x.skills.join('/'),x.level,x.edit.theoryRate??x.theoryRate??'',x.measuredRate??'',x.quality].join('\t'))
+  ].join('\n')
+  const copyText=async(text:string)=>{try{await navigator.clipboard.writeText(text)}catch{const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}}
+  const exportCsv=(text:string,name:string)=>{
+    const rows=text.split('\n').map(line=>line.split('\t').map(v=>`"${String(v).replaceAll('"','""')}"`).join(',')).join('\r\n')
+    const blob=new Blob(['\ufeff'+rows],{type:'text/csv;charset=utf-8'})
+    const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();URL.revokeObjectURL(url)
+  }
+  const parseBulkPreview=()=>{
+    const lines=bulkPaste.split(/\r?\n/).map(x=>x.trimEnd()).filter(x=>x.trim())
+    const preview:BulkPreviewRow[]=[]
+    lines.forEach((raw,idx)=>{
+      const cols=raw.split('\t')
+      if(idx===0&&/activity id/i.test(cols[0]||''))return
+      const key=(cols[0]||'').trim()
+      const idMatch=V5_CATALOGUE.filter(a=>a.id===key)
+      const nameMatch=idMatch.length?idMatch:V5_CATALOGUE.filter(a=>a.name.trim().toLowerCase()===key.toLowerCase())
+      if(!nameMatch.length){preview.push({raw,key,status:'NOT FOUND'});return}
+      if(nameMatch.length>1){preview.push({raw,key,status:'AMBIGUOUS',message:`${nameMatch.length} exact-name matches; use Activity ID`});return}
+      const a=nameMatch[0], current=v5Edits[a.id]||{}
+      const num=(s:string|undefined)=>s!==undefined&&s.trim()!==''&&Number.isFinite(Number(s))?Number(s):undefined
+      const theory=num(cols[1]),estimate=num(cols[2]),xp=num(cols[3])
+      const attention=(cols[4]||'').trim().toUpperCase()
+      const note=cols.slice(5).join('\t').trim()
+      const patch:Partial<V5Edit>={}
+      if(theory!==undefined)patch.theoryRate=theory
+      if(estimate!==undefined)patch.estimatedRate=estimate
+      if(xp!==undefined)patch.xpEach=xp
+      if(['HIGH','MEDIUM','LOW','AFK'].includes(attention))patch.attention=attention as any
+      if(note)patch.note=note
+      if(theory!==undefined)patch.rateSource=(current.quality??a.quality)==='VERIFIED'?'VERIFIED THEORY':'THEORY'
+      else if(estimate!==undefined)patch.rateSource='ESTIMATE'
+      const changed=Object.entries(patch).some(([k,v])=>(current as any)[k]!==v)
+      preview.push({raw,key,activityId:a.id,activityName:a.name,status:changed?'WOULD UPDATE':'NO CHANGE',patch})
+    })
+    setBulkPreview(preview)
+  }
+  const snapshotBulk=()=>{localStorage.setItem('osrs-v5-last-bulk-snapshot',JSON.stringify(v5Edits));setBulkUndo(v5Edits)}
+  const applyBulkImport=()=>{
+    const updates=bulkPreview.filter(x=>x.status==='WOULD UPDATE'&&x.activityId&&x.patch)
+    if(!updates.length)return
+    snapshotBulk()
+    setV5Edits(old=>{
+      const next={...old}
+      updates.forEach(x=>{
+        const before=next[x.activityId!]||{}
+        const patch={...x.patch!}
+        if(!bulkAllowMeasuredOverwrite)delete patch.measuredRate
+        next[x.activityId!]={...before,...patch}
+      })
+      return next
+    })
+    setBulkPreview(old=>old.map(x=>x.status==='WOULD UPDATE'?{...x,status:'MATCHED'}:x))
+  }
+  const undoLastBulk=()=>{
+    if(!bulkUndo)return
+    setV5Edits(bulkUndo);localStorage.removeItem('osrs-v5-last-bulk-snapshot');setBulkUndo(null)
+  }
+  const applyBulkCommon=()=>{
+    const ids=Object.keys(bulkSelected).filter(id=>bulkSelected[id])
+    if(!ids.length)return
+    const patch:Partial<V5Edit>={}
+    if(bulkCommonAttention)patch.attention=bulkCommonAttention as any
+    if(bulkCommonQuality)patch.quality=bulkCommonQuality as any
+    if(bulkCommonSource)patch.rateSource=bulkCommonSource as any
+    if(bulkCommonNote)patch.note=bulkCommonNote
+    if(!Object.keys(patch).length)return
+    snapshotBulk()
+    setV5Edits(old=>{const next={...old};ids.forEach(id=>next[id]={...(next[id]||{}),...patch});return next})
+  }
   const v5Reset=(id:string)=>setV5Edits(old=>{const n={...old};delete n[id];return n})
 
   const v4SearchResults = useMemo(() => {
@@ -2434,7 +2552,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.8.2 — Live GP/h Recalculation Fix</h1>
+          <h1>OSRS Economy Scanner V5.8.3 — Bulk Data Entry</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2460,7 +2578,7 @@ export default function App() {
 
       <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:8,flexWrap:'wrap',padding:'10px 0',background:'#0d1117',borderBottom:'1px solid #30363d'}}>
         {([
-          ['dashboard','Dashboard'],['smart','Smart Order'],['skills','21 Skill Views'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],['coverage','Database Coverage'],
+          ['dashboard','Dashboard'],['smart','Smart Order'],['skills','21 Skill Views'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],['coverage','Database Coverage'],['bulk','Bulk Data Entry'],
         ] as const).map(([id,label])=><button key={id} type="button" onClick={()=>setActiveTab(id)}
           style={{fontWeight:activeTab===id?800:500,outline:activeTab===id?'2px solid #58a6ff':'none'}}>{label}</button>)}
       </nav>
@@ -2734,7 +2852,7 @@ export default function App() {
         <section style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
           <h3 style={{marginTop:0}}>SMART BUY → PROCESS → SMART SELL</h3>
           <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'end'}}>
-            <label>Processing / Alchemy activity<br/><select value={smartRecipeId} onChange={e=>setSmartRecipeId(e.target.value)} style={{maxWidth:560}}><option value="">Seç...</option>{smartRecipes.map(x=><option key={x.id} value={x.id}>{x.open?'✓':'🔒'} {x.member?'MEMBERS':'F2P'} • {x.skill} {x.level} • {x.name}</option>)}</select></label>
+            <label>Processing / Alchemy activity<br/><input value={smartRecipeSearch} onChange={e=>setSmartRecipeSearch(e.target.value)} placeholder="Hızlı ara: sapphire, steel, cooking..." style={{width:300,marginBottom:4}}/><br/><select value={smartRecipeId} onChange={e=>setSmartRecipeId(e.target.value)} style={{maxWidth:560}}><option value="">Seç... ({filteredSmartRecipes.length})</option>{filteredSmartRecipes.map(x=><option key={x.id} value={x.id}>{x.open?'✓':'🔒'} {x.member?'MEMBERS':'F2P'} • {x.skill} {x.level} • {x.name}</option>)}</select></label>
             <button onClick={loadSmartRecipe} disabled={!selectedSmartRecipe||!selectedSmartRecipe.open}>24h Recipe Verisini Yükle</button>
           </div>
           {selectedSmartRecipe&&<div style={{fontSize:10,color:selectedSmartRecipe.open?'#8b949e':'#d29922',marginTop:6}}>{selectedSmartRecipe.status} • {selectedSmartRecipe.member?'MEMBERS':'F2P'} • Hammadde/ürün 24h serileri yüklenince {smartProfile} fiyatlarıyla hesaplanır. Hız: <b>{selectedSmartRecipe.rateSource}{selectedSmartRecipe.rate!==null?` • ${fmt(selectedSmartRecipe.rate)}/h`:''}</b>{selectedSmartRecipe.requirements.length?` • Gereksinim: ${selectedSmartRecipe.requirements.join(', ')}`:''}</div>}
@@ -3408,6 +3526,59 @@ export default function App() {
       </section>
 
             </div>}
+
+      {activeTab==='bulk'&&<div>
+        <section style={{padding:12,border:'1px solid #58a6ff',borderRadius:8,marginBottom:12}}>
+          <h3 style={{marginTop:0,color:'#f0f6fc'}}>BULK DATA ENTRY / TOPLU VERİ GİRİŞİ</h3>
+          <div style={{fontSize:11,color:'#8b949e',marginBottom:10}}>GP/h girilmez. Rate + recipe + canlı fiyat → Effective GP/h otomatik hesaplanır. Bulk import measuredRate ve measurement history'yi varsayılan olarak değiştirmez.</div>
+          <div style={{display:'flex',gap:7,flexWrap:'wrap',alignItems:'end'}}>
+            <label>Mode<br/><select value={bulkMode} onChange={e=>setBulkMode(e.target.value)}><option value="ALL">ALL</option><option value="F2P">F2P</option><option value="MEMBER">Member</option></select></label>
+            <label>Skill<br/><select value={bulkSkill} onChange={e=>setBulkSkill(e.target.value)}><option value="ALL">ALL</option>{bulkSkills.map(s=><option key={s}>{s}</option>)}</select></label>
+            <label>Access<br/><select value={bulkAccess} onChange={e=>setBulkAccess(e.target.value)}><option value="ALL">ALL</option><option>OPEN</option><option>LOCKED</option></select></label>
+            <label>Quality<br/><select value={bulkQuality} onChange={e=>setBulkQuality(e.target.value)}><option value="ALL">ALL</option>{['VERIFIED','NEEDS_VERIFICATION','PLACEHOLDER','DUPLICATE','INCOMPLETE','DEPRECATED'].map(q=><option key={q}>{q}</option>)}</select></label>
+            <label>Search<br/><input value={bulkSearch} onChange={e=>setBulkSearch(e.target.value)} placeholder="ID / activity / skill"/></label>
+            <label style={{display:'flex',gap:4,alignItems:'center'}}><input type="checkbox" checked={bulkMissingOnly} onChange={e=>setBulkMissingOnly(e.target.checked)}/> Rate missing only</label>
+            <button onClick={()=>copyText(bulkTsv())}>Copy TSV</button>
+            <button onClick={()=>exportCsv(bulkTsv(),'osrs-filtered-activities.csv')}>Export CSV</button>
+            <button onClick={()=>copyText(missingRateTsv())}>Export Missing Rate List</button>
+          </div>
+          <div style={{fontSize:10,color:'#8b949e',marginTop:6}}>{bulkActivityRows.length} activity gösteriliyor.</div>
+        </section>
+
+        <section style={{marginBottom:12}}>
+          <div className="tableBox"><table><thead><tr><th></th><th>Activity ID</th><th>Activity</th><th>F2P/P2P</th><th>Skill</th><th>Level</th><th>Quality</th><th>Theory Rate/h</th><th>Estimated Rate/h</th><th>Measured Rate/h</th><th>XP/unit</th><th>Attention</th><th>Notes</th></tr></thead><tbody>
+            {bulkActivityRows.map(x=><tr key={x.id}><td><input type="checkbox" checked={!!bulkSelected[x.id]} onChange={e=>setBulkSelected(s=>({...s,[x.id]:e.target.checked}))}/></td><td>{x.id}</td><td className="name">{x.name}</td><td>{x.member?'P2P':'F2P'}</td><td>{x.skills.join('/')}</td><td>{x.level}</td><td>{x.quality}</td>
+              <td><input style={{width:80}} type="number" value={x.edit.theoryRate??''} onChange={e=>v5Update(x.id,{theoryRate:e.target.value===''?undefined:Number(e.target.value),rateSource:e.target.value===''?x.edit.rateSource:(x.quality==='VERIFIED'?'VERIFIED THEORY':'THEORY')})}/></td>
+              <td><input style={{width:80}} type="number" value={x.edit.estimatedRate??''} onChange={e=>v5Update(x.id,{estimatedRate:e.target.value===''?undefined:Number(e.target.value),rateSource:e.target.value===''?x.edit.rateSource:'ESTIMATE'})}/></td>
+              <td><b>{x.measuredRate??''}</b></td><td><input style={{width:70}} type="number" value={x.xpEach??''} onChange={e=>v5Update(x.id,{xpEach:e.target.value===''?undefined:Number(e.target.value)})}/></td>
+              <td>{x.attention}</td><td>{x.edit.note??x.note??''}</td></tr>)}
+          </tbody></table></div>
+        </section>
+
+        <section style={{padding:12,border:'1px solid #30363d',borderRadius:8,marginBottom:12}}>
+          <h3 style={{marginTop:0}}>Bulk Edit — Selected Rows</h3>
+          <div style={{display:'flex',gap:7,flexWrap:'wrap',alignItems:'end'}}>
+            <label>Attention<br/><select value={bulkCommonAttention} onChange={e=>setBulkCommonAttention(e.target.value)}><option value="">No change</option>{['HIGH','MEDIUM','LOW','AFK'].map(x=><option key={x}>{x}</option>)}</select></label>
+            <label>Quality<br/><select value={bulkCommonQuality} onChange={e=>setBulkCommonQuality(e.target.value)}><option value="">No change</option>{['VERIFIED','NEEDS_VERIFICATION','PLACEHOLDER','DUPLICATE','INCOMPLETE','DEPRECATED'].map(x=><option key={x}>{x}</option>)}</select></label>
+            <label>Theory/Estimate source<br/><select value={bulkCommonSource} onChange={e=>setBulkCommonSource(e.target.value)}><option value="">No change</option><option>VERIFIED THEORY</option><option>THEORY</option><option>ESTIMATE</option></select></label>
+            <label>Notes<br/><input value={bulkCommonNote} onChange={e=>setBulkCommonNote(e.target.value)} placeholder="Ortak not"/></label>
+            <button onClick={applyBulkCommon}>Apply to selected</button>
+          </div>
+        </section>
+
+        <section style={{padding:12,border:'1px solid #30363d',borderRadius:8}}>
+          <h3 style={{marginTop:0}}>TSV Import</h3>
+          <div style={{fontSize:10,color:'#8b949e',marginBottom:6}}>Format: Activity ID [TAB] Theory Rate/h [TAB] Estimated Rate/h [TAB] XP/unit [TAB] Attention [TAB] Note. Exact Activity Name fallback desteklenir; duplicate isimlerde AMBIGUOUS olur.</div>
+          <textarea value={bulkPaste} onChange={e=>{setBulkPaste(e.target.value);setBulkPreview([])}} rows={8} style={{width:'100%',boxSizing:'border-box'}} placeholder={'Activity ID\tTheory Rate/h\tEstimated Rate/h\tXP/unit\tAttention\tNote'}/>
+          <div style={{display:'flex',gap:8,alignItems:'center',marginTop:7,flexWrap:'wrap'}}>
+            <button onClick={parseBulkPreview}>Preview Import</button>
+            <button onClick={applyBulkImport} disabled={!bulkPreview.some(x=>x.status==='WOULD UPDATE')}>Confirm Import</button>
+            <button onClick={undoLastBulk} disabled={!bulkUndo}>Undo Last Bulk Import</button>
+            <label style={{display:'flex',gap:4,alignItems:'center'}}><input type="checkbox" checked={bulkAllowMeasuredOverwrite} onChange={e=>setBulkAllowMeasuredOverwrite(e.target.checked)}/> Allow overwrite measured data</label>
+          </div>
+          {!!bulkPreview.length&&<div className="tableBox" style={{marginTop:8}}><table><thead><tr><th>Key</th><th>Activity</th><th>Status</th><th>Change</th></tr></thead><tbody>{bulkPreview.map((x,i)=><tr key={i}><td>{x.key}</td><td>{x.activityName||'—'}</td><td><b>{x.status}</b></td><td>{x.message||Object.entries(x.patch||{}).map(([k,v])=>`${k}=${v}`).join(' • ')}</td></tr>)}</tbody></table></div>}
+        </section>
+      </div>}
 
       {activeTab==='coverage'&&<div>
         <section style={{padding:12,border:'1px solid #58a6ff',borderRadius:8,marginBottom:12}}>
