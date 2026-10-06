@@ -100,6 +100,7 @@ const clamp = (n: number, min: number, max: number) =>
 
 const xpForLevel = (level:number) => { let points=0; for(let l=1;l<level;l++) points += Math.floor(l + 300*Math.pow(2,l/7)); return Math.floor(points/4) }
 const weightedSpeed = (list:Measurement[]) => { const q=list.reduce((a,m)=>a+(m.quantity||0),0); const mins=list.reduce((a,m)=>a+(m.minutes||0),0); return q>0&&mins>0?q/mins*60:null }
+const weightedSpeedAtLevel = (list:Measurement[], level:number) => { const same=list.filter(m=>m.skillLevel===level); return weightedSpeed(same.length?same:list.filter(m=>!m.skillLevel)) }
 
 const wineSuccess = (levels: Record<string, number>) => {
   const level = levels.Cooking || 1
@@ -1026,6 +1027,8 @@ type GatheringActivity = {
   regionRequirement?: string
   equipment?: string
   afkWindow?: number
+  consumableItem?: string
+  consumableQty?: number
 }
 
 const GATHERING: GatheringActivity[] = [
@@ -1036,8 +1039,8 @@ const GATHERING: GatheringActivity[] = [
   { name: 'Mine Mithril ore', skill: 'Mining', requiredLevel: 55, f2p: true, verifiedF2P: true, item: 'Mithril ore', xpPerSuccess: 80, theoreticalItemsPerHour: 180, attentionLevel: 'MEDIUM', bankingMethod: 'Bank', competitionRisk: 'HIGH' },
   { name: 'Mine Adamantite ore', skill: 'Mining', requiredLevel: 70, f2p: true, verifiedF2P: true, item: 'Adamantite ore', xpPerSuccess: 95, theoreticalItemsPerHour: 100, attentionLevel: 'MEDIUM', bankingMethod: 'Bank', competitionRisk: 'HIGH' },
   { name: 'Net fish Shrimps / Anchovies', skill: 'Fishing', requiredLevel: 15, f2p: true, verifiedF2P: true, item: 'Raw shrimps', secondaryItem: 'Raw anchovies', primaryShare: 0.5, xpPerSuccess: 10, secondaryXpPerSuccess: 40, theoreticalItemsPerHour: 420, attentionLevel: 'LOW', bankingMethod: 'Bank', competitionRisk: 'LOW', notes: 'Mixed catch; 50/50 planning mix until a personal measured mix is added.' },
-  { name: 'Bait fish Sardine / Herring', skill: 'Fishing', requiredLevel: 10, f2p: true, verifiedF2P: true, item: 'Raw sardine', secondaryItem: 'Raw herring', primaryShare: 0.5, xpPerSuccess: 20, secondaryXpPerSuccess: 30, theoreticalItemsPerHour: 380, attentionLevel: 'LOW', bankingMethod: 'Bank', competitionRisk: 'LOW', notes: 'Mixed catch; bait consumption is not deducted from GP/h yet, so treat GP/h as gross gathering value.' },
-  { name: 'Fly fish Trout / Salmon', skill: 'Fishing', requiredLevel: 30, f2p: true, verifiedF2P: true, item: 'Raw trout', secondaryItem: 'Raw salmon', primaryShare: 0.5, xpPerSuccess: 50, secondaryXpPerSuccess: 70, theoreticalItemsPerHour: 520, attentionLevel: 'LOW', bankingMethod: 'Bank or drop', accessRequirement: 'Fly fishing rod + feathers', competitionRisk: 'LOW', notes: 'Mixed catch; 50/50 planning mix. Feather cost not deducted in gathering value.' },
+  { name: 'Bait fish Sardine / Herring', skill: 'Fishing', requiredLevel: 10, f2p: true, verifiedF2P: true, item: 'Raw sardine', secondaryItem: 'Raw herring', primaryShare: 0.5, xpPerSuccess: 20, secondaryXpPerSuccess: 30, theoreticalItemsPerHour: 380, attentionLevel: 'LOW', bankingMethod: 'Bank', competitionRisk: 'LOW', consumableItem:'Fishing bait', consumableQty:1, notes: 'Mixed catch; Fishing bait is deducted at current GE opportunity cost.' },
+  { name: 'Fly fish Trout / Salmon', skill: 'Fishing', requiredLevel: 30, f2p: true, verifiedF2P: true, item: 'Raw trout', secondaryItem: 'Raw salmon', primaryShare: 0.5, xpPerSuccess: 50, secondaryXpPerSuccess: 70, theoreticalItemsPerHour: 520, attentionLevel: 'LOW', bankingMethod: 'Bank or drop', accessRequirement: 'Fly fishing rod + feathers', competitionRisk: 'LOW', consumableItem:'Feather', consumableQty:1, notes: 'Mixed catch; Feather is deducted at current GE opportunity cost.' },
   { name: 'Harpoon Tuna / Swordfish', skill: 'Fishing', requiredLevel: 50, f2p: true, verifiedF2P: true, item: 'Raw tuna', secondaryItem: 'Raw swordfish', primaryShare: 0.5, xpPerSuccess: 80, secondaryXpPerSuccess: 100, theoreticalItemsPerHour: 240, attentionLevel: 'LOW', bankingMethod: 'Karamja → deposit/bank route', accessRequirement: 'Harpoon; Karamja F2P fishing spot', competitionRisk: 'LOW', notes: 'Mixed catch; 50/50 planning mix.' },
   { name: 'Fish Lobster (Karamja)', skill: 'Fishing', requiredLevel: 40, f2p: true, verifiedF2P: true, item: 'Raw lobster', xpPerSuccess: 90, theoreticalItemsPerHour: 220, attentionLevel: 'LOW', bankingMethod: 'Karamja → deposit/bank route', accessRequirement: 'Lobster pot; Karamja F2P fishing spot', competitionRisk: 'LOW', notes: 'Low-attention pure catch; travel/banking reduces realised GP/h.' },
   { name: 'Chop Normal logs', skill: 'Woodcutting', requiredLevel: 1, f2p: true, verifiedF2P: true, item: 'Logs', xpPerSuccess: 25, theoreticalItemsPerHour: 650, attentionLevel: 'LOW', bankingMethod: 'Bank', competitionRisk: 'LOW' },
@@ -1253,7 +1256,7 @@ export default function App() {
   const [v5AttentionFilter,setV5AttentionFilter]=useState('ALL')
   const [v5DataFilter,setV5DataFilter]=useState('ALL')
   const [v5ProfitFilter,setV5ProfitFilter]=useState('ALL')
-  const [v5Sort,setV5Sort]=useState('GP_DESC')
+  const [v5Sort,setV5Sort]=useState('CAPACITY_DESC')
   const [v5MoneySkill,setV5MoneySkill]=useState('ALL')
   const [v5MoneyKind,setV5MoneyKind]=useState('ALL')
   const [v5MoneyAttention,setV5MoneyAttention]=useState('ALL')
@@ -1340,7 +1343,7 @@ export default function App() {
       const key=localStorage.key(i)
       if (key && key.startsWith('osrs-')) data[key]=localStorage.getItem(key) ?? ''
     }
-    const payload={backupVersion:1,appVersion:'V5.6',createdAt:new Date().toISOString(),data}
+    const payload={backupVersion:1,appVersion:'V6.0-RC',createdAt:new Date().toISOString(),data}
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'})
     const url=URL.createObjectURL(blob)
     const link=document.createElement('a')
@@ -1370,24 +1373,21 @@ export default function App() {
     setError('')
 
     try {
-      const [m, p, v, h6] = await Promise.all([
+      const [m, p, v] = await Promise.all([
         fetch(`${API}/mapping`),
         fetch(`${API}/latest`),
         fetch(`${API}/24h`),
-        fetch(`${API}/6h`),
       ])
 
-      if (!m.ok || !p.ok || !v.ok || !h6.ok) throw new Error()
+      if (!m.ok || !p.ok || !v.ok) throw new Error()
 
       const md = await m.json()
       const pd = await p.json()
       const vd = await v.json()
-      const h6d = await h6.json()
 
       setMapping(md)
       setPrices(pd.data || {})
       setVolumes(vd.data || {})
-      setMarket6h(h6d.data || {})
       setUpdated(new Date())
     } catch {
       setError('OSRS Wiki fiyatları alınamadı.')
@@ -1396,31 +1396,33 @@ export default function App() {
     }
   }
 
-  useEffect(()=>{localStorage.setItem('osrs-v5-edits',JSON.stringify(v5Edits))},[v5Edits])
   useEffect(()=>{
-    const recoveryKey='osrs-v5-bulk-recovery-v585'
-    if(localStorage.getItem(recoveryKey))return
-    let snapshot:Record<string,V5Edit>|null=null
-    try{snapshot=JSON.parse(localStorage.getItem('osrs-v5-last-bulk-snapshot')||'null')}catch{}
-    if(snapshot){
-      const merged:Record<string,V5Edit>={}
-      Object.entries(V5_BULK_SEED_EDITS).forEach(([id,seed])=>{merged[id]={...seed}})
-      Object.entries(snapshot).forEach(([id,user])=>{merged[id]={...(merged[id]||{}),...user}})
-      const measuredPreserved=Object.values(snapshot).filter(x=>typeof x.measuredRate==='number'&&x.measuredRate>0).length
-      setV5Edits(merged)
-      setBulkUndo(snapshot)
-      setBulkReport({
-        restored:Object.keys(snapshot).length,
-        updated:Object.keys(V5_BULK_SEED_EDITS).length,
-        estimates:Object.values(V5_BULK_SEED_EDITS).filter(x=>typeof x.estimatedRate==='number').length,
-        measuredPreserved,
-        ignored:['Estimate Basis','Audit Flag'],
-        errors:0,
-        preview:V5_CATALOGUE.slice(0,10).map(a=>`${a.id} | ${a.name} | ${a.member?'P2P':'F2P'} | ${a.skills[0]} | ${a.level} | ${a.quality||'NEEDS_VERIFICATION'}`)
-      })
+    if(!mapping.length)return
+    let cancelled=false
+    const outputs=Array.from(new Set(V5_CATALOGUE.filter(x=>x.quality==='VERIFIED'&&(x.economyReady??true)&&x.output).map(x=>x.output!).filter(Boolean)))
+    const targets=outputs.map(name=>mapping.find((m:any)=>m.name.toLowerCase()===name.toLowerCase())).filter(Boolean).slice(0,60)
+    const run=async()=>{
+      const next:Record<string,any>={}
+      await Promise.all(targets.map(async(item:any)=>{
+        try{
+          const res=await fetch(`${API}/timeseries?timestep=5m&id=${item.id}`)
+          if(!res.ok)return
+          const json=await res.json(); const cutoff=Math.floor(Date.now()/1000)-6*3600
+          const pts=(json.data||[]).filter((p:any)=>Number(p.timestamp)>=cutoff)
+          const hv=pts.reduce((n:number,p:any)=>n+Number(p.highPriceVolume||0),0)
+          const lv=pts.reduce((n:number,p:any)=>n+Number(p.lowPriceVolume||0),0)
+          const high=hv>0?pts.reduce((n:number,p:any)=>n+Number(p.avgHighPrice||0)*Number(p.highPriceVolume||0),0)/hv:null
+          const low=lv>0?pts.reduce((n:number,p:any)=>n+Number(p.avgLowPrice||0)*Number(p.lowPriceVolume||0),0)/lv:null
+          if(high!==null||low!==null)next[item.id]={avgHighPrice:high,avgLowPrice:low,highPriceVolume:hv,lowPriceVolume:lv}
+        }catch{}
+      }))
+      if(!cancelled)setMarket6h(next)
     }
-    localStorage.setItem(recoveryKey,'1')
-  },[])
+    run()
+    return()=>{cancelled=true}
+  },[mapping,updated])
+
+  useEffect(()=>{localStorage.setItem('osrs-v5-edits',JSON.stringify(v5Edits))},[v5Edits])
   useEffect(()=>{
     // Backward-compatible measurement migration: preserve legacy stores and mirror known measurements to canonical IDs.
     setV5Edits(old=>{
@@ -1440,7 +1442,6 @@ export default function App() {
     setMeasurementHistory(old=>{
       const next={...old};let changed=false
       const add=(id:string,m:Measurement)=>{if(!(next[id]?.length)){next[id]=[m];changed=true}}
-      add('econ-f2p-sapphire-amulet-u',{date:new Date().toISOString(),skillLevel:24,quantity:880,minutes:60,itemsPerHour:880})
       add('econ-f2p-steel-bar',{date:new Date().toISOString(),skillLevel:30,quantity:800,minutes:106,itemsPerHour:453})
       add('econ-f2p-uncooked-apple-pie',{date:new Date().toISOString(),skillLevel:30,quantity:486,minutes:12.8,itemsPerHour:2278})
       return changed?next:old
@@ -1994,22 +1995,6 @@ export default function App() {
     ...Array.from(new Set(RECIPES.map((r) => r.category))),
   ]
 
-  const scoreProcessing = (candidates: any[]) => {
-    if (!candidates.length) return []
-    const maxPI = Math.max(...candidates.map(r => Math.max(r.profit ?? 0, 0)), 1)
-    const maxPR = Math.max(...candidates.map(r => Math.max(r.profitPerRun ?? 0, 0)), 1)
-    const maxROI = Math.max(...candidates.map(r => Math.max(r.roi ?? 0, 0)), 1)
-    const maxVol = Math.max(...candidates.map(r => Math.log10((r.dailyVolume ?? 0) + 1)), 1)
-    const maxXP = Math.max(...candidates.map(r => Math.max(r.xpPerRun ?? 0, 0)), 1)
-    return candidates.map(r => ({ ...r, recommendationScore:
-      (Math.max(r.profit ?? 0,0)/maxPI)*.30 + (Math.max(r.profitPerRun ?? 0,0)/maxPR)*.30 +
-      (Math.max(r.roi ?? 0,0)/maxROI)*.20 + (Math.log10((r.dailyVolume ?? 0)+1)/maxVol)*.15 +
-      (Math.max(r.xpPerRun ?? 0,0)/maxXP)*.05
-    })).sort((a,b)=>b.recommendationScore-a.recommendationScore).slice(0,3)
-  }
-
-  const processingTop3 = useMemo(() => scoreProcessing(rows.filter(r => r.unlocked && (mode==='F2P'?r.verifiedF2P:(r.f2p?r.verifiedF2P:r.verifiedP2P)) && r.activityType !== 'Gathering' && r.profit !== null && r.profit > 0 && r.capitalPerRun !== null && r.capitalPerRun <= gp)), [rows, gp, mode])
-
   const gatheringRows = useMemo(() => GATHERING.map(a => {
     const id = `gather-${recipeId(a.name)}`
     const ud = gatheringData[id] || {}
@@ -2031,72 +2016,11 @@ export default function App() {
     const actual = ud.actualItemsPerHour && ud.actualItemsPerHour > 0 ? ud.actualItemsPerHour : null
     const effectiveItemsPerHour = actual ?? a.theoreticalItemsPerHour
     const planningItemsPerHour = actual ?? a.theoreticalItemsPerHour * clamp(planningFactor/100, .1, 1)
-    const gpHour = netSell === null ? null : netSell * planningItemsPerHour
+    const consumableCost=(a as any).consumableItem?((buy((a as any).consumableItem)??0)*Number((a as any).consumableQty||1)):0
+    const gpHour = netSell === null ? null : (netSell-consumableCost) * planningItemsPerHour
     const xpHour = xpPerItem * planningItemsPerHour
     return { ...a, id, userData: ud, currentLevel: level, unlocked, missingRequirements, sampleTotal, actualPrimaryShare:share, netSell, xpPerItem, effectiveItemsPerHour, planningItemsPerHour, gpHour, xpHour, speedSource: actual ? 'GERÇEK' : 'TAHMİN' }
   }), [gatheringData, levels, prices, mapping, planningFactor, mode, requirements, mixedSamples])
-
-  const gatheringTop3 = useMemo(() => gatheringRows.filter(r => r.unlocked && r.netSell !== null).map(r => {
-    const riskPenalty = r.competitionRisk === 'HIGH' ? .65 : r.competitionRisk === 'MEDIUM' ? .82 : 1
-    const attentionBonus = r.attentionLevel === 'AFK' ? 1.12 : r.attentionLevel === 'LOW' ? 1.06 : 1
-    return { ...r, gatherScore: Math.max(r.gpHour ?? 0,0) * riskPenalty * attentionBonus + r.xpHour * .05 }
-  }).sort((a,b)=>b.gatherScore-a.gatherScore).slice(0,3), [gatheringRows])
-
-  const afkTop3 = useMemo(() => {
-    const proc = rows.filter(r => r.unlocked && (mode==='F2P'?r.verifiedF2P:(r.f2p?r.verifiedF2P:r.verifiedP2P)) && ['LOW','AFK'].includes(r.attentionLevel) && (r.profit ?? -Infinity) >= 0).map(r => ({ kind:'processing', ...r, afkScore: (r.afkSecondsPerRun ?? 20) + Math.max(r.xpPerRun ?? 0,0)/100 + Math.max(r.profitPerRun ?? 0,0)/1000 }))
-    const gat = gatheringRows.filter(r => r.unlocked && ['LOW','AFK'].includes(r.attentionLevel)).map(r => ({ kind:'gathering', ...r, profitPerRun:null, xpPerRun:null, afkSecondsPerRun:null, profit:r.netSell, afkScore: (r.attentionLevel==='AFK'?100:60) + r.xpHour/1000 + Math.max(r.gpHour ?? 0,0)/10000 }))
-    return [...proc, ...gat].sort((a,b)=>(b.afkScore??0)-(a.afkScore??0)).slice(0,3)
-  }, [rows, gatheringRows])
-
-
-  const bondTarget = (bond ?? 0) + bondReserve + emergencyBuffer
-  const remainingSafeGp = bond ? Math.max(bondTarget - gp, 0) : 0
-  const allOpenMethods = [
-    ...rows.filter(r=>r.unlocked && (r.gpHour??0)>0).map(r=>({id:r.id,name:r.name,gpHour:r.gpHour??0,source:r.speedSource,attention:r.attentionLevel})),
-    ...gatheringRows.filter(r=>r.unlocked && (r.gpHour??0)>0).map(r=>({id:r.id,name:r.name,gpHour:r.gpHour??0,source:r.speedSource,attention:r.attentionLevel}))
-  ]
-  const preferenceWeight=(m:any)=> playerMode==='ACTIVE' ? (m.gpHour*(m.attention==='HIGH'?1.08:1)) : playerMode==='CHILL' ? (m.gpHour*(m.attention==='AFK'?1.25:m.attention==='LOW'?1.12:.75)) : m.gpHour
-  const bondSustainTop3=[...allOpenMethods].sort((a,b)=>preferenceWeight(b)-preferenceWeight(a)).slice(0,3)
-  const chosenBondMethod=allOpenMethods.find(x=>x.id===selectedBondMethod) || bondSustainTop3[0]
-  const realisticGpHour=chosenBondMethod?.gpHour || 0
-  const requiredNetGp40=remainingSafeGp/40
-  const requiredNetGp50=remainingSafeGp/50
-  const requiredNetGpBudget=remainingSafeGp/Math.max(1,bondHoursBudget)
-  const scenarioFactor=bondScenario==='CONSERVATIVE'?.80:1
-  const sustainableGpHour=realisticGpHour*scenarioFactor
-  const sustainableHours=sustainableGpHour>0?remainingSafeGp/sustainableGpHour:null
-  const sustainabilityStatus = sustainableHours===null ? 'NO DATA'
-    : sustainableHours>50 ? 'NOT SUSTAINABLE'
-    : sustainableHours>40 ? 'BARELY SUSTAINABLE'
-    : sustainableHours>20 ? 'SUSTAINABLE'
-    : sustainableHours>=10 ? 'COMFORTABLE'
-    : 'VERY COMFORTABLE'
-  const planCapacityHours=Math.max(1,bondActiveDays)*Math.max(.25,dailyMaxHours)
-  const expectedCompletionDays=sustainableGpHour>0?Math.ceil((remainingSafeGp/sustainableGpHour)/Math.max(.25,dailyMaxHours)):null
-  const bufferDays=expectedCompletionDays===null?null:Math.max(0,14-expectedCompletionDays)
-  const primaryMoneyMaker=bondSustainTop3[0]
-  const lowAttentionBackup=[...allOpenMethods].filter(m=>['LOW','AFK'].includes(m.attention)).sort((x,y)=>y.gpHour-x.gpHour)[0]
-  const marketBackup=[...allOpenMethods].filter(m=>m.id!==primaryMoneyMaker?.id && m.id!==lowAttentionBackup?.id).sort((x,y)=>y.gpHour-x.gpHour)[0]
-  const measuredMethodCount=allOpenMethods.filter(m=>m.source==='GERÇEK').length
-  const measurementCount=Object.values(measurementHistory).reduce((n,list)=>n+list.length,0)
-  const measurementConfidence=measurementCount>=8?'HIGH':measurementCount>=4?'MEDIUM':'LOW'
-  const v4RequirementNames = V4_ACTIVITY_DATABASE.flatMap(a => [...(a.requirements.quests ?? []), ...(a.requirements.areas ?? []), ...(a.requirements.diary ?? []), ...(a.requirements.minigame ?? [])])
-  const requirementNames=Array.from(new Set([...RECIPES.flatMap(r=>[r.questRequirement,r.accessRequirement,r.regionRequirement,r.diaryRequirement,r.minigameRequirement,r.equipment]),...GATHERING.flatMap(a=>[a.questRequirement,a.accessRequirement,a.regionRequirement,a.equipment]),...v4RequirementNames].filter(Boolean))) as string[]
-  const requirementGroups = useMemo(() => {
-    const groups:{title:string;items:string[]}[] = [
-      {title:'Quests',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.quests??[])))},
-      {title:'Areas / Access',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.areas??[])))},
-      {title:'Diaries',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.diary??[])))},
-      {title:'Minigames',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.minigame??[])))},
-    ]
-    const grouped=new Set(groups.flatMap(g=>g.items))
-    const legacy=requirementNames.filter(x=>!grouped.has(x))
-    if(legacy.length) groups.push({title:'Legacy / Other',items:legacy})
-    return groups.filter(g=>g.items.length)
-  }, [requirementNames.join('|')])
-
-  const nextUnlocks=rows.filter(r=>!r.unlocked && !r.membersLocked && r.levelLocked && (r.profit??0)>0).map(r=>({...r,levelsMissing:Math.max(0,r.level-r.currentLevel),xpMissing:Math.max(0,xpForLevel(r.level)-xpForLevel(r.currentLevel))})).sort((a,b)=>a.levelsMissing-b.levelsMissing).slice(0,5)
-
 
 
   const marketExpectedSell=(itemName:string,batchSize:number)=>{
@@ -2190,7 +2114,8 @@ export default function App() {
 
   const resolveEffectiveRate=(a:(typeof V5_CATALOGUE)[number],edit:V5Edit)=>{
     const history=measurementHistory[a.id]||[]
-    const weighted=weightedSpeed(history)
+    const currentLevel=Math.max(...a.skills.map(s=>levels[s]||1))
+    const weighted=weightedSpeedAtLevel(history,currentLevel)
     const measured=(edit.measuredRate&&edit.measuredRate>0)?edit.measuredRate:(weighted&&weighted>0?weighted:null)
     if(measured!==null)return {rate:measured,source:'MEASURED' as const}
     if(edit.levelAdjustedRate&&edit.levelAdjustedRate>0)return {rate:edit.levelAdjustedRate,source:'LEVEL MODEL' as const}
@@ -2213,7 +2138,7 @@ export default function App() {
     const rate=resolved.rate
     const rateSource=resolved.source
     const economy=v5LiveEconomy(a)
-    const measuredRate=edit.measuredRate??(weightedSpeed(measurementHistory[a.id]||[])||null)
+    const measuredRate=edit.measuredRate??(weightedSpeedAtLevel(measurementHistory[a.id]||[],current)||null)
     const liveGp=economy.profitEach!==null&&rate>0?economy.profitEach*rate:null
     const targets=v5BuyTargets
     const targetInputCost=economy.inputs.length&&economy.inputs.every(x=>(targets[x.name]??x.price)!==null)
@@ -2242,8 +2167,9 @@ export default function App() {
     const inputCaps=economy.inputs.map(inp=>{
       const vol=volume(inp.name)
       const limit=Number(getItem(inp.name)?.limit||0)
-      const volumeCap=vol&&vol>0?vol*.05/inp.qty:Infinity
-      const limitCap=limit>0?limit*6/inp.qty:Infinity
+      if(!(vol&&vol>0))return null
+      const volumeCap=vol*.05/inp.qty
+      const limitCap=limit>0?limit*6/inp.qty:volumeCap
       return Math.min(volumeCap,limitCap)
     })
     const sellHistory=economy.outputName?orderHistory.filter(h=>h.item.toLowerCase()===economy.outputName!.toLowerCase()&&h.side==='SELL'&&h.quantity>0):[]
@@ -2254,18 +2180,18 @@ export default function App() {
     const historyWeight=Math.min(.7,sellEvidence.length/10*.7)
     const baseParticipation=.05
     const calibratedParticipation=histFillRatio===null?baseParticipation:Math.max(.015,Math.min(.15,baseParticipation*(1-historyWeight)+(baseParticipation*(.4+1.8*histFillRatio))*historyWeight))
-    const outputMarketCap=outputVolume24h&&outputVolume24h>0?outputVolume24h*calibratedParticipation/Math.max(1,economy.outputQty):Infinity
-    const marketCapacityPerDay=Math.min(outputMarketCap,...(inputCaps.length?inputCaps:[Infinity]))
+    const outputMarketCap=outputVolume24h&&outputVolume24h>0?outputVolume24h*calibratedParticipation/Math.max(1,economy.outputQty):null
+    const marketCapacityPerDay=outputMarketCap===null||inputCaps.some(x=>x===null)?null:Math.min(outputMarketCap,...(inputCaps.length?(inputCaps as number[]):[outputMarketCap]))
     const productionCapacityPerDay=rate>0?rate*Math.max(1,dailyMaxHours):0
-    const capacityFactor=productionCapacityPerDay>0&&Number.isFinite(marketCapacityPerDay)?Math.max(0,Math.min(1,marketCapacityPerDay/productionCapacityPerDay)):1
+    const capacityFactor=productionCapacityPerDay>0&&marketCapacityPerDay!==null&&Number.isFinite(marketCapacityPerDay)?Math.max(0,Math.min(1,marketCapacityPerDay/productionCapacityPerDay)):null
     const capacityBaseGpHour=automaticEffectiveGpHour
-    const capacityAdjustedGpHour=economyReady&&capacityBaseGpHour!==null?capacityBaseGpHour*capacityFactor:null
-    const sustainableHoursPerDay=rate>0&&Number.isFinite(marketCapacityPerDay)?marketCapacityPerDay/rate:null
+    const capacityAdjustedGpHour=economyReady&&capacityBaseGpHour!==null&&capacityFactor!==null?Math.min(capacityBaseGpHour,capacityBaseGpHour*capacityFactor):null
+    const sustainableHoursPerDay=rate>0&&marketCapacityPerDay!==null&&Number.isFinite(marketCapacityPerDay)?marketCapacityPerDay/rate:null
     const baseLiquidityScore=outputVolume24h===null?null:batchVolumePct!==null?(batchVolumePct<=1?100:batchVolumePct<=5?80:batchVolumePct<=15?60:batchVolumePct<=35?40:20):null
     const liquidityScore=baseLiquidityScore===null?null:Math.max(0,Math.min(100,baseLiquidityScore+(histFillRatio===null?0:(histFillRatio-.5)*30*historyWeight)-(avgSellFillHours!==null&&avgSellFillHours>24?15*historyWeight:0)))
     const liquidityLabel=liquidityScore===null?'DATA REQUIRED':liquidityScore>=80?'HIGH':liquidityScore>=50?'MEDIUM':'LOW'
     return {...a,attention:edit.attention??a.attention,xpEach:edit.xpEach??a.xpEach,edit,current,open,gp,rate,rateSource,source,quality,rankableQuality,economyReady,successReady,economy,liveGp,automaticEffectiveGpHour,measuredRate,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital,manualGpOverride,outputVolume24h,batchSize,batchVolumePct,marketCapacityPerDay,productionCapacityPerDay,capacityFactor,capacityAdjustedGpHour,sustainableHoursPerDay,liquidityScore,liquidityLabel,calibratedParticipation,histFillRatio,avgSellFillHours}
-  }),[mode,levels,v5Edits,v5BuyTargets,prices,mapping,volumes,measurementHistory,dailyMaxHours,smartQty,orderHistory])
+  }),[mode,levels,v5Edits,v5BuyTargets,prices,mapping,volumes,market6h,measurementHistory,dailyMaxHours,smartQty,orderHistory])
   type SmartRecipeRow={
     id:string;name:string;skill:string;level:number;member:boolean;open:boolean;status:string;requirements:string[];
     inputs:{name:string;qty:number}[];outputName:string|null;outputQty:number;xpEach:number|null;
@@ -2363,12 +2289,7 @@ export default function App() {
   },[rows,gatheringRows])
   const unifiedRanking=useMemo(()=>{
     const v5=v5Rows.filter(x=>x.open&&x.economyReady&&x.quality!=='DUPLICATE'&&(x.gp??0)>0&&x.economy.hasPrices&&(v5IncludeUnverified?x.quality!=='DEPRECATED':x.quality==='VERIFIED')).map(x=>({...x,legacy:false}))
-    const canonicalVerified=v5Rows.filter(x=>x.quality==='VERIFIED')
-    const legacyFiltered=legacyMeasuredRanking.filter(l=>!canonicalVerified.some(c=>{
-      const ln=l.name.toLowerCase(),cn=c.name.toLowerCase(),out=(c.output||'').toLowerCase()
-      return ln===cn||(out.length>4&&ln.includes(out))||(cn.replace(/^(make|smelt|smith|cook|top)\s+/,'')===ln.replace(/^(make|smelt|smith|cook|top)\s+/,''))
-    }))
-    const all=[...v5,...(v5IncludeUnverified?legacyFiltered:[])]
+    const all=[...v5] // V6: legacy rows remain visible in legacy/detail screens only; future rankings never inherit historical buy/sell prices.
     const priority=(s:string)=>s==='MEASURED'||s==='GERÇEK'||s==='LIVE GE + MEASURED RATE'?4:s.startsWith('LIVE GE')?3:s==='USER THEORY'||s==='LIVE/ESTIMATE'?2:1
     const byName=new Map<string,any>()
     all.forEach(x=>{
@@ -2382,7 +2303,86 @@ export default function App() {
       const d=bc-ac
       return d!==0?d:((b.gp??0)-(a.gp??0))||priority(b.source)-priority(a.source)
     })
-  },[v5Rows,legacyMeasuredRanking,v5IncludeUnverified])
+  },[v5Rows,v5IncludeUnverified])
+  const v4RequirementNames = V4_ACTIVITY_DATABASE.flatMap(a => [...(a.requirements.quests ?? []), ...(a.requirements.areas ?? []), ...(a.requirements.diary ?? []), ...(a.requirements.minigame ?? [])])
+  const requirementNames=Array.from(new Set([...RECIPES.flatMap(r=>[r.questRequirement,r.accessRequirement,r.regionRequirement,r.diaryRequirement,r.minigameRequirement,r.equipment]),...GATHERING.flatMap(a=>[a.questRequirement,a.accessRequirement,a.regionRequirement,a.equipment]),...v4RequirementNames].filter(Boolean))) as string[]
+  const requirementGroups = useMemo(() => {
+    const groups:{title:string;items:string[]}[] = [
+      {title:'Quests',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.quests??[])))},
+      {title:'Areas / Access',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.areas??[])))},
+      {title:'Diaries',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.diary??[])))},
+      {title:'Minigames',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.minigame??[])))},
+    ]
+    const grouped=new Set(groups.flatMap(g=>g.items))
+    const legacy=requirementNames.filter(x=>!grouped.has(x))
+    if(legacy.length) groups.push({title:'Legacy / Other',items:legacy})
+    return groups.filter(g=>g.items.length)
+  }, [requirementNames.join('|')])
+
+  // V6 central decision layer: Bond Sustain and Unlock Planner consume the same v5Rows economy results
+  // used by Dashboard / Skill Views / Money Methods. No legacy static GP/h is allowed here.
+  const bondTarget = (bond ?? 0) + bondReserve + emergencyBuffer
+  const remainingSafeGp = bond ? Math.max(bondTarget - gp, 0) : 0
+  const bondEligible=v5Rows.filter(x=>x.open&&x.economyReady&&x.quality==='VERIFIED'&&x.economy.hasPrices&&typeof x.capacityAdjustedGpHour==='number'&&x.capacityAdjustedGpHour>0&&x.rateSource!=='ESTIMATE'&&x.rateSource!=='THEORY')
+  const bondMeasured=bondEligible.filter(x=>x.rateSource==='MEASURED')
+  const bondBase=(bondMeasured.length?bondMeasured:bondEligible).map(x=>({
+    id:x.id,name:x.name,gpHour:x.capacityAdjustedGpHour as number,expectedGpHour:x.gp??0,source:x.rateSource,attention:x.attention,
+    outputMarket:x.economy.outputName||'',liquidity:x.liquidityLabel,confidence:x.rateSource==='MEASURED'?'HIGH':x.rateSource==='VERIFIED THEORY'?'MEDIUM':'LOW'
+  }))
+  const preferenceWeight=(m:any)=> playerMode==='ACTIVE' ? (m.gpHour*(m.attention==='HIGH'?1.08:1)) : playerMode==='CHILL' ? (m.gpHour*(m.attention==='AFK'?1.25:m.attention==='LOW'?1.12:.75)) : m.gpHour
+  const bondSustainTop3=[...bondBase].sort((a,b)=>preferenceWeight(b)-preferenceWeight(a)).slice(0,3)
+  const allOpenMethods=bondBase
+  const chosenBondMethod=allOpenMethods.find(x=>x.id===selectedBondMethod) || bondSustainTop3[0]
+  const realisticGpHour=chosenBondMethod?.gpHour || 0
+  const requiredNetGp40=remainingSafeGp/40
+  const requiredNetGp50=remainingSafeGp/50
+  const requiredNetGpBudget=remainingSafeGp/Math.max(1,bondHoursBudget)
+  const scenarioFactor=bondScenario==='CONSERVATIVE'?.80:1
+  const sustainableGpHour=realisticGpHour*scenarioFactor
+  const sustainableHours=sustainableGpHour>0?remainingSafeGp/sustainableGpHour:null
+  const sustainabilityStatus = sustainableHours===null ? 'NO DATA'
+    : sustainableHours>50 ? 'NOT SUSTAINABLE'
+    : sustainableHours>40 ? 'BARELY SUSTAINABLE'
+    : sustainableHours>20 ? 'SUSTAINABLE'
+    : sustainableHours>=10 ? 'COMFORTABLE'
+    : 'VERY COMFORTABLE'
+  const planCapacityHours=Math.max(1,bondActiveDays)*Math.max(.25,dailyMaxHours)
+  const expectedCompletionDays=sustainableGpHour>0?Math.ceil((remainingSafeGp/sustainableGpHour)/Math.max(.25,dailyMaxHours)):null
+  const bufferDays=expectedCompletionDays===null?null:Math.max(0,14-expectedCompletionDays)
+  const primaryMoneyMaker=bondSustainTop3[0]
+  const lowAttentionBackup=[...bondBase].filter(m=>['LOW','AFK'].includes(m.attention)).sort((x,y)=>y.gpHour-x.gpHour)[0]
+  const marketBackup=[...bondBase].filter(m=>m.id!==primaryMoneyMaker?.id&&m.id!==lowAttentionBackup?.id&&m.outputMarket!==primaryMoneyMaker?.outputMarket).sort((x,y)=>y.gpHour-x.gpHour)[0]
+  const measuredMethodCount=bondEligible.filter(m=>m.rateSource==='MEASURED').length
+  const measurementCount=Object.values(measurementHistory).reduce((n,list)=>n+list.length,0)
+  const measurementConfidence=measurementCount>=8?'HIGH':measurementCount>=4?'MEDIUM':'LOW'
+
+  const bondActivationTargets:Record<string,number>={Attack:40,Strength:50,Defence:40,Ranged:40,Magic:55,Prayer:31,Runecraft:20,Crafting:50,Mining:50,Smithing:50,Fishing:50,Cooking:50,Woodcutting:50,Firemaking:40}
+  const bondPrepRemaining=Object.entries(bondActivationTargets).map(([skill,target])=>({skill,target,current:levels[skill]||1,missing:Math.max(0,target-(levels[skill]||1)),xpMissing:Math.max(0,xpForLevel(target)-xpForLevel(levels[skill]||1))})).filter(x=>x.missing>0).sort((a,b)=>a.xpMissing-b.xpMissing)
+  const nextUnlocks=v5Rows.filter(x=>!x.open&&(mode==='MEMBER'||!x.member)).filter(x=>x.current<x.level&&x.quality==='VERIFIED'&&x.economyReady&&x.economy.hasPrices&&typeof x.capacityAdjustedGpHour==='number'&&x.capacityAdjustedGpHour>0).map(x=>{
+    const levelsMissing=Math.max(0,x.level-x.current)
+    const xpMissing=Math.max(0,xpForLevel(x.level)-xpForLevel(x.current))
+    const economicScore=(x.capacityAdjustedGpHour||0)/Math.max(1,Math.sqrt(xpMissing||1))
+    return {...x,levelsMissing,xpMissing,economicScore}
+  }).sort((a,b)=>b.economicScore-a.economicScore).slice(0,5)
+
+  const releaseGateIssues=useMemo(()=>{
+    const issues:string[]=[]
+    const expectedRates:Record<string,number>={'econ-f2p-emerald-necklace':898,'econ-f2p-sapphire-amulet-u':880,'econ-f2p-steel-bar':453,'econ-f2p-uncooked-apple-pie':2278}
+    Object.entries(expectedRates).forEach(([id,expected])=>{const r=v5Rows.find(x=>x.id===id);if(!r||r.rate!==expected||r.rateSource!=='MEASURED')issues.push(`${id}: measured invariant failed`)})
+    v5Rows.forEach(r=>{
+      if(r.gp!==null&&r.economy.profitEach!==null&&r.rate>0&&Math.abs(r.gp-r.economy.profitEach*r.rate)>.01)issues.push(`${r.id}: dynamic GP/h formula mismatch`)
+      if(r.capacityAdjustedGpHour!==null&&r.gp!==null&&r.capacityAdjustedGpHour>r.gp+.01)issues.push(`${r.id}: Capacity GP/h > Expected GP/h`)
+    })
+    if(unifiedRanking.some((r:any)=>r.quality==='DUPLICATE'))issues.push('DUPLICATE leaked into ranking')
+    if(!v5IncludeUnverified&&unifiedRanking.some((r:any)=>r.quality==='PLACEHOLDER'))issues.push('PLACEHOLDER leaked into Live Money Ranking')
+    if(mode==='F2P'&&unifiedRanking.some((r:any)=>r.member))issues.push('MEMBERS activity leaked into F2P ranking')
+    if(unifiedRanking.some((r:any)=>r.economyReady===false))issues.push('economyReady=false leaked into ranking')
+    if(unifiedRanking.some((r:any)=>(r.gp??0)<=0))issues.push('non-positive profit leaked into profitable ranking')
+    if(!bulkAllowMeasuredOverwrite&&bulkPreview.some(x=>x.patch?.measuredRate!==undefined))issues.push('bulk preview would overwrite measured rate while protection is OFF')
+    return issues
+  },[v5Rows,unifiedRanking,v5IncludeUnverified,mode,bulkAllowMeasuredOverwrite,bulkPreview])
+  useEffect(()=>{if(releaseGateIssues.length)console.error('V6 RELEASE GATE',releaseGateIssues)},[releaseGateIssues])
+
   const v5Top=useMemo(()=>unifiedRanking.slice(0,10),[unifiedRanking])
   const v5BuyOrderItems=useMemo(()=>{
     type RecipeUse={name:string;targetGpHour:number}
@@ -2435,7 +2435,7 @@ export default function App() {
       .filter(x=>v5DataFilter==='ALL'||x.source===v5DataFilter)
       .filter(x=>v5ProfitFilter==='ALL'||(v5ProfitFilter==='PROFIT'?(x.gp??0)>0:(x.gp??0)<=0))
       .filter(x=>!v5Search.trim()||[x.name,x.kind,x.input,x.output,x.note,x.edit.note].join(' ').toLowerCase().includes(v5Search.toLowerCase()))
-    return rows.sort((a,b)=>v5Sort==='GP_ASC'?(a.gp??0)-(b.gp??0):v5Sort==='LEVEL_ASC'?a.level-b.level:v5Sort==='RATE_DESC'?b.rate-a.rate:((b.gp??0)-(a.gp??0)))
+    return rows.sort((a,b)=>v5Sort==='GP_ASC'?(a.gp??0)-(b.gp??0):v5Sort==='LEVEL_ASC'?a.level-b.level:v5Sort==='RATE_DESC'?b.rate-a.rate:v5Sort==='GP_DESC'?((b.gp??0)-(a.gp??0)):((b.capacityAdjustedGpHour??-Infinity)-(a.capacityAdjustedGpHour??-Infinity)))
   },[v5Rows,v5Page,v5ShowLocked,v5Search,v5AccessFilter,v5KindFilter,v5AttentionFilter,v5DataFilter,v5ProfitFilter,v5Sort])
   const v5MoneySkills=useMemo(()=>Array.from(new Set([...v5Rows,...legacyMeasuredRanking].flatMap(x=>x.skills))).sort(),[v5Rows,legacyMeasuredRanking])
   const v5MoneyRows=useMemo(()=>unifiedRanking
@@ -2689,7 +2689,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.8.7 — Dynamic Market GP/h</h1>
+          <h1>OSRS Economy Scanner V6.0 RC — Final Consolidation</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2733,12 +2733,12 @@ export default function App() {
                 </div>
               </section>
               <section style={{marginBottom:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
-                <h3 style={{marginTop:0}}>V5.8.6 — Live Money Ranking / Candidate Lab</h3>
-                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Live Money Ranking: OPEN + VERIFIED + priceable + economyReady. Candidate Lab açılırsa PLACEHOLDER/ESTIMATE adayları da görünür; DUPLICATE, time-gated ve economyReady=false kayıtlar hiçbir para sıralamasına girmez. Priority: MEASURED → LEVEL MODEL → VERIFIED THEORY → THEORY → ESTIMATE.</div>
+                <h3 style={{marginTop:0}}>Live Money Ranking / Candidate Lab</h3>
+                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Live Money Ranking: OPEN + VERIFIED + priceable + economyReady. Candidate Lab açılırsa PLACEHOLDER/ESTIMATE adayları da görünür; DUPLICATE, time-gated ve economyReady=false kayıtlar hiçbir para sıralamasına girmez. Rate priority: MEASURED → LEVEL MODEL → VERIFIED THEORY → THEORY → ESTIMATE. Default decision metric: Capacity GP/h DESC.</div>
                 <label style={{fontSize:10,display:'inline-flex',gap:5,alignItems:'center',marginBottom:7}}><input type="checkbox" checked={v5IncludeUnverified} onChange={e=>setV5IncludeUnverified(e.target.checked)}/> Candidate Lab — ESTIMATE / TEST REQUIRED</label>
-                <div className="tableBox"><table><thead><tr><th>#</th><th>Activity</th><th>Skill</th><th>Current Input Cost</th><th>Market Expected Sell</th><th>Expected Profit/item</th><th>Effective Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Market basis</th><th>Rate Source</th><th>Liquidity</th><th>Quality</th></tr></thead><tbody>
-                {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}{x.economy&&<div style={{fontSize:9,color:'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div></>:<div>Canlı fiyat modeli: {x.economy.liveEligible?'fiyat eşleşmesi eksik':'henüz tanımlı değil'}</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{fmt(x.economy?.inputCost)}</td><td>{fmt(x.economy?.outputPrice)}</td><td>{fmt(x.economy?.profitEach)}</td><td>{fmt(x.rate)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.capacityAdjustedGpHour)}</td><td>{x.economy?.marketBasis||'N/A'}</td><td>{x.rateSource||x.source}</td><td>{x.liquidityLabel||'—'}{x.batchVolumePct!==null&&x.batchVolumePct!==undefined?<div style={{fontSize:9}}>{fmt(x.batchVolumePct,1)}% / {x.batchSize}</div>:null}</td><td>{x.quality||'LEGACY'}{v5IncludeUnverified&&x.quality!=='VERIFIED'?<div style={{fontSize:9,fontWeight:800}}>ESTIMATE / TEST REQUIRED</div>:null}</td></tr>)}
-                {!v5Top.length&&<tr><td colSpan={13}>Mevcut level/mod ile VERIFIED pozitif GP/h adayı yok.</td></tr>}
+                <div className="tableBox"><table><thead><tr><th>Activity</th><th>Skill</th><th>Current Input Cost</th><th>Market Expected Sell</th><th>Expected Profit/item</th><th>Effective Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Market basis</th><th>Rate Source</th><th>Liquidity</th><th>Quality</th></tr></thead><tbody>
+                {v5Top.map((x)=><tr key={x.id}><td className="name">{x.name}{x.economy&&<div style={{fontSize:9,color:'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div></>:<div>Canlı fiyat modeli: {x.economy.liveEligible?'fiyat eşleşmesi eksik':'henüz tanımlı değil'}</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{fmt(x.economy?.inputCost)}</td><td>{fmt(x.economy?.outputPrice)}</td><td>{fmt(x.economy?.profitEach)}</td><td>{fmt(x.rate)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.capacityAdjustedGpHour)}</td><td>{x.economy?.marketBasis||'N/A'}</td><td>{x.rateSource||x.source}</td><td>{x.liquidityLabel||'—'}{x.batchVolumePct!==null&&x.batchVolumePct!==undefined?<div style={{fontSize:9}}>{fmt(x.batchVolumePct,1)}% / {x.batchSize}</div>:null}</td><td>{x.quality||'LEGACY'}{v5IncludeUnverified&&x.quality!=='VERIFIED'?<div style={{fontSize:9,fontWeight:800}}>ESTIMATE / TEST REQUIRED</div>:null}</td></tr>)}
+                {!v5Top.length&&<tr><td colSpan={12}>Mevcut level/mod ile VERIFIED pozitif GP/h adayı yok.</td></tr>}
                 </tbody></table></div>
                 <div style={{fontSize:10,marginTop:6}}>V5 katalog: <b>{V5_CATALOGUE.length}</b> activity • VERIFIED: <b>{qualityCounts.VERIFIED}</b> • PLACEHOLDER: <b>{qualityCounts.PLACEHOLDER}</b> • OPEN: <b>{v5Rows.filter(x=>x.open).length}</b> • Editlenmiş: <b>{Object.keys(v5Edits).length}</b></div>
               </section>
@@ -2893,32 +2893,7 @@ export default function App() {
         </div>
       </section>}
 
-      <section style={{marginBottom:12}}><div style={{fontWeight:'bold',fontSize:12,marginBottom:5}}>D — Bond Sustain Top 3</div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:8}}>{bondSustainTop3.map((m,i)=><div key={m.id} style={{background:'#12261a',border:'1px solid #8957e5',borderRadius:7,padding:9,fontSize:11}}><b>#{i+1} — {m.name}</b><div>{fmt(m.gpHour)} GP/h • {m.source} • {m.attention}</div></div>)}</div></section>
-
-      <section style={{ marginBottom: 12 }}>
-        {[
-          ['A — Processing / Crafting Top 3', processingTop3, '#238636'],
-          ['B — Gathering Top 3', gatheringTop3, '#1f6feb'],
-          ['C — Şu an neyi rahat yapabilirim? (AFK / Low Attention)', afkTop3, '#9e6a03'],
-        ].map(([title, list, border]: any) => (
-          <div key={title} style={{ marginBottom: 10 }}>
-            <div style={{ fontWeight:'bold', fontSize:12, marginBottom:5 }}>{title}</div>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:8 }}>
-              {list.map((r:any, i:number) => (
-                <div key={r.id} style={{ background:'#12261a', border:`1px solid ${border}`, borderRadius:7, padding:'9px 12px', fontSize:11 }}>
-                  <div style={{ color:'#3fb950', fontWeight:'bold' }}>#{i+1} — {r.name}</div>
-                  {'competitionRisk' in r ? (
-                    <><div>{fmt(r.gpHour)} GP/h • {fmt(r.xpHour)} XP/h • Risk {r.competitionRisk}</div><div>{r.attentionLevel} • {r.speedSource} • Lv {r.currentLevel}/{r.requiredLevel}</div></>
-                  ) : (
-                    <><div>{fmt(r.profit)} GP/adet • {fmt(r.profitPerRun)} GP/tur • {r.roi===null?'—':`${r.roi.toFixed(1)}%`} ROI</div><div>XP/tur {fmt(r.xpPerRun,1)} • Hacim {fmt(r.dailyVolume)} • {r.attentionLevel}</div></>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </section>
-
+      <section style={{marginBottom:12}}><div style={{fontWeight:'bold',fontSize:12,marginBottom:5}}>D — Bond Sustain Top 3</div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:8}}>{bondSustainTop3.map((m,i)=><div key={m.id} style={{background:'#12261a',border:'1px solid #8957e5',borderRadius:7,padding:9,fontSize:11}}><b>#{i+1} — {m.name}</b><div>{fmt(m.gpHour)} Capacity GP/h • {m.source} • {m.attention} • confidence {m.confidence}</div></div>)}</div></section>
 
       <section style={{marginBottom:10,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
@@ -2946,7 +2921,7 @@ export default function App() {
           </div>
         }):<div style={{marginTop:8,fontSize:11}}>Henüz global hedef alış fiyatı tanımlanmış ve hedef fiyatta kârlı en az bir açık reçetede kullanılan item yok.</div>}
       </section>
-      <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #30363d',borderRadius:7,fontSize:11}}><b>Bir sonraki kârlı unlock</b>{nextUnlocks.length?nextUnlocks.map(r=><div key={r.id}>{r.name}: {r.skill} {r.currentLevel}→{r.level} ({r.levelsMissing} level / {fmt(r.xpMissing)} XP) • canlı {fmt(r.profit)} GP/adet • {fmt(r.profitPerRun)} GP/tur</div>):<div>Canlı fiyatlarla yakın pozitif skill unlock bulunamadı.</div>}</section>
+      <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #30363d',borderRadius:7,fontSize:11}}><b>Next Profitable Unlock — ekonomik öncelik</b>{nextUnlocks.length?nextUnlocks.map(r=><div key={r.id}>{r.name}: {r.skills.join('/')} {r.current}→{r.level} ({r.levelsMissing} level / {fmt(r.xpMissing)} XP) • Expected {fmt(r.gp)} GP/h • Capacity {fmt(r.capacityAdjustedGpHour)} GP/h • {r.rateSource}</div>):<div>Doğrulanmış ve ekonomik modeli hazır yakın unlock bulunamadı.</div>}<div style={{marginTop:7}}><b>F2P → First Bond Preparation</b>{bondPrepRemaining.slice(0,6).map(r=><div key={r.skill}>{r.skill}: {r.current}→{r.target} • {r.missing} level • {fmt(r.xpMissing)} XP</div>)}{!bondPrepRemaining.length&&<div>Bond activation skill hedefleri tamam.</div>}<div>Hitpoints: combat ile doğal ilerleme.</div></div></section>
 
       {(mode==='MEMBER' || (bond&&gp>=bond)) && <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #8957e5',borderRadius:7,fontSize:11}}><b>FIRST BOND TRANSITION PLAN</b><div>1) Member skill seviyelerini gir ve yalnızca gerçekten sahip olduğun quest/access kutularını işaretle.</div><div>2) İlk hedef: Bond + reserve için <b>{fmt(bondTarget)}</b> GP çalışma tabanı.</div><div>3) Şu an ekonomik rota: <b>{bondSustainTop3[0]?.name||'ölçüm/veri gerekli'}</b>{bondSustainTop3[0]?` — ${fmt(bondSustainTop3[0].gpHour)} GP/h`:''}.</div><div>4) Bond+reserve güvenceye girdikten sonraki GP <b>Progression GP</b> olarak quest/gear/skill gelişimine ayrılır.</div></section>}
 
@@ -3034,7 +3009,7 @@ export default function App() {
             <select value={v5AttentionFilter} onChange={e=>setV5AttentionFilter(e.target.value)}><option value="ALL">Tüm dikkat</option><option>AFK</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option></select>
             <select value={v5DataFilter} onChange={e=>setV5DataFilter(e.target.value)}><option value="ALL">Tüm veri</option><option value="THEORY">THEORY</option><option value="USER THEORY">USER THEORY</option><option value="MEASURED">MEASURED</option></select>
             <select value={v5ProfitFilter} onChange={e=>setV5ProfitFilter(e.target.value)}><option value="ALL">Kâr/Zarar: Tümü</option><option value="PROFIT">Kârlı</option><option value="LOSS">Zarar / 0</option></select>
-            <select value={v5Sort} onChange={e=>setV5Sort(e.target.value)}><option value="GP_DESC">GP/h ↓</option><option value="GP_ASC">GP/h ↑</option><option value="LEVEL_ASC">Level ↑</option><option value="RATE_DESC">Rate/h ↓</option></select>
+            <select value={v5Sort} onChange={e=>setV5Sort(e.target.value)}><option value="CAPACITY_DESC">Capacity GP/h ↓</option><option value="GP_DESC">Expected GP/h ↓</option><option value="GP_ASC">GP/h ↑</option><option value="LEVEL_ASC">Level ↑</option><option value="RATE_DESC">Rate/h ↓</option></select>
             <label style={{fontSize:10}}><input type="checkbox" checked={v5ShowLocked} onChange={e=>setV5ShowLocked(e.target.checked)}/> LOCKED göster</label>
           </div>
           <div style={{fontSize:10,color:'#8b949e',margin:'7px 0'}}>Kayıt: {v5PageRows.length} • OPEN {v5PageRows.filter(x=>x.open).length}. THEORY değerleri başlangıç planlama tahminidir; Edit ile theory/measurement değerlerini değiştirebilirsin.</div>
@@ -3724,12 +3699,12 @@ export default function App() {
 
       {activeTab==='coverage'&&<div>
         <section style={{padding:12,border:'1px solid #58a6ff',borderRadius:8,marginBottom:12}}>
-          <h3 style={{marginTop:0,color:'#f0f6fc'}}>DATABASE COVERAGE AUDIT</h3>
-          <div style={{fontSize:11,color:'#8b949e',marginBottom:10}}>Coverage yalnız canonical manifest içindeki gerçek activity hedeflerine göre hesaplanır. PLACEHOLDER satırlar VERIFIED coverage sayılmaz. Manifest v1 genişletildikçe denominator büyür; mevcut database kendi kendine %100 üretemez.</div>
+          <h3 style={{marginTop:0,color:'#f0f6fc'}}>Canonical Economy Coverage</h3>
+          <div style={{fontSize:11,color:'#8b949e',marginBottom:10}}>Canonical Economy Coverage yalnız manifestteki economy family hedeflerini ölçer. Full Activity Database Quality ise tüm katalogdaki VERIFIED / NEEDS_VERIFICATION / PLACEHOLDER dağılımıdır; iki oran birbirine karıştırılmaz.</div>
           <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
             <div className="card"><b>F2P manifest coverage</b><div style={{fontSize:24}}>{coverageSummary.f2p.pct.toFixed(1)}%</div><small>{coverageSummary.f2p.VERIFIED}/{coverageSummary.f2p.total} VERIFIED • {coverageSummary.f2p.MISSING} MISSING</small></div>
             <div className="card"><b>MEMBERS manifest coverage</b><div style={{fontSize:24}}>{coverageSummary.member.pct.toFixed(1)}%</div><small>{coverageSummary.member.VERIFIED}/{coverageSummary.member.total} VERIFIED • {coverageSummary.member.MISSING} MISSING</small></div>
-            <div className="card"><b>V5 audit</b><div style={{fontSize:18}}>{qualityCounts.PLACEHOLDER} PLACEHOLDER</div><small>{qualityCounts.VERIFIED} VERIFIED • {qualityCounts.NEEDS_VERIFICATION} NEEDS VERIFICATION</small></div>
+            <div className="card"><b>Full Activity Database Quality</b><div style={{fontSize:18}}>{qualityCounts.PLACEHOLDER} PLACEHOLDER</div><small>{qualityCounts.VERIFIED} VERIFIED • {qualityCounts.NEEDS_VERIFICATION} NEEDS VERIFICATION</small></div>
           </div>
         </section>
         <section>
