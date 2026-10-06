@@ -2138,7 +2138,7 @@ export default function App() {
       byName.set(x.name,{
         id:`v5:${x.id}`,name:x.name,skill:x.skills.join('/'),level:x.level,member:x.member,open:x.open,status,requirements:reqs,
         inputs:x.economy.inputs.map(i=>({name:i.name,qty:i.qty})),outputName:x.economy.outputName,outputQty:x.economy.outputQty||1,
-        xpEach:x.xpHour&&x.rate?x.xpHour/x.rate:null,rate,rateSource:measured?'GERÇEK ÖLÇÜM':rate?'TEORİK':'DATA REQUIRED',kind:'PROCESS',fixedOutputNet:null
+        xpEach:typeof x.xpHour==='number'&&x.xpHour>0&&x.rate>0?x.xpHour/x.rate:null,rate,rateSource:measured?'GERÇEK ÖLÇÜM':rate?'TEORİK':'DATA REQUIRED',kind:'PROCESS',fixedOutputNet:null
       })
     })
     return [...byName.values()].sort((a,b)=>Number(b.open)-Number(a.open)||a.skill.localeCompare(b.skill)||a.level-b.level||a.name.localeCompare(b.name))
@@ -2322,7 +2322,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.7 — Smart Order Advisor+</h1>
+          <h1>OSRS Economy Scanner V5.7.1 — Smart Order Advisor+</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2628,7 +2628,7 @@ export default function App() {
           {smartRecipeCalc&&<div style={{marginTop:10,padding:10,border:'1px solid #30363d',borderRadius:7}}>
             <div><b>Smart alış:</b> {smartRecipeCalc.inputAdv.map(x=>`${x.inp.name} ${fmt(x.adv!.recBuy)} GP × ${x.inp.qty||1}`).join(' + ')}</div>
             <div><b>Smart satış:</b> {selectedSmartRecipe?.kind==='ALCHEMY'?`High Alchemy sabit çıktı ${fmt(smartRecipeCalc.netSell)} GP`:`${selectedSmartRecipe?.outputName} ${fmt(smartRecipeCalc.outAdv?.recSell)} GP • GE tax ${fmt(smartRecipeCalc.tax)} GP`}</div>
-            <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:7}}><b>Kâr/item: {fmt(smartRecipeCalc.profit)} GP</b><b>Batch ({fmt(smartQty)}): {fmt(smartRecipeCalc.batchProfit)} GP</b><b>ROI: {smartRecipeCalc.roi===null?'?':smartRecipeCalc.roi.toFixed(1)+'%'}</b><b>XP/batch: {fmt(smartRecipeCalc.xpBatch)}</b><b>Expected GP/h: {smartRecipeCalc.gpHour===null?'DATA REQUIRED':fmt(smartRecipeCalc.gpHour)}</b><b>Expected XP/h: {smartRecipeCalc.xpHour===null?'DATA REQUIRED':fmt(smartRecipeCalc.xpHour)}</b><b>{selectedSmartRecipe?.rateSource}{selectedSmartRecipe?.rate!==null?` • ${fmt(selectedSmartRecipe.rate)}/h`:''}</b></div>
+            <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:7}}><b>Kâr/item: {fmt(smartRecipeCalc.profit)} GP</b><b>Batch ({fmt(smartQty)}): {fmt(smartRecipeCalc.batchProfit)} GP</b><b>ROI: {smartRecipeCalc.roi===null?'?':smartRecipeCalc.roi.toFixed(1)+'%'}</b><b>XP/batch: {fmt(smartRecipeCalc.xpBatch)}</b><b>Expected GP/h: {smartRecipeCalc.gpHour===null?'DATA REQUIRED':fmt(smartRecipeCalc.gpHour)}</b><b>Expected XP/h: {smartRecipeCalc.xpHour===null?'DATA REQUIRED':fmt(smartRecipeCalc.xpHour)}</b><b>{selectedSmartRecipe?.rateSource}{selectedSmartRecipe&&selectedSmartRecipe.rate!==null?` • ${fmt(selectedSmartRecipe.rate)}/h`:''}</b></div>
           </div>}
         </section>
 
