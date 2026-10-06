@@ -3,7 +3,7 @@ import './App.css'
 import { V4_ACTIVITY_DATABASE } from './v4/database'
 import { evaluateActivity } from './v4/requirements'
 import { rankCombat, nextUnlocks as v4NextUnlocks, questUnlockValue, itemChains, readyAfterSimpleRequirements } from './v4/planner'
-import { V5_CATALOGUE, V5_PAGES } from './v5'
+import { V5_CATALOGUE, V5_PAGES, V5_CANONICAL_MANIFEST } from './v5'
 import type { V5Edit, V5PageId } from './v5'
 
 const API = 'https://prices.runescape.wiki/api/v1/osrs'
@@ -1201,7 +1201,7 @@ export default function App() {
   const [v4ViewAll, setV4ViewAll] = useState(false)
   const [v4KindFilter, setV4KindFilter] = useState('ALL')
   const [v4PlannerItem, setV4PlannerItem] = useState('')
-  const [activeTab, setActiveTab] = useState<'dashboard'|'smart'|'skills'|'money'|'planner'|'database'>('dashboard')
+  const [activeTab, setActiveTab] = useState<'dashboard'|'smart'|'skills'|'money'|'planner'|'database'|'coverage'>('dashboard')
   const [v5Page,setV5Page]=useState<V5PageId>('melee')
   const [v5Search,setV5Search]=useState('')
   const [v5ShowLocked,setV5ShowLocked]=useState(true)
@@ -2022,6 +2022,10 @@ export default function App() {
 
     const addInputs=(parts:{name:string;qty:number}[])=>{inputs=parts.map(p=>({...p,price:buy(p.name)}));liveEligible=true}
 
+    // V5.8 structured recipes: exact quantities override legacy string parsing.
+    if(a.inputs?.length) addInputs(a.inputs)
+    if(a.outputQty&&a.outputQty>0) outputQty=a.outputQty
+
     // Exact 1:1 / explicit V5 recipes.
     if(a.input&&a.output){
       const parts=a.input.split('+').map((s:string)=>s.trim()).filter(Boolean)
@@ -2070,8 +2074,8 @@ export default function App() {
     }
 
     const inputCost=inputs.length&&inputs.every(x=>x.price!==null)
-      ? inputs.reduce((n,x)=>n+(x.price||0)*x.qty,0)
-      : inputs.length?null:0
+      ? inputs.reduce((n,x)=>n+(x.price||0)*x.qty,0)+(a.coinFee||0)
+      : inputs.length?null:(a.coinFee||0)
     const outputPrice=outputName?sell(outputName):null
     const outputNet=outputPrice===null?null:outputPrice*outputQty-geTax(outputPrice)*outputQty
     const hasPrices=liveEligible&&inputCost!==null&&(!outputName||outputNet!==null)
@@ -2097,13 +2101,15 @@ export default function App() {
     const targetGpHour=targetProfitEach!==null?targetProfitEach*rate:null
     const targetCapital=targetInputCost!==null?targetInputCost*Math.max(1,Math.floor(rate)):null
     const explicitGp=edit.measuredGpHour??edit.theoryGpHour
-    const gp=explicitGp??liveGp??a.theoryGpHour
+    const quality=a.quality||'NEEDS_VERIFICATION'
+    const eligibleEconomicData=quality==='VERIFIED'||quality==='NEEDS_VERIFICATION'
+    const gp=explicitGp??(eligibleEconomicData?liveGp:null)??(quality==='VERIFIED'?a.theoryGpHour:0)
     const source=edit.measuredGpHour!==undefined?'MEASURED'
       :edit.theoryGpHour!==undefined?'USER THEORY'
       :liveGp!==null?(edit.measuredRate!==undefined?'LIVE GE + MEASURED RATE':edit.theoryRate!==undefined?'LIVE GE + USER RATE':'LIVE GE + THEORY RATE')
       :edit.measuredRate!==undefined?'MEASURED RATE / THEORY GP'
       :edit.theoryRate!==undefined?'USER THEORY':'THEORY'
-    return {...a,edit,current,open,gp,rate,source,economy,liveGp,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital}
+    return {...a,edit,current,open,gp,rate,source,quality,eligibleEconomicData,economy,liveGp,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital}
   }),[mode,levels,v5Edits,v5BuyTargets,prices,mapping])
   type SmartRecipeRow={
     id:string;name:string;skill:string;level:number;member:boolean;open:boolean;status:string;requirements:string[];
@@ -2129,7 +2135,7 @@ export default function App() {
     })
     // V5 broad catalogue adds verified explicit input→output activities not already covered above.
     v5Rows.forEach(x=>{
-      if(byName.has(x.name)||!x.economy.inputs.length||!x.economy.outputName)return
+      if(!x.eligibleEconomicData||byName.has(x.name)||!x.economy.inputs.length||!x.economy.outputName)return
       const measured=typeof x.edit.measuredRate==='number'&&x.edit.measuredRate>0
       const rate:number|null=measured?(x.edit.measuredRate as number):(x.rate>0?x.rate:null)
       const reqText=(x as any).requirement
@@ -2138,7 +2144,7 @@ export default function App() {
       byName.set(x.name,{
         id:`v5:${x.id}`,name:x.name,skill:x.skills.join('/'),level:x.level,member:x.member,open:x.open,status,requirements:reqs,
         inputs:x.economy.inputs.map(i=>({name:i.name,qty:i.qty})),outputName:x.economy.outputName,outputQty:x.economy.outputQty||1,
-        xpEach:typeof x.xpHour==='number'&&x.xpHour>0&&rate!==null&&rate>0?x.xpHour/rate:null,rate,rateSource:measured?'GERÇEK ÖLÇÜM':rate?'TEORİK':'DATA REQUIRED',kind:'PROCESS',fixedOutputNet:null
+        xpEach:typeof x.xpEach==='number'?x.xpEach:(typeof x.xpHour==='number'&&x.xpHour>0&&rate!==null&&rate>0?x.xpHour/rate:null),rate,rateSource:measured?'GERÇEK ÖLÇÜM':rate?'TEORİK':'DATA REQUIRED',kind:'PROCESS',fixedOutputNet:null
       })
     })
     return [...byName.values()].sort((a,b)=>Number(b.open)-Number(a.open)||a.skill.localeCompare(b.skill)||a.level-b.level||a.name.localeCompare(b.name))
@@ -2192,7 +2198,7 @@ export default function App() {
     return [...recipeRows,...gatherLegacy]
   },[rows,gatheringRows])
   const unifiedRanking=useMemo(()=>{
-    const v5=v5Rows.filter(x=>x.open&&x.gp>0).map(x=>({...x,legacy:false}))
+    const v5=v5Rows.filter(x=>x.open&&x.gp>0&&(x.eligibleEconomicData||x.edit.measuredGpHour!==undefined||x.edit.measuredRate!==undefined)).map(x=>({...x,legacy:false}))
     const all=[...v5,...legacyMeasuredRanking]
     const priority=(s:string)=>s==='MEASURED'||s==='GERÇEK'||s==='LIVE GE + MEASURED RATE'?4:s.startsWith('LIVE GE')?3:s==='USER THEORY'||s==='LIVE/ESTIMATE'?2:1
     const byName=new Map<string,any>()
@@ -2214,7 +2220,7 @@ export default function App() {
       targetHit:boolean;bestTargetGpHour:number;recipes:RecipeUse[]
     }
     const byItem=new Map<string,ItemOpportunity>()
-    v5Rows.filter(x=>x.open&&x.economy.hasPrices).forEach(x=>{
+    v5Rows.filter(x=>x.open&&x.eligibleEconomicData&&x.economy.hasPrices).forEach(x=>{
       x.economy.inputs.forEach(inp=>{
         const target=v5BuyTargets[inp.name]
         if(!(target>0)||inp.price===null) return
@@ -2318,11 +2324,30 @@ export default function App() {
   const v4Chains = useMemo(() => itemChains(V4_ACTIVITY_DATABASE,v4PlannerItem).slice(0,20), [v4PlannerItem])
   const v4GearReady = useMemo(() => readyAfterSimpleRequirements(V4_ACTIVITY_DATABASE,v4Ctx).slice(0,20), [v4Ctx])
 
+  const coverageRows=useMemo(()=>{
+    const byId=new Map(V5_CATALOGUE.map(a=>[a.id,a]))
+    return V5_CANONICAL_MANIFEST.map(c=>({canonical:c,activity:byId.get(c.key)||null}))
+  },[])
+  const coverageSummary=useMemo(()=>{
+    const summarize=(member:boolean)=>{
+      const set=coverageRows.filter(x=>x.canonical.member===member)
+      const counts={VERIFIED:0,NEEDS_VERIFICATION:0,PLACEHOLDER:0,DUPLICATE:0,INCOMPLETE:0,DEPRECATED:0,MISSING:0}
+      set.forEach(x=>{if(!x.activity)counts.MISSING++;else counts[x.activity.quality||'NEEDS_VERIFICATION']++})
+      return {total:set.length,...counts,pct:set.length?counts.VERIFIED/set.length*100:0}
+    }
+    return {f2p:summarize(false),member:summarize(true)}
+  },[coverageRows])
+  const qualityCounts=useMemo(()=>{
+    const c={VERIFIED:0,NEEDS_VERIFICATION:0,PLACEHOLDER:0,DUPLICATE:0,INCOMPLETE:0,DEPRECATED:0}
+    V5_CATALOGUE.forEach(a=>c[a.quality||'NEEDS_VERIFICATION']++)
+    return c
+  },[])
+
   return (
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.7.2 — Smart Order Advisor+</h1>
+          <h1>OSRS Economy Scanner V5.8 — Coverage Audit</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2348,7 +2373,7 @@ export default function App() {
 
       <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:8,flexWrap:'wrap',padding:'10px 0',background:'#0d1117',borderBottom:'1px solid #30363d'}}>
         {([
-          ['dashboard','Dashboard'],['smart','Smart Order'],['skills','21 Skill Views'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],
+          ['dashboard','Dashboard'],['smart','Smart Order'],['skills','21 Skill Views'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],['coverage','Database Coverage'],
         ] as const).map(([id,label])=><button key={id} type="button" onClick={()=>setActiveTab(id)}
           style={{fontWeight:activeTab===id?800:500,outline:activeTab===id?'2px solid #58a6ff':'none'}}>{label}</button>)}
       </nav>
@@ -2372,7 +2397,7 @@ export default function App() {
                 {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}{x.economy&&<div style={{fontSize:9,color:'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div>{x.economy.profitEach!==null&&<div>Kâr/adet: <b>{fmt(x.economy.profitEach)} GP</b></div>}</>:<div>Canlı fiyat modeli: {x.economy.liveEligible?'fiyat eşleşmesi eksik':'henüz tanımlı değil'}</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{x.kind}</td><td>{fmt(x.gp)}</td><td>{fmt(x.rate)}</td><td>{x.source}</td></tr>)}
                 {!v5Top.length&&<tr><td colSpan={7}>Mevcut level/mod ile pozitif GP/h adayı yok.</td></tr>}
                 </tbody></table></div>
-                <div style={{fontSize:10,marginTop:6}}>V5 katalog: <b>{V5_CATALOGUE.length}</b> activity • OPEN: <b>{v5Rows.filter(x=>x.open).length}</b> • Editlenmiş: <b>{Object.keys(v5Edits).length}</b></div>
+                <div style={{fontSize:10,marginTop:6}}>V5 katalog: <b>{V5_CATALOGUE.length}</b> activity • VERIFIED: <b>{qualityCounts.VERIFIED}</b> • PLACEHOLDER: <b>{qualityCounts.PLACEHOLDER}</b> • OPEN: <b>{v5Rows.filter(x=>x.open).length}</b> • Editlenmiş: <b>{Object.keys(v5Edits).length}</b></div>
               </section>
 <section id="dashboard" className="cards">
         <div className="card">
@@ -2670,15 +2695,15 @@ export default function App() {
             <label style={{fontSize:10}}><input type="checkbox" checked={v5ShowLocked} onChange={e=>setV5ShowLocked(e.target.checked)}/> LOCKED göster</label>
           </div>
           <div style={{fontSize:10,color:'#8b949e',margin:'7px 0'}}>Kayıt: {v5PageRows.length} • OPEN {v5PageRows.filter(x=>x.open).length}. THEORY değerleri başlangıç planlama tahminidir; Edit ile theory/measurement değerlerini değiştirebilirsin.</div>
-          <div className="tableBox"><table><thead><tr><th>Activity</th><th>F2P/P2P</th><th>Level</th><th>Tür</th><th>Theory GP/h</th><th>Effective GP/h</th><th>Rate/h</th><th>XP/h</th><th>Dikkat</th><th>Durum</th><th>Veri</th><th>Edit</th></tr></thead><tbody>
+          <div className="tableBox"><table><thead><tr><th>Activity</th><th>F2P/P2P</th><th>Level</th><th>Tür</th><th>Theory GP/h</th><th>Effective GP/h</th><th>Rate/h</th><th>XP/h</th><th>Dikkat</th><th>Durum</th><th>Quality</th><th>Veri</th><th>Edit</th></tr></thead><tbody>
           {v5PageRows.map(x=><tr key={x.id} className={!x.open?'lockedRow':''}>
             <td className="name">{x.name}<div style={{fontSize:9,color:'#8b949e'}}>{x.input?`In: ${x.input}`:''}{x.output?` → Out: ${x.output}`:''}</div><div style={{fontSize:9,color:x.economy.hasPrices?'#3fb950':'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div>{x.economy.profitEach!==null&&<div>Kâr/adet: {fmt(x.economy.profitEach)} GP • Canlı GP/h: {fmt(x.liveGp)}</div>}</>:<div>Canlı fiyat: {x.economy.liveEligible?'eşleşme/veri eksik':'reçete modeli henüz tanımlı değil — THEORY korunuyor'}</div>}</div>{(x.edit.note||x.note)&&<div style={{fontSize:9,color:'#8b949e'}}>{x.edit.note||x.note}</div>}</td>
             <td>{x.member?'MEMBER':'F2P'}</td><td>{x.skills.join(', ')} {x.level}<div style={{fontSize:9}}>Sen: {x.current}</div></td><td>{x.kind}</td>
             <td>{fmt(x.edit.theoryGpHour??x.theoryGpHour)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{fmt(x.xpHour)}</td><td>{x.attention}</td>
             <td><b>{x.open?'OPEN':'LOCKED'}</b>{!x.open&&<div style={{fontSize:9}}>{x.member&&mode==='F2P'?'Membership':x.current<x.level?`${x.level-x.current} level eksik`:x.requirement||'Requirement'}</div>}</td>
-            <td>{x.source}</td><td><button type="button" onClick={()=>setV5Editing(v5Editing===x.id?null:x.id)}>Edit</button></td>
+            <td><b>{x.quality}</b>{x.sourceRef&&<div style={{fontSize:9,color:'#8b949e'}}>{x.sourceRef}</div>}</td><td>{x.source}</td><td><button type="button" onClick={()=>setV5Editing(v5Editing===x.id?null:x.id)}>Edit</button></td>
           </tr>)}
-          {!v5PageRows.length&&<tr><td colSpan={12}>Eşleşen activity yok.</td></tr>}
+          {!v5PageRows.length&&<tr><td colSpan={13}>Eşleşen activity yok.</td></tr>}
           </tbody></table></div>
           {v5Editing&&(()=>{const x=v5Rows.find(r=>r.id===v5Editing);if(!x)return null;return <div style={{marginTop:10,padding:10,border:'1px solid #58a6ff',borderRadius:8}}>
             <b>Edit — {x.name}</b><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
@@ -3292,6 +3317,24 @@ export default function App() {
       </section>
 
             </div>}
+
+      {activeTab==='coverage'&&<div>
+        <section style={{padding:12,border:'1px solid #58a6ff',borderRadius:8,marginBottom:12}}>
+          <h3 style={{marginTop:0,color:'#f0f6fc'}}>DATABASE COVERAGE AUDIT</h3>
+          <div style={{fontSize:11,color:'#8b949e',marginBottom:10}}>Coverage yalnız canonical manifest içindeki gerçek activity hedeflerine göre hesaplanır. PLACEHOLDER satırlar VERIFIED coverage sayılmaz. Manifest v1 genişletildikçe denominator büyür; mevcut database kendi kendine %100 üretemez.</div>
+          <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+            <div className="card"><b>F2P manifest coverage</b><div style={{fontSize:24}}>{coverageSummary.f2p.pct.toFixed(1)}%</div><small>{coverageSummary.f2p.VERIFIED}/{coverageSummary.f2p.total} VERIFIED • {coverageSummary.f2p.MISSING} MISSING</small></div>
+            <div className="card"><b>MEMBERS manifest coverage</b><div style={{fontSize:24}}>{coverageSummary.member.pct.toFixed(1)}%</div><small>{coverageSummary.member.VERIFIED}/{coverageSummary.member.total} VERIFIED • {coverageSummary.member.MISSING} MISSING</small></div>
+            <div className="card"><b>V5 audit</b><div style={{fontSize:18}}>{qualityCounts.PLACEHOLDER} PLACEHOLDER</div><small>{qualityCounts.VERIFIED} VERIFIED • {qualityCounts.NEEDS_VERIFICATION} NEEDS VERIFICATION</small></div>
+          </div>
+        </section>
+        <section>
+          <h3 style={{color:'#f0f6fc'}}>Canonical Manifest — Missing / Quality</h3>
+          <div className="tableBox"><table><thead><tr><th>Mode</th><th>Skill</th><th>Activity</th><th>Status</th><th>DB ID</th></tr></thead><tbody>
+            {coverageRows.map(x=><tr key={x.canonical.key}><td>{x.canonical.member?'MEMBERS':'F2P'}</td><td>{x.canonical.page}</td><td className="name">{x.canonical.label}</td><td><b>{x.activity?.quality||'MISSING'}</b></td><td>{x.activity?.id||x.canonical.key}</td></tr>)}
+          </tbody></table></div>
+        </section>
+      </div>}
 
       {activeTab==='database'&&<div>
 <section style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}} id="activity-database">
