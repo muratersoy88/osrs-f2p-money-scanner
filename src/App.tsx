@@ -2213,7 +2213,6 @@ export default function App() {
     const rate=resolved.rate
     const rateSource=resolved.source
     const economy=v5LiveEconomy(a)
-    const theoryRate=edit.theoryRate??a.theoryRate
     const measuredRate=edit.measuredRate??(weightedSpeed(measurementHistory[a.id]||[])||null)
     const liveGp=economy.profitEach!==null&&rate>0?economy.profitEach*rate:null
     const targets=v5BuyTargets
