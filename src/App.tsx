@@ -1201,7 +1201,7 @@ export default function App() {
   const [v4ViewAll, setV4ViewAll] = useState(false)
   const [v4KindFilter, setV4KindFilter] = useState('ALL')
   const [v4PlannerItem, setV4PlannerItem] = useState('')
-  const [activeTab, setActiveTab] = useState<'dashboard'|'skills'|'money'|'planner'|'database'>('dashboard')
+  const [activeTab, setActiveTab] = useState<'dashboard'|'smart'|'skills'|'money'|'planner'|'database'>('dashboard')
   const [v5Page,setV5Page]=useState<V5PageId>('melee')
   const [v5Search,setV5Search]=useState('')
   const [v5ShowLocked,setV5ShowLocked]=useState(true)
@@ -1217,6 +1217,23 @@ export default function App() {
       return migrated
     } catch { return {} }
   })
+
+  type SmartProfile='FAST'|'BALANCED'|'PATIENT'
+  type OrderSide='BUY'|'SELL'
+  type OrderStatus='OPEN'|'PARTIAL'|'FILLED'|'CANCELLED'
+  type OrderHistoryRow={id:string;date:string;item:string;side:OrderSide;quantity:number;orderPrice:number;filledQuantity:number;fillHours:number|null;status:OrderStatus;averageFillPrice:number|null}
+  type TsPoint={timestamp:number;avgHighPrice:number|null;avgLowPrice:number|null;highPriceVolume:number;lowPriceVolume:number}
+  const [smartProfile,setSmartProfile]=useState<SmartProfile>(()=>(localStorage.getItem('osrs-smart-profile-v56') as SmartProfile)||'PATIENT')
+  const [smartQty,setSmartQty]=useState(()=>Number(localStorage.getItem('osrs-smart-qty-v56')||500))
+  const [smartQtyPreset,setSmartQtyPreset]=useState('500')
+  const [smartItem,setSmartItem]=useState('')
+  const [smartSearch,setSmartSearch]=useState('')
+  const [smartSeries,setSmartSeries]=useState<Record<string,TsPoint[]>>({})
+  const [smartLoading,setSmartLoading]=useState<Record<string,boolean>>({})
+  const [smartError,setSmartError]=useState('')
+  const [smartRecipeId,setSmartRecipeId]=useState('')
+  const [orderHistory,setOrderHistory]=useState<OrderHistoryRow[]>(()=>{try{return JSON.parse(localStorage.getItem('osrs-order-history-v56')||'[]')}catch{return[]}})
+  const [historyDraft,setHistoryDraft]=useState({item:'',side:'BUY' as OrderSide,quantity:500,orderPrice:0,filledQuantity:0,fillHours:'',status:'FILLED' as OrderStatus,averageFillPrice:''})
 
   const [v5AccessFilter,setV5AccessFilter]=useState('ALL')
   const [v5KindFilter,setV5KindFilter]=useState('ALL')
@@ -1245,6 +1262,10 @@ export default function App() {
   const [mixedSamples, setMixedSamples] = useState<Record<string,Record<string,number>>>(() => { try{return JSON.parse(localStorage.getItem('osrs-mixed-samples-v25')||JSON.stringify({[`gather-${recipeId('Bait fish Sardine / Herring')}`]:{'Raw herring':478,'Raw sardine':522}}))}catch{return{}} })
   const [selectedBondMethod, setSelectedBondMethod] = useState('')
 
+
+  useEffect(()=>{localStorage.setItem('osrs-smart-profile-v56',smartProfile)},[smartProfile])
+  useEffect(()=>{localStorage.setItem('osrs-smart-qty-v56',String(smartQty))},[smartQty])
+  useEffect(()=>{localStorage.setItem('osrs-order-history-v56',JSON.stringify(orderHistory))},[orderHistory])
 
   const updateMethodData = (id: string, patch: Partial<MethodUserData>) => {
     setMethodData((old) => ({
@@ -1286,7 +1307,7 @@ export default function App() {
       const key=localStorage.key(i)
       if (key && key.startsWith('osrs-')) data[key]=localStorage.getItem(key) ?? ''
     }
-    const payload={backupVersion:1,appVersion:'V4.4',createdAt:new Date().toISOString(),data}
+    const payload={backupVersion:1,appVersion:'V5.6',createdAt:new Date().toISOString(),data}
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'})
     const url=URL.createObjectURL(blob)
     const link=document.createElement('a')
@@ -1401,6 +1422,96 @@ export default function App() {
     const d = volumes[i.id]
     if (!d) return null
     return (d.highPriceVolume || 0) + (d.lowPriceVolume || 0)
+  }
+
+  const loadSmartSeries=async(itemName:string)=>{
+    const item=getItem(itemName)
+    if(!item||smartLoading[itemName]) return
+    if(smartSeries[itemName]?.length) return
+    setSmartLoading(old=>({...old,[itemName]:true}));setSmartError('')
+    try{
+      const res=await fetch(`${API}/timeseries?timestep=5m&id=${item.id}`)
+      if(!res.ok) throw new Error(`Timeseries HTTP ${res.status}`)
+      const json=await res.json()
+      const cutoff=Math.floor(Date.now()/1000)-24*3600
+      const pts=(json.data||[]).filter((x:any)=>x.timestamp>=cutoff).map((x:any)=>({
+        timestamp:Number(x.timestamp),avgHighPrice:x.avgHighPrice??null,avgLowPrice:x.avgLowPrice??null,
+        highPriceVolume:Number(x.highPriceVolume||0),lowPriceVolume:Number(x.lowPriceVolume||0)
+      })) as TsPoint[]
+      setSmartSeries(old=>({...old,[itemName]:pts}))
+    }catch(e:any){setSmartError(e?.message||'24h zaman serisi alınamadı')}
+    finally{setSmartLoading(old=>({...old,[itemName]:false}))}
+  }
+
+  const weightedQuantile=(pairs:{v:number;w:number}[],q:number)=>{
+    const a=pairs.filter(x=>Number.isFinite(x.v)&&x.v>0&&x.w>0).sort((x,y)=>x.v-y.v)
+    if(!a.length)return null
+    const total=a.reduce((s,x)=>s+x.w,0);let run=0
+    for(const x of a){run+=x.w;if(run>=total*q)return x.v}
+    return a[a.length-1].v
+  }
+  const median=(vals:number[])=>{const a=[...vals].sort((x,y)=>x-y);if(!a.length)return null;const m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2}
+  const smartAdvice=(itemName:string,profile:SmartProfile,qty:number)=>{
+    const pts=smartSeries[itemName]||[]
+    const raw=pts.flatMap(p=>[
+      ...(p.avgHighPrice? [{v:p.avgHighPrice,w:Math.max(1,p.highPriceVolume)}]:[]),
+      ...(p.avgLowPrice? [{v:p.avgLowPrice,w:Math.max(1,p.lowPriceVolume)}]:[])
+    ])
+    if(!raw.length)return null
+    const vals=raw.map(x=>x.v),med=median(vals)!
+    const deviations=vals.map(v=>Math.abs(v-med)),mad=median(deviations)||Math.max(1,med*.01)
+    const filtered=raw.filter(x=>Math.abs(x.v-med)<=Math.max(3*mad,med*.08))
+    const use=filtered.length>=Math.max(8,raw.length*.5)?filtered:raw
+    const dailyVol=pts.reduce((s,p)=>s+p.highPriceVolume+p.lowPriceVolume,0)
+    const low=Math.min(...use.map(x=>x.v)),high=Math.max(...use.map(x=>x.v))
+    const vwap=use.reduce((s,x)=>s+x.v*x.w,0)/Math.max(1,use.reduce((s,x)=>s+x.w,0))
+    const qBuy=profile==='FAST'?.55:profile==='BALANCED'?.35:.18
+    const qSell=profile==='FAST'?.45:profile==='BALANCED'?.65:.82
+    let recBuy=weightedQuantile(use,qBuy)!,recSell=weightedQuantile(use,qSell)!
+    const pressure=dailyVol>0?qty/dailyVol:1
+    const impact=Math.min(.12,Math.max(0,pressure-.002)*.8)
+    recBuy*=1+impact;recSell*=1-impact
+    const hist=orderHistory.filter(h=>h.item===itemName&&h.quantity>0&&qty/h.quantity>=.4&&qty/h.quantity<=2.5)
+    const completed=hist.filter(h=>h.status==='FILLED'&&h.fillHours!==null)
+    const buyCompleted=completed.filter(h=>h.side==='BUY')
+    const sellCompleted=completed.filter(h=>h.side==='SELL')
+    const avgHours=(xs:OrderHistoryRow[])=>xs.length?xs.reduce((s,h)=>s+(h.fillHours||0),0)/xs.length:null
+    const avgBuyHours=avgHours(buyCompleted),avgSellHours=avgHours(sellCompleted)
+    const targetHours=profile==='FAST'?1:profile==='BALANCED'?6:18
+    const nudgePrice=(price:number,hours:number|null,side:OrderSide)=>{
+      if(hours===null)return price
+      const nudge=Math.min(.05,Math.abs(hours-targetHours)/Math.max(1,targetHours)*.015)
+      if(side==='BUY')return hours>targetHours?price*(1+nudge):price*(1-nudge)
+      return hours>targetHours?price*(1-nudge):price*(1+nudge)
+    }
+    recBuy=nudgePrice(recBuy,avgBuyHours,'BUY');recSell=nudgePrice(recSell,avgSellHours,'SELL')
+    recBuy=Math.max(1,Math.round(recBuy));recSell=Math.max(1,Math.round(recSell))
+    const samples=pts.length
+    let score=0
+    score+=samples>=180?2:samples>=60?1:0
+    score+=dailyVol>=Math.max(10000,qty*20)?2:dailyVol>=Math.max(1000,qty*5)?1:0
+    score+=completed.length>=5?2:completed.length>=2?1:0
+    const confidence=score>=5?'HIGH':score>=3?'MEDIUM':'LOW'
+    const fillRatio=dailyVol>0?qty/dailyVol:1
+    const base=profile==='FAST'?0:profile==='BALANCED'?1:2
+    const volPenalty=fillRatio>.1?3:fillRatio>.03?2:fillRatio>.005?1:0
+    const fillMeta=(hours:number|null)=>{
+      const histPenalty=hours===null?0:hours>24?2:hours>12?1:hours<1?-1:0
+      const diff=Math.max(0,Math.min(4,base+volPenalty+histPenalty))
+      return {range:['<1 saat','1–6 saat','6–12 saat','12–24 saat','24 saat+'][diff],difficulty:['ÇOK KOLAY','KOLAY','ORTA','ZOR','ÇOK ZOR'][diff]}
+    }
+    const buyFill=fillMeta(avgBuyHours),sellFill=fillMeta(avgSellHours)
+    const currentBuy=buy(itemName),currentSell=sell(itemName)
+    return {item:itemName,profile,qty,recBuy,recSell,currentBuy,currentSell,low,high,vwap,median:weightedQuantile(use,.5),dailyVol,confidence,buyFill,sellFill,samples,filteredCount:raw.length-use.length,historyCount:hist.length,avgBuyHours,avgSellHours}
+  }
+  const selectedSmart=smartItem?smartAdvice(smartItem,smartProfile,smartQty):null
+  const selectedSmartProfiles=smartItem?(['FAST','BALANCED','PATIENT'] as SmartProfile[]).map(p=>smartAdvice(smartItem,p,smartQty)).filter(Boolean):[]
+
+
+  const addOrderHistory=()=>{
+    if(!historyDraft.item||historyDraft.quantity<=0||historyDraft.orderPrice<=0)return
+    const row:OrderHistoryRow={id:`${Date.now()}-${Math.random().toString(36).slice(2)}`,date:new Date().toISOString(),item:historyDraft.item,side:historyDraft.side,quantity:historyDraft.quantity,orderPrice:historyDraft.orderPrice,filledQuantity:historyDraft.filledQuantity,fillHours:historyDraft.fillHours===''?null:Number(historyDraft.fillHours),status:historyDraft.status,averageFillPrice:historyDraft.averageFillPrice===''?null:Number(historyDraft.averageFillPrice)}
+    setOrderHistory(old=>[row,...old])
   }
 
   const rows = useMemo(() => {
@@ -1929,7 +2040,7 @@ export default function App() {
     const profitEach=hasPrices?(outputNet??0)-(inputCost??0):null
     const inputText=inputs.map(x=>`${x.qty}× ${x.name}: ${x.price===null?'?':fmt(x.price)} GP`).join(' • ')
     const outputText=outputName?`${outputName}: ${outputPrice===null?'?':fmt(outputPrice)} GP${outputPrice!==null?` (net ${fmt(outputNet)} GP)`:''}`:'Tüketim / satış çıktısı yok'
-    return {inputs,outputName,inputCost,outputPrice,outputNet,profitEach,hasPrices,liveEligible,inputText,outputText}
+    return {inputs,outputName,outputQty,inputCost,outputPrice,outputNet,profitEach,hasPrices,liveEligible,inputText,outputText}
   }
 
   const v5Rows=useMemo(()=>V5_CATALOGUE.map(a=>{
@@ -1956,6 +2067,30 @@ export default function App() {
       :edit.theoryRate!==undefined?'USER THEORY':'THEORY'
     return {...a,edit,current,open,gp,rate,source,economy,liveGp,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital}
   }),[mode,levels,v5Edits,v5BuyTargets,prices,mapping])
+  const smartOpenRecipes=useMemo(()=>v5Rows.filter(x=>x.open&&x.economy.inputs.length>0&&x.economy.outputName),[v5Rows])
+  const selectedSmartRecipe=smartOpenRecipes.find(x=>x.id===smartRecipeId)||null
+  const smartRecipeCalc=selectedSmartRecipe?(()=>{
+    const inputAdv=selectedSmartRecipe.economy.inputs.map(inp=>({inp,adv:smartAdvice(inp.name,smartProfile,smartQty)}))
+    const outName=selectedSmartRecipe.economy.outputName
+    const outAdv=outName?smartAdvice(outName,smartProfile,smartQty):null
+    if(inputAdv.some(x=>!x.adv)||!outAdv)return null
+    const smartInputCost=inputAdv.reduce((s,x)=>s+(x.adv!.recBuy*(x.inp.qty||1)),0)
+    const grossSell=outAdv.recSell*(selectedSmartRecipe.economy.outputQty||1)
+    const tax=geTax(grossSell)
+    const netSell=grossSell-tax
+    const profit=netSell-smartInputCost
+    const roi=smartInputCost>0?profit/smartInputCost*100:null
+    const rate=selectedSmartRecipe.rate
+    return {inputAdv,outAdv,smartInputCost,grossSell,tax,netSell,profit,roi,rate,gpHour:profit*rate,batchProfit:profit*smartQty}
+  })():null
+
+  const loadSmartRecipe=async()=>{
+    if(!selectedSmartRecipe)return
+    const names=[...selectedSmartRecipe.economy.inputs.map(x=>x.name),selectedSmartRecipe.economy.outputName].filter(Boolean) as string[]
+    await Promise.all(names.map(loadSmartSeries))
+  }
+
+
   const legacyMeasuredRanking=useMemo(()=>{
     const recipeRows=rows.filter(r=>r.unlocked&&(r.gpHour??0)>0).map(r=>({
       id:`legacy-recipe-${r.id}`,name:r.name,skills:[r.skill],level:r.level,kind:'PROCESSING',
@@ -2102,7 +2237,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.5.1 — Item Buy Order Board</h1>
+          <h1>OSRS Economy Scanner V5.6 — Smart Order Advisor</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2128,7 +2263,7 @@ export default function App() {
 
       <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:8,flexWrap:'wrap',padding:'10px 0',background:'#0d1117',borderBottom:'1px solid #30363d'}}>
         {([
-          ['dashboard','Dashboard'],['skills','21 Skill Views'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],
+          ['dashboard','Dashboard'],['smart','Smart Order'],['skills','21 Skill Views'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],
         ] as const).map(([id,label])=><button key={id} type="button" onClick={()=>setActiveTab(id)}
           style={{fontWeight:activeTab===id?800:500,outline:activeTab===id?'2px solid #58a6ff':'none'}}>{label}</button>)}
       </nav>
@@ -2364,7 +2499,74 @@ export default function App() {
 
             </div>}
 
-      {activeTab==='skills'&&<div>
+      
+      {activeTab==='smart'&&<div>
+        <section style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+          <h2 style={{marginTop:0}}>SMART ORDER / 24H ORDER ADVISOR</h2>
+          <div style={{fontSize:10,color:'#8b949e',marginBottom:10}}>OSRS Wiki 5m zaman serisinin son 24 saati kullanılır. Tekil spike/dipler median/MAD filtresiyle bastırılır; fiyat dağılımı hacimle ağırlıklandırılır. Dolum aralıkları tahmindir, garanti değildir.</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'end'}}>
+            <label>Item<br/><input value={smartSearch} onChange={e=>setSmartSearch(e.target.value)} placeholder="Ruby, Sapphire..." style={{width:180}}/></label>
+            <label>Profil<br/><select value={smartProfile} onChange={e=>setSmartProfile(e.target.value as SmartProfile)}><option>FAST</option><option>BALANCED</option><option>PATIENT</option></select></label>
+            <label>Miktar<br/><select value={smartQtyPreset} onChange={e=>{const v=e.target.value;setSmartQtyPreset(v);if(v!=='CUSTOM')setSmartQty(Number(v))}}><option value="100">100</option><option value="500">500</option><option value="1000">1.000</option><option value="CUSTOM">Özel</option></select></label>
+            {smartQtyPreset==='CUSTOM'&&<label>Özel miktar<br/><input type="number" min="1" value={smartQty} onChange={e=>setSmartQty(Math.max(1,Number(e.target.value)||1))} style={{width:100}}/></label>}
+          </div>
+          {smartSearch.trim()&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>
+            {mapping.filter((m:any)=>prices[m.id]&&m.name?.toLowerCase().includes(smartSearch.toLowerCase())).slice(0,12).map((m:any)=><button key={m.id} onClick={()=>{setSmartItem(m.name);setSmartSearch(m.name);loadSmartSeries(m.name)}}>{m.name}</button>)}
+          </div>}
+          {smartError&&<div className="error" style={{marginTop:8}}>{smartError}</div>}
+          {smartItem&&smartLoading[smartItem]&&<div style={{marginTop:10}}>24h veri yükleniyor...</div>}
+          {selectedSmart&&<div style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+            <div style={{fontSize:18,fontWeight:900}}>{selectedSmart.item} • {selectedSmart.profile} • {fmt(selectedSmart.qty)} adet</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))',gap:8,marginTop:8}}>
+              <div className="card"><label>Current BUY / SELL</label><strong>{fmt(selectedSmart.currentBuy)} / {fmt(selectedSmart.currentSell)} GP</strong></div>
+              <div className="card"><label>24h Low / High</label><strong>{fmt(selectedSmart.low)} / {fmt(selectedSmart.high)} GP</strong></div>
+              <div className="card"><label>24h VWAP / Median</label><strong>{fmt(selectedSmart.vwap)} / {fmt(selectedSmart.median)} GP</strong></div>
+              <div className="card"><label>24h Volume</label><strong>{fmt(selectedSmart.dailyVol)}</strong></div>
+              <div className="card"><label>Confidence</label><strong>{selectedSmart.confidence}</strong></div>
+              <div className="card"><label>Tahmini Fill</label><strong>BUY {selectedSmart.buyFill.difficulty} • {selectedSmart.buyFill.range}<br/>SELL {selectedSmart.sellFill.difficulty} • {selectedSmart.sellFill.range}</strong></div>
+            </div>
+            <div className="tableBox" style={{marginTop:10}}><table><thead><tr><th>Profil</th><th>Recommended BUY</th><th>BUY fark</th><th>Recommended SELL</th><th>SELL fark</th><th>Confidence</th><th>BUY fill</th><th>SELL fill</th></tr></thead><tbody>
+              {selectedSmartProfiles.map((a:any)=><tr key={a.profile} style={{fontWeight:a.profile===smartProfile?800:400}}><td>{a.profile}{a.profile===smartProfile?' ★':''}</td><td>{fmt(a.recBuy)} GP</td><td>{a.currentBuy?`${((a.recBuy-a.currentBuy)/a.currentBuy*100).toFixed(1)}%`:'?'}</td><td>{fmt(a.recSell)} GP</td><td>{a.currentSell?`${((a.recSell-a.currentSell)/a.currentSell*100).toFixed(1)}%`:'?'}</td><td>{a.confidence}</td><td>{a.buyFill.difficulty} • {a.buyFill.range}</td><td>{a.sellFill.difficulty} • {a.sellFill.range}</td></tr>)}
+            </tbody></table></div>
+            <div style={{fontSize:10,color:'#8b949e',marginTop:8}}>Dayanak: {selectedSmart.samples} adet 5m örnek • {selectedSmart.filteredCount} uç örnek filtrelendi • hacim ağırlıklı dağılım • miktar/24h hacim etkisi{selectedSmart.historyCount?` • ${selectedSmart.historyCount} benzer kişisel emir kaydı`:''}{selectedSmart.avgBuyHours!==null?` • BUY geçmiş ort. ${selectedSmart.avgBuyHours.toFixed(1)}h`:''}{selectedSmart.avgSellHours!==null?` • SELL geçmiş ort. ${selectedSmart.avgSellHours.toFixed(1)}h`:''}</div>
+          </div>}
+        </section>
+
+        <section style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+          <h3 style={{marginTop:0}}>SMART BUY → PROCESS → SMART SELL</h3>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'end'}}>
+            <label>Açık processing reçetesi<br/><select value={smartRecipeId} onChange={e=>setSmartRecipeId(e.target.value)} style={{maxWidth:420}}><option value="">Seç...</option>{smartOpenRecipes.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+            <button onClick={loadSmartRecipe} disabled={!selectedSmartRecipe}>24h Recipe Verisini Yükle</button>
+          </div>
+          {selectedSmartRecipe&&<div style={{fontSize:10,color:'#8b949e',marginTop:6}}>Hammadde ve ürünün 24h serileri yüklenince {smartProfile} fiyatlarıyla hesaplanır. Rate kaynağı: {selectedSmartRecipe.source} • {fmt(selectedSmartRecipe.rate)}/h.</div>}
+          {smartRecipeCalc&&<div style={{marginTop:10,padding:10,border:'1px solid #30363d',borderRadius:7}}>
+            <div><b>Smart alış:</b> {smartRecipeCalc.inputAdv.map(x=>`${x.inp.name} ${fmt(x.adv!.recBuy)} GP × ${x.inp.qty||1}`).join(' + ')}</div>
+            <div><b>Smart satış:</b> {selectedSmartRecipe?.economy.outputName} {fmt(smartRecipeCalc.outAdv.recSell)} GP • GE tax {fmt(smartRecipeCalc.tax)} GP</div>
+            <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:7}}><b>Kâr/item: {fmt(smartRecipeCalc.profit)} GP</b><b>Batch ({fmt(smartQty)}): {fmt(smartRecipeCalc.batchProfit)} GP</b><b>ROI: {smartRecipeCalc.roi===null?'?':smartRecipeCalc.roi.toFixed(1)+'%'}</b><b>Expected GP/h: {fmt(smartRecipeCalc.gpHour)}</b></div>
+          </div>}
+        </section>
+
+        <section style={{padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+          <h3 style={{marginTop:0}}>Order History / Gerçekleşen Emir Geçmişi</h3>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'end'}}>
+            <label>Item<br/><input value={historyDraft.item} onChange={e=>setHistoryDraft(d=>({...d,item:e.target.value}))} style={{width:150}}/></label>
+            <label>BUY/SELL<br/><select value={historyDraft.side} onChange={e=>setHistoryDraft(d=>({...d,side:e.target.value as OrderSide}))}><option>BUY</option><option>SELL</option></select></label>
+            <label>Miktar<br/><input type="number" value={historyDraft.quantity} onChange={e=>setHistoryDraft(d=>({...d,quantity:Number(e.target.value)}))} style={{width:85}}/></label>
+            <label>Emir fiyatı<br/><input type="number" value={historyDraft.orderPrice} onChange={e=>setHistoryDraft(d=>({...d,orderPrice:Number(e.target.value)}))} style={{width:90}}/></label>
+            <label>Gerçekleşen<br/><input type="number" value={historyDraft.filledQuantity} onChange={e=>setHistoryDraft(d=>({...d,filledQuantity:Number(e.target.value)}))} style={{width:85}}/></label>
+            <label>Fill saat<br/><input value={historyDraft.fillHours} onChange={e=>setHistoryDraft(d=>({...d,fillHours:e.target.value}))} placeholder="14" style={{width:70}}/></label>
+            <label>Ort. fiyat<br/><input value={historyDraft.averageFillPrice} onChange={e=>setHistoryDraft(d=>({...d,averageFillPrice:e.target.value}))} placeholder="ops." style={{width:80}}/></label>
+            <label>Durum<br/><select value={historyDraft.status} onChange={e=>setHistoryDraft(d=>({...d,status:e.target.value as OrderStatus}))}><option>OPEN</option><option>PARTIAL</option><option>FILLED</option><option>CANCELLED</option></select></label>
+            <button onClick={addOrderHistory}>Emri Kaydet</button>
+          </div>
+          <div className="tableBox" style={{marginTop:10}}><table><thead><tr><th>Tarih</th><th>Item</th><th>Side</th><th>Miktar</th><th>Emir</th><th>Doldu</th><th>Süre</th><th>Ort.</th><th>Durum</th><th></th></tr></thead><tbody>
+            {orderHistory.slice(0,100).map(h=><tr key={h.id}><td>{new Date(h.date).toLocaleString('tr-TR')}</td><td>{h.item}</td><td>{h.side}</td><td>{fmt(h.quantity)}</td><td>{fmt(h.orderPrice)}</td><td>{fmt(h.filledQuantity)}</td><td>{h.fillHours===null?'—':`${h.fillHours}h`}</td><td>{h.averageFillPrice===null?'—':fmt(h.averageFillPrice)}</td><td>{h.status}</td><td><button onClick={()=>setOrderHistory(old=>old.filter(x=>x.id!==h.id))}>Sil</button></td></tr>)}
+            {!orderHistory.length&&<tr><td colSpan={10}>Henüz emir geçmişi yok. Örn: Sapphire • BUY • 500 • 150 GP • 500 doldu • 14 saat.</td></tr>}
+          </tbody></table></div>
+        </section>
+      </div>}
+
+{activeTab==='skills'&&<div>
         <section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
           <h3 style={{marginTop:0}}>V5 — 21 Deep Skill / Progression Views</h3>
           <div style={{display:'flex',gap:5,flexWrap:'wrap',marginBottom:10}}>
