@@ -10,7 +10,7 @@ export type V5Activity={
  sourceRef?:string; economicModel?:'GE_PROCESS'|'NPC_PROCESS'|'GATHERING'|'COMBAT'|'RECURRING'|'FIXED_VALUE';
  coinFee?:number; rateSource?:'MEASURED'|'LEVEL_MODEL'|'THEORY'|'ESTIMATE'|'DATA_REQUIRED'
 }
-export type V5Edit={theoryRate?:number;theoryGpHour?:number;measuredRate?:number;measuredGpHour?:number;note?:string}
+export type V5Edit={theoryRate?:number;theoryGpHour?:number;measuredRate?:number;measuredGpHour?:number;gpOverride?:number;levelAdjustedRate?:number;note?:string}
 export type V5Page={id:V5PageId;label:string;skills:string[]}
 
 
@@ -131,6 +131,7 @@ verified({id:'econ-f2p-blue-dye',name:'Make Blue dye — Aggie',pages:['crafting
 verified({id:'econ-f2p-sapphire-amulet-u',name:'Make Sapphire amulet (u)',pages:['crafting'],skills:['Crafting'],level:24,member:false,kind:'PROCESSING',theoryRate:1100,theoryGpHour:0,xpHour:71500,attention:'LOW',inputs:[{name:'Gold bar',qty:1},{name:'Sapphire',qty:1}],output:'Sapphire amulet (u)',outputQty:1,xpEach:65,sourceRef:'OSRS Wiki Crafting jewellery',economicModel:'GE_PROCESS',rateSource:'THEORY',note:'Existing user measured rate must override theory (known measurement: 880/h in legacy measurement store).'})
 verified({id:'econ-f2p-emerald-necklace',name:'Make Emerald necklace',pages:['crafting'],skills:['Crafting'],level:29,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'LOW',inputs:[{name:'Gold bar',qty:1},{name:'Emerald',qty:1}],output:'Emerald necklace',outputQty:1,xpEach:60,sourceRef:'OSRS Wiki Crafting jewellery',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
 verified({id:'econ-f2p-rune-2h',name:'Smith Rune 2h sword',pages:['smithing'],skills:['Smithing'],level:99,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Runite bar',qty:3}],output:'Rune 2h sword',outputQty:1,xpEach:225,sourceRef:'OSRS Wiki F2P Smithing / Rune 2h sword',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
+verified({id:'econ-f2p-steel-bar',name:'Smelt Steel bar',pages:['smithing'],skills:['Smithing'],level:30,member:false,kind:'PROCESSING',theoryRate:900,theoryGpHour:0,xpHour:15750,attention:'LOW',inputs:[{name:'Iron ore',qty:1},{name:'Coal',qty:2}],output:'Steel bar',outputQty:1,xpEach:17.5,sourceRef:'OSRS Wiki Smithing / Steel bar',economicModel:'GE_PROCESS',rateSource:'THEORY',note:'User measured rate must override theory (known measurement: ~453 bars/h in legacy measurement store).'})
 
 verified({id:'econ-p2p-cannonballs',name:'Smith Cannonballs',pages:['smithing'],skills:['Smithing'],level:35,member:true,kind:'PROCESSING',theoryRate:600,theoryGpHour:0,xpHour:13824,attention:'AFK',inputs:[{name:'Steel bar',qty:1}],output:'Cannonball',outputQty:4,xpEach:25.6,requirement:'Dwarf Cannon',sourceRef:'OSRS Wiki P2P Smithing training',economicModel:'GE_PROCESS',rateSource:'THEORY',note:'Standard ammo mould: 2,400 cannonballs/h = 600 steel bars/h. Double ammo mould is a separate method and must not be conflated.'})
 
@@ -192,6 +193,7 @@ export const V5_CANONICAL_MANIFEST:V5Canonical[]=[
  {key:'econ-f2p-sapphire-amulet-u',label:'Sapphire amulet (u)',page:'crafting',member:false,kind:'PROCESSING'},
  {key:'econ-f2p-emerald-necklace',label:'Emerald necklace',page:'crafting',member:false,kind:'PROCESSING'},
  {key:'econ-f2p-rune-2h',label:'Rune 2h sword',page:'smithing',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-steel-bar',label:'Steel bar smelting',page:'smithing',member:false,kind:'PROCESSING'},
  {key:'econ-p2p-cannonballs',label:'Cannonballs',page:'smithing',member:true,kind:'PROCESSING'},
  ...['Guam','Marrentill','Tarromin','Harralander','Ranarr','Toadflax','Irit','Avantoe','Kwuarm','Snapdragon','Cadantine','Lantadyme','Dwarf weed','Torstol'].map(label=>({key:`econ-p2p-unf-${label.toLowerCase().replaceAll(' ','-')}`,label:`${label} unfinished potion`,page:'herblore' as V5PageId,member:true,kind:'PROCESSING' as V5Kind})),
  ...['Attack potion','Antipoison','Strength potion','Serum 207','Compost potion','Restore potion'].map(label=>({key:`econ-p2p-potion-${label.toLowerCase().replaceAll(' ','-')}`,label,page:'herblore' as V5PageId,member:true,kind:'PROCESSING' as V5Kind})),
