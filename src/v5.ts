@@ -1,10 +1,14 @@
 export type V5PageId =
   'melee'|'ranged'|'magic'|'agility'|'mining'|'smithing'|'herblore'|'fishing'|'thieving'|'cooking'|'prayer'|'crafting'|'firemaking'|'fletching'|'woodcutting'|'runecraft'|'slayer'|'farming'|'construction'|'hunter'|'sailing'
 export type V5Kind='GATHERING'|'PROCESSING'|'COMBAT'|'TRAINING'|'RECURRING'|'UTILITY'
+export type V5Quality='VERIFIED'|'NEEDS_VERIFICATION'|'PLACEHOLDER'|'DUPLICATE'|'INCOMPLETE'|'DEPRECATED'
 export type V5Activity={
  id:string; name:string; pages:V5PageId[]; skills:string[]; level:number; member:boolean; kind:V5Kind;
  theoryRate:number; theoryGpHour:number; xpHour:number; attention:'HIGH'|'MEDIUM'|'LOW'|'AFK';
- input?:string; output?:string; requirement?:string; note?:string
+ input?:string; output?:string; requirement?:string; note?:string;
+ quality?:V5Quality; inputs?:{name:string;qty:number}[]; outputQty?:number; xpEach?:number|null;
+ sourceRef?:string; economicModel?:'GE_PROCESS'|'NPC_PROCESS'|'GATHERING'|'COMBAT'|'RECURRING'|'FIXED_VALUE';
+ coinFee?:number; rateSource?:'MEASURED'|'LEVEL_MODEL'|'THEORY'|'ESTIMATE'|'DATA_REQUIRED'
 }
 export type V5Edit={theoryRate?:number;theoryGpHour?:number;measuredRate?:number;measuredGpHour?:number;note?:string}
 export type V5Page={id:V5PageId;label:string;skills:string[]}
@@ -29,7 +33,7 @@ export const V5_PAGES:V5Page[]=[
 const out:V5Activity[]=[]
 let seq=0
 const add=(page:V5PageId,name:string,skill:string,level:number,member:boolean,kind:V5Kind,rate:number,gp:number,xp:number,attention:V5Activity['attention']='MEDIUM',extra:Partial<V5Activity>={})=>{
- out.push({id:`v5-${page}-${++seq}`,name,pages:[page],skills:[skill],level,member,kind,theoryRate:rate,theoryGpHour:gp,xpHour:xp,attention,...extra})
+ out.push({id:`v5-${page}-${++seq}`,name,pages:[page],skills:[skill],level,member,kind,theoryRate:rate,theoryGpHour:gp,xpHour:xp,attention,quality:'PLACEHOLDER',rateSource:'ESTIMATE',...extra})
 }
 const tierGp=(level:number,base=18000)=>Math.round(base+level*level*55)
 const tierXp=(level:number,base=8000)=>Math.round(base+level*900)
@@ -105,4 +109,99 @@ logs.forEach(([n,l])=>{add('fletching',`Fletch ${n} shortbow (u)`,'Fletching',+l
 // Sailing: deliberately broad editable activity catalogue; live theory should be calibrated as current game data evolves.
 ;[['Salvage basic wrecks',1],['Deliver coastal cargo',5],['Fish from vessel',10],['Salvage intermediate wrecks',20],['Courier contracts',25],['Resource dredging',30],['Island resource runs',35],['Merchant cargo routes',40],['Advanced salvage',50],['Deep-sea fishing route',55],['High-value cargo contracts',60],['Remote island gathering',65],['Advanced merchant routes',70],['Deep-sea salvage',75],['Elite cargo contracts',80],['Endgame salvage route',90]].forEach(([n,l])=>add('sailing',String(n),'Sailing',+l,true,+l%2?'GATHERING':'RECURRING',Math.max(10,80-+l/2),tierGp(+l,30000),tierXp(+l,25000),'MEDIUM',{note:'Editable theory placeholder; replace with measured data when tested.'}))
 
+
+const verified=(a:V5Activity)=>out.push({...a,quality:'VERIFIED'})
+const needs=(a:V5Activity)=>out.push({...a,quality:'NEEDS_VERIFICATION'})
+
+// Canonical, source-backed economic activities. Explicit IDs are stable for future history links.
+// Rates are intentionally 0 unless a trustworthy rate/model is already available; live GP/h must not fabricate throughput.
+verified({id:'econ-f2p-pastry-dough',name:'Make Pastry dough',pages:['cooking'],skills:['Cooking'],level:1,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Pot of flour',qty:1},{name:'Jug of water',qty:1}],output:'Pastry dough',outputQty:1,xpEach:0,sourceRef:'OSRS Wiki Cooking experience table / Cooking tutor',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
+verified({id:'econ-f2p-pie-shell',name:'Make Pie shell',pages:['cooking'],skills:['Cooking'],level:1,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Pastry dough',qty:1},{name:'Pie dish',qty:1}],output:'Pie shell',outputQty:1,xpEach:0,sourceRef:'OSRS Wiki Cooking experience table / Cooking tutor',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
+verified({id:'econ-f2p-uncooked-apple-pie',name:'Make Uncooked apple pie',pages:['cooking'],skills:['Cooking'],level:30,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Pie shell',qty:1},{name:'Cooking apple',qty:1}],output:'Uncooked apple pie',outputQty:1,xpEach:0,sourceRef:'OSRS Wiki Cooking experience table',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
+verified({id:'econ-f2p-cook-apple-pie',name:'Cook Apple pie',pages:['cooking'],skills:['Cooking'],level:30,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'LOW',inputs:[{name:'Uncooked apple pie',qty:1}],output:'Apple pie',outputQty:1,xpEach:130,sourceRef:'OSRS Wiki Cooking experience table',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED',note:'Burn/failure must use player-level or measured success model; nominal output alone is not valid.'})
+verified({id:'econ-f2p-pizza-base',name:'Make Pizza base',pages:['cooking'],skills:['Cooking'],level:35,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Pot of flour',qty:1},{name:'Jug of water',qty:1}],output:'Pizza base',outputQty:1,xpEach:0,sourceRef:'OSRS Wiki Cooking experience table / Cooking tutor',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
+needs({id:'econ-f2p-plain-pizza',name:'Cook Plain pizza',pages:['cooking'],skills:['Cooking'],level:35,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'LOW',input:'Uncooked pizza',output:'Plain pizza',outputQty:1,xpEach:143,sourceRef:'OSRS Wiki Cooking/Pizza',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED',note:'Uncooked pizza is not tradeable; multi-stage tomato+cheese assembly needs structured non-GE intermediate handling before Smart BUY integration.'})
+verified({id:'econ-f2p-meat-pizza',name:'Top Meat pizza',pages:['cooking'],skills:['Cooking'],level:45,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Plain pizza',qty:1},{name:'Cooked meat',qty:1}],output:'Meat pizza',outputQty:1,xpEach:26,sourceRef:'OSRS Wiki Cooking/Pizza',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
+verified({id:'econ-f2p-anchovy-pizza',name:'Top Anchovy pizza',pages:['cooking'],skills:['Cooking'],level:55,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Plain pizza',qty:1},{name:'Anchovies',qty:1}],output:'Anchovy pizza',outputQty:1,xpEach:39,sourceRef:'OSRS Wiki Cooking/Pizza',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
+
+verified({id:'econ-f2p-red-dye',name:'Make Red dye — Aggie',pages:['crafting'],skills:['Crafting'],level:1,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Redberries',qty:3}],output:'Red dye',outputQty:1,xpEach:0,coinFee:5,sourceRef:'OSRS Wiki Dye',economicModel:'NPC_PROCESS',rateSource:'DATA_REQUIRED',note:'Aggie NPC interaction/travel; do not use generic bank-processing rate.'})
+verified({id:'econ-f2p-yellow-dye',name:'Make Yellow dye — Aggie',pages:['crafting'],skills:['Crafting'],level:1,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Onion',qty:2}],output:'Yellow dye',outputQty:1,xpEach:0,coinFee:5,sourceRef:'OSRS Wiki Dye',economicModel:'NPC_PROCESS',rateSource:'DATA_REQUIRED',note:'Aggie NPC interaction/travel; do not use generic bank-processing rate.'})
+verified({id:'econ-f2p-blue-dye',name:'Make Blue dye — Aggie',pages:['crafting'],skills:['Crafting'],level:1,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Woad leaf',qty:2}],output:'Blue dye',outputQty:1,xpEach:0,coinFee:5,sourceRef:'OSRS Wiki Dye',economicModel:'NPC_PROCESS',rateSource:'DATA_REQUIRED',note:'Aggie NPC interaction/travel; do not use generic bank-processing rate.'})
+
+verified({id:'econ-f2p-sapphire-amulet-u',name:'Make Sapphire amulet (u)',pages:['crafting'],skills:['Crafting'],level:24,member:false,kind:'PROCESSING',theoryRate:1100,theoryGpHour:0,xpHour:71500,attention:'LOW',inputs:[{name:'Gold bar',qty:1},{name:'Sapphire',qty:1}],output:'Sapphire amulet (u)',outputQty:1,xpEach:65,sourceRef:'OSRS Wiki Crafting jewellery',economicModel:'GE_PROCESS',rateSource:'THEORY',note:'Existing user measured rate must override theory (known measurement: 880/h in legacy measurement store).'})
+verified({id:'econ-f2p-emerald-necklace',name:'Make Emerald necklace',pages:['crafting'],skills:['Crafting'],level:29,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'LOW',inputs:[{name:'Gold bar',qty:1},{name:'Emerald',qty:1}],output:'Emerald necklace',outputQty:1,xpEach:60,sourceRef:'OSRS Wiki Crafting jewellery',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
+verified({id:'econ-f2p-rune-2h',name:'Smith Rune 2h sword',pages:['smithing'],skills:['Smithing'],level:99,member:false,kind:'PROCESSING',theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:'Runite bar',qty:3}],output:'Rune 2h sword',outputQty:1,xpEach:225,sourceRef:'OSRS Wiki F2P Smithing / Rune 2h sword',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'})
+
+verified({id:'econ-p2p-cannonballs',name:'Smith Cannonballs',pages:['smithing'],skills:['Smithing'],level:35,member:true,kind:'PROCESSING',theoryRate:600,theoryGpHour:0,xpHour:13824,attention:'AFK',inputs:[{name:'Steel bar',qty:1}],output:'Cannonball',outputQty:4,xpEach:25.6,requirement:'Dwarf Cannon',sourceRef:'OSRS Wiki P2P Smithing training',economicModel:'GE_PROCESS',rateSource:'THEORY',note:'Standard ammo mould: 2,400 cannonballs/h = 600 steel bars/h. Double ammo mould is a separate method and must not be conflated.'})
+
+;[
+ ['Guam',3,'Guam leaf','Guam potion (unf)'],
+ ['Marrentill',5,'Marrentill','Marrentill potion (unf)'],
+ ['Tarromin',12,'Tarromin','Tarromin potion (unf)'],
+ ['Harralander',22,'Harralander','Harralander potion (unf)'],
+ ['Ranarr',30,'Ranarr weed','Ranarr potion (unf)'],
+ ['Toadflax',34,'Toadflax','Toadflax potion (unf)'],
+ ['Irit',45,'Irit leaf','Irit potion (unf)'],
+ ['Avantoe',50,'Avantoe','Avantoe potion (unf)'],
+ ['Kwuarm',55,'Kwuarm','Kwuarm potion (unf)'],
+ ['Snapdragon',63,'Snapdragon','Snapdragon potion (unf)'],
+ ['Cadantine',66,'Cadantine','Cadantine potion (unf)'],
+ ['Lantadyme',69,'Lantadyme','Lantadyme potion (unf)'],
+ ['Dwarf weed',72,'Dwarf weed','Dwarf weed potion (unf)'],
+ ['Torstol',78,'Torstol','Torstol potion (unf)']
+].forEach(([label,level,herb,output])=>verified({
+ id:`econ-p2p-unf-${String(label).toLowerCase().replaceAll(' ','-')}`,name:`Make ${output}`,pages:['herblore'],skills:['Herblore'],level:+level,member:true,kind:'PROCESSING',
+ theoryRate:0,theoryGpHour:0,xpHour:0,attention:'HIGH',inputs:[{name:String(herb),qty:1},{name:'Vial of water',qty:1}],output:String(output),outputQty:1,xpEach:0,
+ requirement:'Druidic Ritual',sourceRef:'OSRS Wiki Herblore / unfinished potion calculator',economicModel:'GE_PROCESS',rateSource:'DATA_REQUIRED'
+}))
+
+;[
+ ['Attack potion',3,'Guam potion (unf)','Eye of newt',25],
+ ['Antipoison',5,'Marrentill potion (unf)','Unicorn horn dust',37.5],
+ ['Strength potion',12,'Tarromin potion (unf)','Limpwurt root',50],
+ ['Serum 207',15,'Tarromin potion (unf)','Ashes',50],
+ ['Compost potion',21,'Harralander potion (unf)','Volcanic ash',60],
+ ['Restore potion',22,'Harralander potion (unf)',"Red spiders' eggs",62.5]
+].forEach(([name,level,base,secondary,xp])=>verified({
+ id:`econ-p2p-potion-${String(name).toLowerCase().replaceAll(' ','-')}`,name:`Make ${name}`,pages:['herblore'],skills:['Herblore'],level:+level,member:true,kind:'PROCESSING',
+ theoryRate:2200,theoryGpHour:0,xpHour:2200*+xp,attention:'HIGH',inputs:[{name:String(base),qty:1},{name:String(secondary),qty:1}],output:String(name),outputQty:1,xpEach:+xp,
+ requirement:'Druidic Ritual',sourceRef:'OSRS Wiki Herblore potion calculator',economicModel:'GE_PROCESS',rateSource:'THEORY'
+}))
+
+// Do not delete duplicate legacy/generated rows: mark older generated copies so edit/history IDs remain stable.
+const verifiedNames=new Set(out.filter(a=>a.quality==='VERIFIED').map(a=>a.name.trim().toLowerCase()))
+out.forEach(a=>{
+  if(a.id.startsWith('v5-')&&verifiedNames.has(a.name.trim().toLowerCase())) a.quality='DUPLICATE'
+})
+
+// Canonical manifest is independent of current database rows. It is intentionally explicit and versioned;
+// missing keys remain visible rather than allowing an incomplete DB to self-report 100% coverage.
+export type V5Canonical={key:string;label:string;page:V5PageId;member:boolean;kind:V5Kind}
+export const V5_CANONICAL_MANIFEST:V5Canonical[]=[
+ {key:'econ-f2p-pastry-dough',label:'Pastry dough',page:'cooking',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-pie-shell',label:'Pie shell',page:'cooking',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-uncooked-apple-pie',label:'Uncooked apple pie',page:'cooking',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-cook-apple-pie',label:'Apple pie cooking',page:'cooking',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-pizza-base',label:'Pizza base',page:'cooking',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-plain-pizza',label:'Plain pizza',page:'cooking',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-meat-pizza',label:'Meat pizza',page:'cooking',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-anchovy-pizza',label:'Anchovy pizza',page:'cooking',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-red-dye',label:'Red dye',page:'crafting',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-yellow-dye',label:'Yellow dye',page:'crafting',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-blue-dye',label:'Blue dye',page:'crafting',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-sapphire-amulet-u',label:'Sapphire amulet (u)',page:'crafting',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-emerald-necklace',label:'Emerald necklace',page:'crafting',member:false,kind:'PROCESSING'},
+ {key:'econ-f2p-rune-2h',label:'Rune 2h sword',page:'smithing',member:false,kind:'PROCESSING'},
+ {key:'econ-p2p-cannonballs',label:'Cannonballs',page:'smithing',member:true,kind:'PROCESSING'},
+ ...['Guam','Marrentill','Tarromin','Harralander','Ranarr','Toadflax','Irit','Avantoe','Kwuarm','Snapdragon','Cadantine','Lantadyme','Dwarf weed','Torstol'].map(label=>({key:`econ-p2p-unf-${label.toLowerCase().replaceAll(' ','-')}`,label:`${label} unfinished potion`,page:'herblore' as V5PageId,member:true,kind:'PROCESSING' as V5Kind})),
+ ...['Attack potion','Antipoison','Strength potion','Serum 207','Compost potion','Restore potion'].map(label=>({key:`econ-p2p-potion-${label.toLowerCase().replaceAll(' ','-')}`,label,page:'herblore' as V5PageId,member:true,kind:'PROCESSING' as V5Kind})),
+ // Required audit anchors not yet fully verified in this pass remain MISSING instead of fake VERIFIED rows.
+ {key:'canonical-high-alch-basket',label:'High Alchemy basket engine',page:'magic',member:false,kind:'PROCESSING'},
+ {key:'canonical-superheat',label:'Superheat Item',page:'magic',member:false,kind:'PROCESSING'},
+ {key:'canonical-bow-stringing',label:'Bow stringing family',page:'fletching',member:true,kind:'PROCESSING'},
+ {key:'canonical-battlestaff-orb',label:'Battlestaff / orb processing family',page:'crafting',member:true,kind:'PROCESSING'},
+ {key:'canonical-member-jewellery',label:'Member jewellery family',page:'crafting',member:true,kind:'PROCESSING'}
+]
+
 export const V5_CATALOGUE=out
+
