@@ -8,9 +8,9 @@ export type V5Activity={
  input?:string; output?:string; requirement?:string; note?:string;
  quality?:V5Quality; inputs?:{name:string;qty:number}[]; outputQty?:number; xpEach?:number|null;
  sourceRef?:string; economicModel?:'GE_PROCESS'|'NPC_PROCESS'|'GATHERING'|'COMBAT'|'RECURRING'|'FIXED_VALUE';
- coinFee?:number; rateSource?:'MEASURED'|'LEVEL_MODEL'|'THEORY'|'ESTIMATE'|'DATA_REQUIRED'
+ coinFee?:number; rateSource?:'MEASURED'|'LEVEL_MODEL'|'VERIFIED THEORY'|'THEORY'|'ESTIMATE'|'DATA_REQUIRED'
 }
-export type V5Edit={theoryRate?:number;theoryGpHour?:number;measuredRate?:number;measuredGpHour?:number;gpOverride?:number;levelAdjustedRate?:number;note?:string}
+export type V5Edit={theoryRate?:number;estimatedRate?:number;theoryGpHour?:number;measuredRate?:number;measuredGpHour?:number;gpOverride?:number;levelAdjustedRate?:number;xpEach?:number;attention?:'HIGH'|'MEDIUM'|'LOW'|'AFK';quality?:V5Quality;rateSource?:'VERIFIED THEORY'|'THEORY'|'ESTIMATE';note?:string}
 export type V5Page={id:V5PageId;label:string;skills:string[]}
 
 
