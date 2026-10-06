@@ -2240,7 +2240,7 @@ export default function App() {
     const productionCapacityPerDay=rate>0?rate*Math.max(1,dailyMaxHours):0
     const capacityFactor=productionCapacityPerDay>0&&Number.isFinite(marketCapacityPerDay)?Math.max(0,Math.min(1,marketCapacityPerDay/productionCapacityPerDay)):1
     const capacityBaseGpHour=manualGpOverride??automaticEffectiveGpHour??gp
-    const capacityAdjustedGpHour=economyReady?capacityBaseGpHour*capacityFactor:null
+    const capacityAdjustedGpHour=economyReady&&capacityBaseGpHour!==null?capacityBaseGpHour*capacityFactor:null
     const sustainableHoursPerDay=rate>0&&Number.isFinite(marketCapacityPerDay)?marketCapacityPerDay/rate:null
     const baseLiquidityScore=outputVolume24h===null?null:batchVolumePct!==null?(batchVolumePct<=1?100:batchVolumePct<=5?80:batchVolumePct<=15?60:batchVolumePct<=35?40:20):null
     const liquidityScore=baseLiquidityScore===null?null:Math.max(0,Math.min(100,baseLiquidityScore+(histFillRatio===null?0:(histFillRatio-.5)*30*historyWeight)-(avgSellFillHours!==null&&avgSellFillHours>24?15*historyWeight:0)))
@@ -2343,7 +2343,7 @@ export default function App() {
     return [...recipeRows,...gatherLegacy]
   },[rows,gatheringRows])
   const unifiedRanking=useMemo(()=>{
-    const v5=v5Rows.filter(x=>x.open&&x.economyReady&&x.quality!=='DUPLICATE'&&x.gp!==null&&x.gp>0&&x.economy.hasPrices&&(v5IncludeUnverified?x.quality!=='DEPRECATED':x.quality==='VERIFIED')).map(x=>({...x,legacy:false}))
+    const v5=v5Rows.filter(x=>x.open&&x.economyReady&&x.quality!=='DUPLICATE'&&typeof x.gp==='number'&&x.gp>0&&x.economy.hasPrices&&(v5IncludeUnverified?x.quality!=='DEPRECATED':x.quality==='VERIFIED')).map(x=>({...x,legacy:false}))
     const canonicalVerified=v5Rows.filter(x=>x.quality==='VERIFIED')
     const legacyFiltered=legacyMeasuredRanking.filter(l=>!canonicalVerified.some(c=>{
       const ln=l.name.toLowerCase(),cn=c.name.toLowerCase(),out=(c.output||'').toLowerCase()
@@ -2358,10 +2358,10 @@ export default function App() {
       if(!prev||priority(x.source)>priority(prev.source)||(priority(x.source)===priority(prev.source)&&x.gp>prev.gp)) byName.set(key,x)
     })
     return Array.from(byName.values()).sort((a,b)=>{
-      const bc=typeof b.capacityAdjustedGpHour==='number'?b.capacityAdjustedGpHour:b.gp
-      const ac=typeof a.capacityAdjustedGpHour==='number'?a.capacityAdjustedGpHour:a.gp
+      const bc=typeof b.capacityAdjustedGpHour==='number'?b.capacityAdjustedGpHour:(b.gp??0)
+      const ac=typeof a.capacityAdjustedGpHour==='number'?a.capacityAdjustedGpHour:(a.gp??0)
       const d=bc-ac
-      return d!==0?d:(b.gp-a.gp)||priority(b.source)-priority(a.source)
+      return d!==0?d:((b.gp??0)-(a.gp??0))||priority(b.source)-priority(a.source)
     })
   },[v5Rows,legacyMeasuredRanking,v5IncludeUnverified])
   const v5Top=useMemo(()=>unifiedRanking.slice(0,10),[unifiedRanking])
@@ -2670,7 +2670,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.8.6 — Final Database Cleanup</h1>
+          <h1>OSRS Economy Scanner V5.8.6.1 — Nullability Build Fix</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -3036,7 +3036,7 @@ export default function App() {
             <label>Measured Rate/h <input type="number" value={x.edit.measuredRate??x.measuredRate??''} onChange={e=>v5Update(x.id,{measuredRate:e.target.value===''?undefined:Number(e.target.value)})}/></label>
             <label>Measured GP/h <input type="number" readOnly value={x.measuredGpHour??''}/></label>
             <label>Effective Rate/h <input type="number" readOnly value={x.rate}/></label>
-            <label>Effective GP/h <input type="number" readOnly value={x.gp}/></label>
+            <label>Effective GP/h <input type="number" readOnly value={x.gp??''}/></label>
             <label>Manual GP/h override <input type="number" placeholder="boş = otomatik" value={x.edit.gpOverride??''} onChange={e=>v5Update(x.id,{gpOverride:e.target.value===''?undefined:Number(e.target.value)})}/></label>
             <label style={{minWidth:280}}>Not <input style={{width:'100%'}} value={x.edit.note??''} onChange={e=>v5Update(x.id,{note:e.target.value})}/></label>
             <button type="button" onClick={()=>v5Reset(x.id)}>Override sıfırla</button></div>
