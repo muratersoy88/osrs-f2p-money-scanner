@@ -1138,6 +1138,7 @@ export default function App() {
   const [mapping, setMapping] = useState<any[]>([])
   const [prices, setPrices] = useState<Record<string, any>>({})
   const [volumes, setVolumes] = useState<Record<string, any>>({})
+  const [market6h, setMarket6h] = useState<Record<string, any>>({})
   const [loading, setLoading] = useState(false)
   const [updated, setUpdated] = useState<Date | null>(null)
   const [error, setError] = useState('')
@@ -1369,21 +1370,24 @@ export default function App() {
     setError('')
 
     try {
-      const [m, p, v] = await Promise.all([
+      const [m, p, v, h6] = await Promise.all([
         fetch(`${API}/mapping`),
         fetch(`${API}/latest`),
         fetch(`${API}/24h`),
+        fetch(`${API}/6h`),
       ])
 
-      if (!m.ok || !p.ok || !v.ok) throw new Error()
+      if (!m.ok || !p.ok || !v.ok || !h6.ok) throw new Error()
 
       const md = await m.json()
       const pd = await p.json()
       const vd = await v.json()
+      const h6d = await h6.json()
 
       setMapping(md)
       setPrices(pd.data || {})
       setVolumes(vd.data || {})
+      setMarket6h(h6d.data || {})
       setUpdated(new Date())
     } catch {
       setError('OSRS Wiki fiyatları alınamadı.')
@@ -1428,6 +1432,7 @@ export default function App() {
       const sapphireLegacy=methodData[recipeId('Sapphire amulet (u)')]?.actualItemsPerHour
       const steelLegacy=methodData[recipeId('Iron + 2 Coal → Steel bar')]?.actualItemsPerHour
       mirror('econ-f2p-sapphire-amulet-u',sapphireLegacy&&sapphireLegacy>0?sapphireLegacy:880,'Gerçek kullanıcı ölçümü: 880/h')
+      mirror('econ-f2p-emerald-necklace',898,'Gerçek kullanıcı ölçümü: 898/h')
       mirror('econ-f2p-steel-bar',steelLegacy&&steelLegacy>0?steelLegacy:453,'800 adet gerçek test ≈453/h')
       mirror('econ-f2p-uncooked-apple-pie',2278,'486 adet / 12:48 gerçek ölçüm')
       return changed?next:old
@@ -2094,6 +2099,22 @@ export default function App() {
 
 
 
+  const marketExpectedSell=(itemName:string,batchSize:number)=>{
+    const item=getItem(itemName)
+    if(!item)return {price:null as number|null,basis:'N/A' as const,liquidity:'DATA REQUIRED' as const}
+    const v24=volumes[item.id]
+    const v6=market6h[item.id]
+    const dailyVolume=(Number(v24?.highPriceVolume||0)+Number(v24?.lowPriceVolume||0))||0
+    const batchPct=dailyVolume>0?batchSize/dailyVolume*100:Infinity
+    // Use the existing volume/batch liquidity semantics: a small batch in a deep market is HIGH.
+    const liquidity=dailyVolume<=0?'DATA REQUIRED':batchPct<=1?'HIGH':batchPct<=15?'MEDIUM':'LOW'
+    // avgHighPrice is the observed average price paid by instant buyers; for a seller this is the
+    // market's executed sell-side receipt before GE tax. Large batches deliberately fall back to 24h.
+    const use6h=liquidity==='HIGH'&&batchPct<=1&&Number(v6?.avgHighPrice||0)>0
+    const price=use6h?Number(v6.avgHighPrice):(Number(v24?.avgHighPrice||0)>0?Number(v24.avgHighPrice):null)
+    return {price,basis:(use6h?'6h Avg':'24h Avg') as '6h Avg'|'24h Avg',liquidity}
+  }
+
   const v5LiveEconomy=(a:(typeof V5_CATALOGUE)[number])=>{
     type Leg={name:string;qty:number;price:number|null}
     let inputs:Leg[]=[]
@@ -2157,13 +2178,14 @@ export default function App() {
     const inputCost=inputs.length&&inputs.every(x=>x.price!==null)
       ? inputs.reduce((n,x)=>n+(x.price||0)*x.qty,0)+(a.coinFee||0)
       : inputs.length?null:(a.coinFee||0)
-    const outputPrice=outputName?sell(outputName):null
+    const market=outputName?marketExpectedSell(outputName,Math.max(1,smartQty*outputQty)):null
+    const outputPrice=market?.price??null
     const outputNet=outputPrice===null?null:outputPrice*outputQty-geTax(outputPrice)*outputQty
     const hasPrices=liveEligible&&inputCost!==null&&(!outputName||outputNet!==null)
     const profitEach=hasPrices?(outputNet??0)-(inputCost??0):null
     const inputText=inputs.map(x=>`${x.qty}× ${x.name}: ${x.price===null?'?':fmt(x.price)} GP`).join(' • ')
-    const outputText=outputName?`${outputName}: ${outputPrice===null?'?':fmt(outputPrice)} GP${outputPrice!==null?` (net ${fmt(outputNet)} GP)`:''}`:'Tüketim / satış çıktısı yok'
-    return {inputs,outputName,outputQty,inputCost,outputPrice,outputNet,profitEach,hasPrices,liveEligible,inputText,outputText}
+    const outputText=outputName?`${outputName}: ${outputPrice===null?'?':fmt(outputPrice)} GP${outputPrice!==null?` expected (${market?.basis}), net ${fmt(outputNet)} GP`:''}`:'Tüketim / satış çıktısı yok'
+    return {inputs,outputName,outputQty,inputCost,outputPrice,outputNet,profitEach,hasPrices,liveEligible,inputText,outputText,marketBasis:market?.basis??'N/A',marketLiquidity:market?.liquidity??'DATA REQUIRED'}
   }
 
   const resolveEffectiveRate=(a:(typeof V5_CATALOGUE)[number],edit:V5Edit)=>{
@@ -2192,9 +2214,7 @@ export default function App() {
     const rateSource=resolved.source
     const economy=v5LiveEconomy(a)
     const theoryRate=edit.theoryRate??a.theoryRate
-    const theoryGpHour=economy.profitEach!==null&&theoryRate>0?economy.profitEach*theoryRate:null
     const measuredRate=edit.measuredRate??(weightedSpeed(measurementHistory[a.id]||[])||null)
-    const measuredGpHour=economy.profitEach!==null&&measuredRate!==null&&measuredRate>0?economy.profitEach*measuredRate:null
     const liveGp=economy.profitEach!==null&&rate>0?economy.profitEach*rate:null
     const targets=v5BuyTargets
     const targetInputCost=economy.inputs.length&&economy.inputs.every(x=>(targets[x.name]??x.price)!==null)
@@ -2208,14 +2228,14 @@ export default function App() {
     // Only the explicit gpOverride field may intentionally replace that automatic value.
     // Old measuredGpHour/theoryGpHour edit fields are retained in localStorage for backward compatibility,
     // but must never freeze a live calculation after GE prices change.
-    const manualGpOverride=edit.gpOverride
+    const manualGpOverride=edit.gpOverride // debug/display only; never used by economic ranking
     const quality=edit.quality??a.quality??'NEEDS_VERIFICATION'
     const rankableQuality=quality==='VERIFIED'
     const successReady=!a.successModelRequired||measuredRate!==null
     const economyReady=(a.economyReady??true)&&!a.timeGated&&successReady&&quality!=='DUPLICATE'
     const automaticEffectiveGpHour=economyReady?liveGp:null
-    const gp=economyReady?(manualGpOverride??automaticEffectiveGpHour):null
-    const source=manualGpOverride!==undefined?'MANUAL OVERRIDE':rateSource
+    const gp=automaticEffectiveGpHour
+    const source=rateSource
 
     const outputVolume24h=economy.outputName?volume(economy.outputName):null
     const batchSize=Math.max(1,smartQty)
@@ -2239,13 +2259,13 @@ export default function App() {
     const marketCapacityPerDay=Math.min(outputMarketCap,...(inputCaps.length?inputCaps:[Infinity]))
     const productionCapacityPerDay=rate>0?rate*Math.max(1,dailyMaxHours):0
     const capacityFactor=productionCapacityPerDay>0&&Number.isFinite(marketCapacityPerDay)?Math.max(0,Math.min(1,marketCapacityPerDay/productionCapacityPerDay)):1
-    const capacityBaseGpHour=manualGpOverride??automaticEffectiveGpHour??gp
+    const capacityBaseGpHour=automaticEffectiveGpHour
     const capacityAdjustedGpHour=economyReady&&capacityBaseGpHour!==null?capacityBaseGpHour*capacityFactor:null
     const sustainableHoursPerDay=rate>0&&Number.isFinite(marketCapacityPerDay)?marketCapacityPerDay/rate:null
     const baseLiquidityScore=outputVolume24h===null?null:batchVolumePct!==null?(batchVolumePct<=1?100:batchVolumePct<=5?80:batchVolumePct<=15?60:batchVolumePct<=35?40:20):null
     const liquidityScore=baseLiquidityScore===null?null:Math.max(0,Math.min(100,baseLiquidityScore+(histFillRatio===null?0:(histFillRatio-.5)*30*historyWeight)-(avgSellFillHours!==null&&avgSellFillHours>24?15*historyWeight:0)))
     const liquidityLabel=liquidityScore===null?'DATA REQUIRED':liquidityScore>=80?'HIGH':liquidityScore>=50?'MEDIUM':'LOW'
-    return {...a,attention:edit.attention??a.attention,xpEach:edit.xpEach??a.xpEach,edit,current,open,gp,rate,rateSource,source,quality,rankableQuality,economyReady,successReady,economy,liveGp,automaticEffectiveGpHour,theoryGpHour,measuredGpHour,measuredRate,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital,manualGpOverride,outputVolume24h,batchSize,batchVolumePct,marketCapacityPerDay,productionCapacityPerDay,capacityFactor,capacityAdjustedGpHour,sustainableHoursPerDay,liquidityScore,liquidityLabel,calibratedParticipation,histFillRatio,avgSellFillHours}
+    return {...a,attention:edit.attention??a.attention,xpEach:edit.xpEach??a.xpEach,edit,current,open,gp,rate,rateSource,source,quality,rankableQuality,economyReady,successReady,economy,liveGp,automaticEffectiveGpHour,measuredRate,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital,manualGpOverride,outputVolume24h,batchSize,batchVolumePct,marketCapacityPerDay,productionCapacityPerDay,capacityFactor,capacityAdjustedGpHour,sustainableHoursPerDay,liquidityScore,liquidityLabel,calibratedParticipation,histFillRatio,avgSellFillHours}
   }),[mode,levels,v5Edits,v5BuyTargets,prices,mapping,volumes,measurementHistory,dailyMaxHours,smartQty,orderHistory])
   type SmartRecipeRow={
     id:string;name:string;skill:string;level:number;member:boolean;open:boolean;status:string;requirements:string[];
@@ -2670,7 +2690,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.8.6.2 — Complete Nullability Fix</h1>
+          <h1>OSRS Economy Scanner V5.8.7 — Dynamic Market GP/h</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2717,9 +2737,9 @@ export default function App() {
                 <h3 style={{marginTop:0}}>V5.8.6 — Live Money Ranking / Candidate Lab</h3>
                 <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Live Money Ranking: OPEN + VERIFIED + priceable + economyReady. Candidate Lab açılırsa PLACEHOLDER/ESTIMATE adayları da görünür; DUPLICATE, time-gated ve economyReady=false kayıtlar hiçbir para sıralamasına girmez. Priority: MEASURED → LEVEL MODEL → VERIFIED THEORY → THEORY → ESTIMATE.</div>
                 <label style={{fontSize:10,display:'inline-flex',gap:5,alignItems:'center',marginBottom:7}}><input type="checkbox" checked={v5IncludeUnverified} onChange={e=>setV5IncludeUnverified(e.target.checked)}/> Candidate Lab — ESTIMATE / TEST REQUIRED</label>
-                <div className="tableBox"><table><thead><tr><th>#</th><th>Activity</th><th>Skill</th><th>Kâr/adet</th><th>Effective GP/h</th><th>Rate/h</th><th>Rate Source</th><th>Liquidity</th><th>Capacity GP/h</th><th>Quality</th></tr></thead><tbody>
-                {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}{x.economy&&<div style={{fontSize:9,color:'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div></>:<div>Canlı fiyat modeli: {x.economy.liveEligible?'fiyat eşleşmesi eksik':'henüz tanımlı değil'}</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{fmt(x.economy?.profitEach)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{x.rateSource||x.source}</td><td>{x.liquidityLabel||'—'}{x.batchVolumePct!==null&&x.batchVolumePct!==undefined?<div style={{fontSize:9}}>{fmt(x.batchVolumePct,1)}% / {x.batchSize}</div>:null}</td><td>{fmt(x.capacityAdjustedGpHour)}</td><td>{x.quality||'LEGACY'}{v5IncludeUnverified&&x.quality!=='VERIFIED'?<div style={{fontSize:9,fontWeight:800}}>ESTIMATE / TEST REQUIRED</div>:null}</td></tr>)}
-                {!v5Top.length&&<tr><td colSpan={10}>Mevcut level/mod ile VERIFIED pozitif GP/h adayı yok.</td></tr>}
+                <div className="tableBox"><table><thead><tr><th>#</th><th>Activity</th><th>Skill</th><th>Current Input Cost</th><th>Market Expected Sell</th><th>Expected Profit/item</th><th>Effective Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Market basis</th><th>Rate Source</th><th>Liquidity</th><th>Quality</th></tr></thead><tbody>
+                {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}{x.economy&&<div style={{fontSize:9,color:'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div></>:<div>Canlı fiyat modeli: {x.economy.liveEligible?'fiyat eşleşmesi eksik':'henüz tanımlı değil'}</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{fmt(x.economy?.inputCost)}</td><td>{fmt(x.economy?.outputPrice)}</td><td>{fmt(x.economy?.profitEach)}</td><td>{fmt(x.rate)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.capacityAdjustedGpHour)}</td><td>{x.economy?.marketBasis||'N/A'}</td><td>{x.rateSource||x.source}</td><td>{x.liquidityLabel||'—'}{x.batchVolumePct!==null&&x.batchVolumePct!==undefined?<div style={{fontSize:9}}>{fmt(x.batchVolumePct,1)}% / {x.batchSize}</div>:null}</td><td>{x.quality||'LEGACY'}{v5IncludeUnverified&&x.quality!=='VERIFIED'?<div style={{fontSize:9,fontWeight:800}}>ESTIMATE / TEST REQUIRED</div>:null}</td></tr>)}
+                {!v5Top.length&&<tr><td colSpan={13}>Mevcut level/mod ile VERIFIED pozitif GP/h adayı yok.</td></tr>}
                 </tbody></table></div>
                 <div style={{fontSize:10,marginTop:6}}>V5 katalog: <b>{V5_CATALOGUE.length}</b> activity • VERIFIED: <b>{qualityCounts.VERIFIED}</b> • PLACEHOLDER: <b>{qualityCounts.PLACEHOLDER}</b> • OPEN: <b>{v5Rows.filter(x=>x.open).length}</b> • Editlenmiş: <b>{Object.keys(v5Edits).length}</b></div>
               </section>
@@ -3019,25 +3039,23 @@ export default function App() {
             <label style={{fontSize:10}}><input type="checkbox" checked={v5ShowLocked} onChange={e=>setV5ShowLocked(e.target.checked)}/> LOCKED göster</label>
           </div>
           <div style={{fontSize:10,color:'#8b949e',margin:'7px 0'}}>Kayıt: {v5PageRows.length} • OPEN {v5PageRows.filter(x=>x.open).length}. THEORY değerleri başlangıç planlama tahminidir; Edit ile theory/measurement değerlerini değiştirebilirsin.</div>
-          <div className="tableBox"><table><thead><tr><th>Activity</th><th>F2P/P2P</th><th>Level</th><th>Tür</th><th>Theory GP/h</th><th>Effective GP/h</th><th>Rate/h</th><th>XP/h</th><th>Dikkat</th><th>Durum</th><th>Quality</th><th>Veri</th><th>Edit</th></tr></thead><tbody>
+          <div className="tableBox"><table><thead><tr><th>Activity</th><th>F2P/P2P</th><th>Level</th><th>Tür</th><th>Current Input Cost</th><th>Market Expected Sell</th><th>Expected Profit/item</th><th>Effective Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Market basis</th><th>XP/h</th><th>Dikkat</th><th>Durum</th><th>Quality</th><th>Veri</th><th>Edit</th></tr></thead><tbody>
           {v5PageRows.map(x=><tr key={x.id} className={!x.open?'lockedRow':''}>
-            <td className="name">{x.name}<div style={{fontSize:9,color:'#8b949e'}}>{x.input?`In: ${x.input}`:''}{x.output?` → Out: ${x.output}`:''}</div><div style={{fontSize:9,color:x.economy.hasPrices?'#3fb950':'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div>{x.economy.profitEach!==null&&<div>Kâr/adet: {fmt(x.economy.profitEach)} GP • Canlı GP/h: {fmt(x.liveGp)}</div>}</>:<div>Canlı fiyat: {x.economy.liveEligible?'eşleşme/veri eksik':'reçete modeli henüz tanımlı değil — THEORY korunuyor'}</div>}</div>{(x.edit.note||x.note)&&<div style={{fontSize:9,color:'#8b949e'}}>{x.edit.note||x.note}</div>}</td>
+            <td className="name">{x.name}<div style={{fontSize:9,color:'#8b949e'}}>{x.input?`In: ${x.input}`:''}{x.output?` → Out: ${x.output}`:''}</div><div style={{fontSize:9,color:x.economy.hasPrices?'#3fb950':'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div>{x.economy.profitEach!==null&&<div>Expected Profit/item: {fmt(x.economy.profitEach)} GP • Expected GP/h: {fmt(x.liveGp)} • Market basis: {x.economy.marketBasis}</div>}</>:<div>Canlı fiyat: {x.economy.liveEligible?'eşleşme/veri eksik':'reçete modeli henüz tanımlı değil — THEORY korunuyor'}</div>}</div>{(x.edit.note||x.note)&&<div style={{fontSize:9,color:'#8b949e'}}>{x.edit.note||x.note}</div>}</td>
             <td>{x.member?'MEMBER':'F2P'}</td><td>{x.skills.join(', ')} {x.level}<div style={{fontSize:9}}>Sen: {x.current}</div></td><td>{x.kind}</td>
-            <td>{fmt(x.edit.theoryGpHour??x.theoryGpHour)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{fmt(x.xpHour)}</td><td>{x.attention}</td>
+            <td>{fmt(x.economy.inputCost)}</td><td>{fmt(x.economy.outputPrice)}</td><td>{fmt(x.economy.profitEach)}</td><td>{fmt(x.rate)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.capacityAdjustedGpHour)}</td><td>{x.economy.marketBasis}</td><td>{fmt(x.xpHour)}</td><td>{x.attention}</td>
             <td><b>{x.open?'OPEN':'LOCKED'}</b>{!x.open&&<div style={{fontSize:9}}>{x.member&&mode==='F2P'?'Membership':x.current<x.level?`${x.level-x.current} level eksik`:x.requirement||'Requirement'}</div>}</td>
             <td><b>{x.quality}</b>{x.sourceRef&&<div style={{fontSize:9,color:'#8b949e'}}>{x.sourceRef}</div>}</td><td>{x.source}</td><td><button type="button" onClick={()=>setV5Editing(v5Editing===x.id?null:x.id)}>Edit</button></td>
           </tr>)}
-          {!v5PageRows.length&&<tr><td colSpan={13}>Eşleşen activity yok.</td></tr>}
+          {!v5PageRows.length&&<tr><td colSpan={17}>Eşleşen activity yok.</td></tr>}
           </tbody></table></div>
           {v5Editing&&(()=>{const x=v5Rows.find(r=>r.id===v5Editing);if(!x)return null;return <div style={{marginTop:10,padding:10,border:'1px solid #58a6ff',borderRadius:8}}>
             <b>Edit — {x.name}</b><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
             <label>Theory Rate/h <input type="number" value={x.edit.theoryRate??x.theoryRate} onChange={e=>v5Update(x.id,{theoryRate:Number(e.target.value)})}/></label>
-            <label>Theory GP/h <input type="number" readOnly value={x.theoryGpHour??''}/></label>
             <label>Measured Rate/h <input type="number" value={x.edit.measuredRate??x.measuredRate??''} onChange={e=>v5Update(x.id,{measuredRate:e.target.value===''?undefined:Number(e.target.value)})}/></label>
-            <label>Measured GP/h <input type="number" readOnly value={x.measuredGpHour??''}/></label>
             <label>Effective Rate/h <input type="number" readOnly value={x.rate}/></label>
-            <label>Effective GP/h <input type="number" readOnly value={x.gp??''}/></label>
-            <label>Manual GP/h override <input type="number" placeholder="boş = otomatik" value={x.edit.gpOverride??''} onChange={e=>v5Update(x.id,{gpOverride:e.target.value===''?undefined:Number(e.target.value)})}/></label>
+            <label>Expected GP/h (dynamic market) <input type="number" readOnly value={x.gp??''}/></label>
+            <label>Manual GP/h override (DEBUG ONLY — ranking'i etkilemez) <input type="number" placeholder="boş = otomatik" value={x.edit.gpOverride??''} onChange={e=>v5Update(x.id,{gpOverride:e.target.value===''?undefined:Number(e.target.value)})}/></label>
             <label style={{minWidth:280}}>Not <input style={{width:'100%'}} value={x.edit.note??''} onChange={e=>v5Update(x.id,{note:e.target.value})}/></label>
             <button type="button" onClick={()=>v5Reset(x.id)}>Override sıfırla</button></div>
             {x.economy.inputs.length>0&&<div style={{marginTop:8,padding:8,border:'1px solid #30363d',borderRadius:6}}>
