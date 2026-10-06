@@ -2211,8 +2211,10 @@ export default function App() {
     const manualGpOverride=edit.gpOverride
     const quality=edit.quality??a.quality??'NEEDS_VERIFICATION'
     const rankableQuality=quality==='VERIFIED'
-    const automaticEffectiveGpHour=liveGp
-    const gp=manualGpOverride??automaticEffectiveGpHour??(rankableQuality?a.theoryGpHour:0)
+    const successReady=!a.successModelRequired||measuredRate!==null
+    const economyReady=(a.economyReady??true)&&!a.timeGated&&successReady&&quality!=='DUPLICATE'
+    const automaticEffectiveGpHour=economyReady?liveGp:null
+    const gp=economyReady?(manualGpOverride??automaticEffectiveGpHour):null
     const source=manualGpOverride!==undefined?'MANUAL OVERRIDE':rateSource
 
     const outputVolume24h=economy.outputName?volume(economy.outputName):null
@@ -2238,12 +2240,12 @@ export default function App() {
     const productionCapacityPerDay=rate>0?rate*Math.max(1,dailyMaxHours):0
     const capacityFactor=productionCapacityPerDay>0&&Number.isFinite(marketCapacityPerDay)?Math.max(0,Math.min(1,marketCapacityPerDay/productionCapacityPerDay)):1
     const capacityBaseGpHour=manualGpOverride??automaticEffectiveGpHour??gp
-    const capacityAdjustedGpHour=capacityBaseGpHour*capacityFactor
+    const capacityAdjustedGpHour=economyReady?capacityBaseGpHour*capacityFactor:null
     const sustainableHoursPerDay=rate>0&&Number.isFinite(marketCapacityPerDay)?marketCapacityPerDay/rate:null
     const baseLiquidityScore=outputVolume24h===null?null:batchVolumePct!==null?(batchVolumePct<=1?100:batchVolumePct<=5?80:batchVolumePct<=15?60:batchVolumePct<=35?40:20):null
     const liquidityScore=baseLiquidityScore===null?null:Math.max(0,Math.min(100,baseLiquidityScore+(histFillRatio===null?0:(histFillRatio-.5)*30*historyWeight)-(avgSellFillHours!==null&&avgSellFillHours>24?15*historyWeight:0)))
     const liquidityLabel=liquidityScore===null?'DATA REQUIRED':liquidityScore>=80?'HIGH':liquidityScore>=50?'MEDIUM':'LOW'
-    return {...a,attention:edit.attention??a.attention,xpEach:edit.xpEach??a.xpEach,edit,current,open,gp,rate,rateSource,source,quality,rankableQuality,economy,liveGp,automaticEffectiveGpHour,theoryGpHour,measuredGpHour,measuredRate,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital,manualGpOverride,outputVolume24h,batchSize,batchVolumePct,marketCapacityPerDay,productionCapacityPerDay,capacityFactor,capacityAdjustedGpHour,sustainableHoursPerDay,liquidityScore,liquidityLabel,calibratedParticipation,histFillRatio,avgSellFillHours}
+    return {...a,attention:edit.attention??a.attention,xpEach:edit.xpEach??a.xpEach,edit,current,open,gp,rate,rateSource,source,quality,rankableQuality,economyReady,successReady,economy,liveGp,automaticEffectiveGpHour,theoryGpHour,measuredGpHour,measuredRate,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital,manualGpOverride,outputVolume24h,batchSize,batchVolumePct,marketCapacityPerDay,productionCapacityPerDay,capacityFactor,capacityAdjustedGpHour,sustainableHoursPerDay,liquidityScore,liquidityLabel,calibratedParticipation,histFillRatio,avgSellFillHours}
   }),[mode,levels,v5Edits,v5BuyTargets,prices,mapping,volumes,measurementHistory,dailyMaxHours,smartQty,orderHistory])
   type SmartRecipeRow={
     id:string;name:string;skill:string;level:number;member:boolean;open:boolean;status:string;requirements:string[];
@@ -2269,7 +2271,7 @@ export default function App() {
     })
     // V5 broad catalogue adds verified explicit input→output activities not already covered above.
     v5Rows.forEach(x=>{
-      if(x.quality!=='VERIFIED'||byName.has(x.name)||!x.economy.inputs.length||!x.economy.outputName)return
+      if(x.quality!=='VERIFIED'||!x.economyReady||byName.has(x.name)||!x.economy.inputs.length||!x.economy.outputName)return
       const measured=x.rateSource==='MEASURED'
       const rate:number|null=x.rate>0?x.rate:null
       const reqText=(x as any).requirement
@@ -2341,7 +2343,7 @@ export default function App() {
     return [...recipeRows,...gatherLegacy]
   },[rows,gatheringRows])
   const unifiedRanking=useMemo(()=>{
-    const v5=v5Rows.filter(x=>x.open&&x.gp>0&&x.economy.hasPrices&&(x.quality==='VERIFIED'||v5IncludeUnverified)).map(x=>({...x,legacy:false}))
+    const v5=v5Rows.filter(x=>x.open&&x.economyReady&&x.quality!=='DUPLICATE'&&x.gp!==null&&x.gp>0&&x.economy.hasPrices&&(v5IncludeUnverified?x.quality!=='DEPRECATED':x.quality==='VERIFIED')).map(x=>({...x,legacy:false}))
     const canonicalVerified=v5Rows.filter(x=>x.quality==='VERIFIED')
     const legacyFiltered=legacyMeasuredRanking.filter(l=>!canonicalVerified.some(c=>{
       const ln=l.name.toLowerCase(),cn=c.name.toLowerCase(),out=(c.output||'').toLowerCase()
@@ -2356,8 +2358,10 @@ export default function App() {
       if(!prev||priority(x.source)>priority(prev.source)||(priority(x.source)===priority(prev.source)&&x.gp>prev.gp)) byName.set(key,x)
     })
     return Array.from(byName.values()).sort((a,b)=>{
-      const d=b.gp-a.gp
-      return d!==0?d:priority(b.source)-priority(a.source)
+      const bc=typeof b.capacityAdjustedGpHour==='number'?b.capacityAdjustedGpHour:b.gp
+      const ac=typeof a.capacityAdjustedGpHour==='number'?a.capacityAdjustedGpHour:a.gp
+      const d=bc-ac
+      return d!==0?d:(b.gp-a.gp)||priority(b.source)-priority(a.source)
     })
   },[v5Rows,legacyMeasuredRanking,v5IncludeUnverified])
   const v5Top=useMemo(()=>unifiedRanking.slice(0,10),[unifiedRanking])
@@ -2368,7 +2372,7 @@ export default function App() {
       targetHit:boolean;bestTargetGpHour:number;recipes:RecipeUse[]
     }
     const byItem=new Map<string,ItemOpportunity>()
-    v5Rows.filter(x=>x.open&&x.quality==='VERIFIED'&&x.economy.hasPrices).forEach(x=>{
+    v5Rows.filter(x=>x.open&&x.economyReady&&x.quality==='VERIFIED'&&x.economy.hasPrices).forEach(x=>{
       x.economy.inputs.forEach(inp=>{
         const target=v5BuyTargets[inp.name]
         if(!(target>0)||inp.price===null) return
@@ -2472,18 +2476,21 @@ export default function App() {
     const allowedQuality=new Set(['VERIFIED','NEEDS_VERIFICATION','PLACEHOLDER','DUPLICATE','INCOMPLETE','DEPRECATED'])
     const allowedSkills=new Set(Object.keys(DEFAULT_LEVELS))
     const validation:string[]=[]
+    const seenIds=new Set<string>()
     const parsed=lines.slice(1).map((raw,rowIndex)=>{
       const c=parseDelimitedLine(raw,delimiter)
       const get=(name:string)=>(c[idx(name)]||'').trim()
       const id=get('Activity ID'),name=get('Activity'),membership=get('F2P/P2P'),skill=get('Skill'),level=get('Level'),quality=get('Quality')
       if(!id)validation.push(`Satır ${rowIndex+2}: Activity ID boş.`)
       else if(!(id.startsWith('v5-')||id.startsWith('econ-')))validation.push(`Satır ${rowIndex+2}: Geçersiz Activity ID: ${id}`)
+      else if(seenIds.has(id))validation.push(`Satır ${rowIndex+2}: Duplicate Activity ID: ${id}`)
+      else seenIds.add(id)
       if(!name)validation.push(`Satır ${rowIndex+2}: Activity boş.`)
       if(!['F2P','P2P'].includes(membership))validation.push(`Satır ${rowIndex+2}: F2P/P2P yalnız F2P veya P2P olabilir.`)
       if(!allowedSkills.has(skill))validation.push(`Satır ${rowIndex+2}: Geçersiz skill: ${skill}`)
       if(level===''||!Number.isFinite(Number(level)))validation.push(`Satır ${rowIndex+2}: Level numeric olmalı.`)
       if(!allowedQuality.has(quality))validation.push(`Satır ${rowIndex+2}: Geçersiz Quality: ${quality}`)
-      ;['Theory Rate/h','Estimated Rate/h','Measured Rate/h','XP/unit'].forEach(col=>{const s=get(col);if(s!==''&&!Number.isFinite(Number(s)))validation.push(`Satır ${rowIndex+2}: ${col} numeric veya boş olmalı.`)})
+      ;['Theory Rate/h','Estimated Rate/h','Measured Rate/h','XP/unit'].forEach(col=>{const s=get(col);if(s!==''&&!Number.isFinite(Number(s)))validation.push(`Satır ${rowIndex+2}: ${col} numeric veya boş olmalı.`);else if(s!==''&&Number(s)<0)validation.push(`Satır ${rowIndex+2}: ${col} negatif olamaz.`)})
       return {raw,get,id,name,membership,skill,level,quality}
     })
     if(validation.length){setBulkPreview([]);setBulkValidationErrors(validation);setBulkReport(r=>r?{...r,errors:validation.length}:null);return}
@@ -2663,7 +2670,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.8.5.1 — Build Fix</h1>
+          <h1>OSRS Economy Scanner V5.8.6 — Final Database Cleanup</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2707,11 +2714,11 @@ export default function App() {
                 </div>
               </section>
               <section style={{marginBottom:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
-                <h3 style={{marginTop:0}}>V5.8.1 — Live Economy Top 10</h3>
-                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Default liste yalnız OPEN + VERIFIED + priceable ekonomik kayıtları kullanır. Effective Rate önceliği MEASURED → LEVEL MODEL → THEORY → ESTIMATE. PLACEHOLDER/DUPLICATE varsayılan sıralamaya girmez.</div>
-                <label style={{fontSize:10,display:'inline-flex',gap:5,alignItems:'center',marginBottom:7}}><input type="checkbox" checked={v5IncludeUnverified} onChange={e=>setV5IncludeUnverified(e.target.checked)}/> Experimental / Candidate ranking (include unverified)</label>
+                <h3 style={{marginTop:0}}>V5.8.6 — Live Money Ranking / Candidate Lab</h3>
+                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Live Money Ranking: OPEN + VERIFIED + priceable + economyReady. Candidate Lab açılırsa PLACEHOLDER/ESTIMATE adayları da görünür; DUPLICATE, time-gated ve economyReady=false kayıtlar hiçbir para sıralamasına girmez. Priority: MEASURED → LEVEL MODEL → VERIFIED THEORY → THEORY → ESTIMATE.</div>
+                <label style={{fontSize:10,display:'inline-flex',gap:5,alignItems:'center',marginBottom:7}}><input type="checkbox" checked={v5IncludeUnverified} onChange={e=>setV5IncludeUnverified(e.target.checked)}/> Candidate Lab — ESTIMATE / TEST REQUIRED</label>
                 <div className="tableBox"><table><thead><tr><th>#</th><th>Activity</th><th>Skill</th><th>Kâr/adet</th><th>Effective GP/h</th><th>Rate/h</th><th>Rate Source</th><th>Liquidity</th><th>Capacity GP/h</th><th>Quality</th></tr></thead><tbody>
-                {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}{x.economy&&<div style={{fontSize:9,color:'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div></>:<div>Canlı fiyat modeli: {x.economy.liveEligible?'fiyat eşleşmesi eksik':'henüz tanımlı değil'}</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{fmt(x.economy?.profitEach)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{x.rateSource||x.source}</td><td>{x.liquidityLabel||'—'}{x.batchVolumePct!==null&&x.batchVolumePct!==undefined?<div style={{fontSize:9}}>{fmt(x.batchVolumePct,1)}% / {x.batchSize}</div>:null}</td><td>{fmt(x.capacityAdjustedGpHour)}</td><td>{x.quality||'LEGACY'}</td></tr>)}
+                {v5Top.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}{x.economy&&<div style={{fontSize:9,color:'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div></>:<div>Canlı fiyat modeli: {x.economy.liveEligible?'fiyat eşleşmesi eksik':'henüz tanımlı değil'}</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{fmt(x.economy?.profitEach)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{x.rateSource||x.source}</td><td>{x.liquidityLabel||'—'}{x.batchVolumePct!==null&&x.batchVolumePct!==undefined?<div style={{fontSize:9}}>{fmt(x.batchVolumePct,1)}% / {x.batchSize}</div>:null}</td><td>{fmt(x.capacityAdjustedGpHour)}</td><td>{x.quality||'LEGACY'}{v5IncludeUnverified&&x.quality!=='VERIFIED'?<div style={{fontSize:9,fontWeight:800}}>ESTIMATE / TEST REQUIRED</div>:null}</td></tr>)}
                 {!v5Top.length&&<tr><td colSpan={10}>Mevcut level/mod ile VERIFIED pozitif GP/h adayı yok.</td></tr>}
                 </tbody></table></div>
                 <div style={{fontSize:10,marginTop:6}}>V5 katalog: <b>{V5_CATALOGUE.length}</b> activity • VERIFIED: <b>{qualityCounts.VERIFIED}</b> • PLACEHOLDER: <b>{qualityCounts.PLACEHOLDER}</b> • OPEN: <b>{v5Rows.filter(x=>x.open).length}</b> • Editlenmiş: <b>{Object.keys(v5Edits).length}</b></div>
