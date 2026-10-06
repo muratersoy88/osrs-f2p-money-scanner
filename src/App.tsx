@@ -2663,7 +2663,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V5.8.5 — Safe CSV Recovery</h1>
+          <h1>OSRS Economy Scanner V5.8.5.1 — Build Fix</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -3663,7 +3663,7 @@ export default function App() {
               <td><input style={{width:80}} type="number" value={x.edit.theoryRate??''} onChange={e=>v5Update(x.id,{theoryRate:e.target.value===''?undefined:Number(e.target.value),rateSource:e.target.value===''?x.edit.rateSource:(x.quality==='VERIFIED'?'VERIFIED THEORY':'THEORY')})}/></td>
               <td><input style={{width:80}} type="number" value={x.edit.estimatedRate??''} onChange={e=>v5Update(x.id,{estimatedRate:e.target.value===''?undefined:Number(e.target.value),rateSource:e.target.value===''?x.edit.rateSource:'ESTIMATE'})}/></td>
               <td><b>{x.measuredRate??''}</b></td><td><input style={{width:70}} type="number" value={x.xpEach??''} onChange={e=>v5Update(x.id,{xpEach:e.target.value===''?undefined:Number(e.target.value)})}/></td>
-              <td>{x.attention}</td><td>{x.edit.note??x.note??''}{x.edit.estimateBasis&&<div style={{fontSize:9,color:'#8b949e'}}>Basis: {x.edit.estimateBasis}</div>}{x.edit.auditFlag&&<div style={{fontSize:9,color:'#d29922'}}>Audit: {x.edit.auditFlag}</div>}</td></tr>)}
+              <td>{x.attention}</td><td>{x.edit.note??x.note??''}</td></tr>)}
           </tbody></table></div>
         </section>
 
