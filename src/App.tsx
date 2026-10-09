@@ -1537,6 +1537,7 @@ export default function App() {
       .map((i:any)=>{
         const edit=alchemyEdits[String(i.id)]||{}
         const itemBuy=prices[i.id]?.high == null ? null : Number(prices[i.id].high)
+        const itemSell=prices[i.id]?.low == null ? null : Number(prices[i.id].low)
         const alchValue=Number(i.highalch)
         const natureCost=liveNatureCost
         const fireCost=alchemyDefaults.fireStaff?0:liveFireCost
@@ -1544,10 +1545,22 @@ export default function App() {
         const totalRuneCost=natureCost===null?null:natureCost+(fireCost??0)
         const profit=itemBuy===null||totalRuneCost===null||(!alchemyDefaults.fireStaff&&fireCost===null)?null:alchValue-itemBuy-totalRuneCost
         const volData=volumes[i.id]
-        return {id:String(i.id),name:i.name,member:Boolean(i.members),locked:mode==='F2P'&&Boolean(i.members),alchValue,itemBuy,natureCost,fireCost,profit,rate,gpHour:profit===null?null:profit*rate,volume:volData?(Number(volData.highPriceVolume||0)+Number(volData.lowPriceVolume||0)):null,liveAlchValue:Number(i.highalch),liveItemBuy:itemBuy,liveNatureCost:natureCost,liveFireCost}
+        const volume24h=volData?(Number(volData.highPriceVolume||0)+Number(volData.lowPriceVolume||0)):null
+        const natureVolume= nature ? ((Number(volumes[nature.id]?.highPriceVolume||0)+Number(volumes[nature.id]?.lowPriceVolume||0))||null) : null
+        const fireVolume= fire ? ((Number(volumes[fire.id]?.highPriceVolume||0)+Number(volumes[fire.id]?.lowPriceVolume||0))||null) : null
+        const dailyCaps=[volume24h,natureVolume,...(!alchemyDefaults.fireStaff?[fireVolume]:[])].filter((v:any)=>v!==null&&v>0).map((v:any)=>v*0.05)
+        const marketCapacityPerDay=dailyCaps.length===(!alchemyDefaults.fireStaff?3:2)?Math.min(...(dailyCaps as number[])):null
+        const capacityRate=marketCapacityPerDay===null?null:Math.min(rate,marketCapacityPerDay/Math.max(1,dailyMaxHours))
+        const capacityGpHour=profit===null||capacityRate===null?null:profit*capacityRate
+        const directSellNet=itemSell===null?null:itemSell-geTax(itemSell)
+        const directSellProfit=directSellNet===null||itemBuy===null?null:directSellNet-itemBuy
+        const alternativeDelta=profit===null||directSellProfit===null?null:profit-directSellProfit
+        const volumeRatio=capacityRate===null||rate<=0?null:capacityRate/rate
+        const liquidityLabel=volumeRatio===null?'DATA REQUIRED':volumeRatio>=0.8?'HIGH':volumeRatio>=0.4?'MEDIUM':'LOW'
+        return {id:String(i.id),name:i.name,member:Boolean(i.members),locked:mode==='F2P'&&Boolean(i.members),alchValue,itemBuy,itemSell,directSellNet,directSellProfit,alternativeDelta,natureCost,fireCost,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,marketCapacityPerDay,liquidityLabel,volume:volume24h,liveAlchValue:Number(i.highalch),liveItemBuy:itemBuy,liveNatureCost:natureCost,liveFireCost}
       })
       .sort((a:any,b:any)=>(b.gpHour??-Infinity)-(a.gpHour??-Infinity)||b.alchValue-a.alchValue)
-  },[mapping,prices,volumes,alchemyDefaults,alchemyEdits,mode])
+  },[mapping,prices,volumes,alchemyDefaults,alchemyEdits,mode,dailyMaxHours])
 
   // Skill-free tanning conversions. Fees and processing speed are estimates for planning,
   // not guaranteed route-cycle rates; current GE prices are refreshed from the Wiki API.
@@ -1567,7 +1580,15 @@ export default function App() {
     const net=outputSell===null||tax===null?null:outputSell-tax
     const cost=inputBuy===null?null:inputBuy+r.fee
     const profit=cost===null||net===null?null:net-cost
-    return {...r,inputBuy,outputSell,tax,cost,profit,gpHour:profit===null?null:profit*r.rate,locked:mode==='F2P'&&r.member,liveInput:inputBuy,liveOutput:outputSell}
+    const inputVolume=volume(r.input),outputVolume=volume(r.output)
+    const natureCapacity=inputVolume&&inputVolume>0?inputVolume*0.05:null
+    const outputCapacity=outputVolume&&outputVolume>0?outputVolume*0.05:null
+    const marketCapacityPerDay=natureCapacity!==null&&outputCapacity!==null?Math.min(natureCapacity,outputCapacity):null
+    const capacityRate=marketCapacityPerDay===null?null:Math.min(r.rate,marketCapacityPerDay/Math.max(1,dailyMaxHours))
+    const capacityGpHour=profit===null||capacityRate===null?null:profit*capacityRate
+    const volumeRatio=capacityRate===null||r.rate<=0?null:capacityRate/r.rate
+    const liquidityLabel=volumeRatio===null?'DATA REQUIRED':volumeRatio>=0.8?'HIGH':volumeRatio>=0.4?'MEDIUM':'LOW'
+    return {...r,inputBuy,outputSell,tax,cost,profit,gpHour:profit===null?null:profit*r.rate,capacityRate,capacityGpHour,marketCapacityPerDay,liquidityLabel,locked:mode==='F2P'&&r.member,liveInput:inputBuy,liveOutput:outputSell}
   }),[mapping,prices,volumes,mode,conversionEdits])
 
   const loadSmartSeries=async(itemName:string)=>{
@@ -2444,10 +2465,22 @@ export default function App() {
 
   const v5Top=useMemo(()=>{
     const skillRows=unifiedRanking.map((x:any)=>({kind:'skill',id:x.id,name:x.name,skillLabel:`${x.skills.join(', ')} ${x.level}`,inputCost:x.economy?.inputCost,outputPrice:x.economy?.outputPrice,profitEach:x.economy?.profitEach,rate:x.rate,gp:x.gp,capacityGp:x.capacityAdjustedGpHour,marketBasis:x.economy?.marketBasis||'N/A',rateSource:x.rateSource||x.source,liquidityLabel:x.liquidityLabel||'—',batchVolumePct:x.batchVolumePct,batchSize:x.batchSize,quality:x.quality||'LEGACY',economy:x.economy,member:x.member}))
-    const alchRows=alchemyRows.filter((x:any)=>x.profit!==null&&x.gpHour>0&&(!x.member||mode==='MEMBER')).map((x:any)=>({kind:'alchemy',id:`alchemy-${x.id}`,name:`${x.name} → High Alchemy`,skillLabel:'Magic 55 • High Alchemy',inputCost:x.itemBuy===null||x.natureCost===null?null:x.itemBuy+x.natureCost+(x.fireCost||0),inputText:`${x.name} ×1: ${fmt(x.itemBuy)} GP + Nature rune ×1: ${fmt(x.natureCost)} GP${alchemyDefaults.fireStaff?'':` + Fire rune ×5: ${fmt(x.fireCost)} GP`}`,outputText:`High Alchemy: ${fmt(x.alchValue)} GP`,outputPrice:x.alchValue,profitEach:x.profit,rate:x.rate,gp:x.gpHour,capacityGp:x.gpHour,marketBasis:'Live GE input + fixed High Alch' ,rateSource:'ESTIMATE',liquidityLabel:'GE volume',batchVolumePct:null,batchSize:null,quality:'ESTIMATE',economy:null,member:x.member}))
-    const convertRows=noSkillConversions.filter((x:any)=>x.profit!==null&&x.gpHour>0&&(!x.member||mode==='MEMBER')).map((x:any)=>({kind:'conversion',id:`convert-${x.name}`,name:x.name,skillLabel:'Skill gerektirmiyor',inputCost:x.cost,inputText:`${x.input} ×1: ${fmt(x.inputBuy)} GP + NPC fee: ${fmt(x.fee)} GP`,outputText:`${x.output} ×1: ${fmt(x.outputSell)} GP − GE tax: ${fmt(x.tax)} GP`,outputPrice:x.outputSell,profitEach:x.profit,rate:x.rate,gp:x.gpHour,capacityGp:x.gpHour,marketBasis:'Live GE − tax − fixed NPC fee',rateSource:'ESTIMATE',liquidityLabel:'GE volume',batchVolumePct:null,batchSize:null,quality:'ESTIMATE',economy:null,member:x.member}))
+    const alchRows=alchemyRows.filter((x:any)=>x.profit!==null&&x.gpHour>0&&x.capacityGpHour!==null&&x.capacityGpHour>0&&(!x.member||mode==='MEMBER')).map((x:any)=>({kind:'alchemy',id:`alchemy-${x.id}`,name:`${x.name} → High Alchemy`,skillLabel:'Magic 55 • High Alchemy',inputCost:x.itemBuy===null||x.natureCost===null?null:x.itemBuy+x.natureCost+(x.fireCost||0),inputText:`${x.name} ×1: ${fmt(x.itemBuy)} GP + Nature rune ×1: ${fmt(x.natureCost)} GP${alchemyDefaults.fireStaff?'':` + Fire rune ×5: ${fmt(x.fireCost)} GP`}`,outputText:`High Alchemy: ${fmt(x.alchValue)} GP`,outputPrice:x.alchValue,profitEach:x.profit,rate:x.rate,gp:x.gpHour,capacityGp:x.capacityGpHour,marketBasis:'Live input + 5% daily-volume capacity',rateSource:'ESTIMATE',liquidityLabel:x.liquidityLabel,batchVolumePct:null,batchSize:null,quality:'ESTIMATE',economy:null,member:x.member}))
+    const convertRows=noSkillConversions.filter((x:any)=>x.profit!==null&&x.gpHour>0&&x.capacityGpHour!==null&&x.capacityGpHour>0&&(!x.member||mode==='MEMBER')).map((x:any)=>({kind:'conversion',id:`convert-${x.name}`,name:x.name,skillLabel:'Skill gerektirmiyor',inputCost:x.cost,inputText:`${x.input} ×1: ${fmt(x.inputBuy)} GP + NPC fee: ${fmt(x.fee)} GP`,outputText:`${x.output} ×1: ${fmt(x.outputSell)} GP − GE tax: ${fmt(x.tax)} GP`,outputPrice:x.outputSell,profitEach:x.profit,rate:x.rate,gp:x.gpHour,capacityGp:x.capacityGpHour,marketBasis:'Live GE + 5% daily-volume capacity',rateSource:'ESTIMATE',liquidityLabel:x.liquidityLabel,batchVolumePct:null,batchSize:null,quality:'ESTIMATE',economy:null,member:x.member}))
     return [...skillRows,...alchRows,...convertRows].filter((x:any)=>x.gp!==null&&x.gp>0&&x.capacityGp!==null&&x.capacityGp>0).sort((a:any,b:any)=>b.capacityGp-a.capacityGp).slice(0,10)
-  },[unifiedRanking,alchemyRows,noSkillConversions,mode,alchemyDefaults])
+  },[unifiedRanking,alchemyRows,noSkillConversions,mode,alchemyDefaults,dailyMaxHours])
+
+  const alternativeUseRows=useMemo(()=>{
+    const alchemy=alchemyRows.filter((x:any)=>x.itemBuy!==null&&x.itemSell!==null&&x.profit!==null&&(!x.member||mode==='MEMBER')).map((x:any)=>({id:`alch-alt-${x.id}`,item:x.name,method:'High Alchemy',inputCost:x.itemBuy,alternativeName:'GE satış',alternativeProfit:x.directSellProfit,chosenProfit:x.profit,delta:x.alternativeDelta,rate:x.rate,gpHour:x.gpHour,capacityGpHour:x.capacityGpHour,liquidity:x.liquidityLabel,basis:'Anlık GE alış/satış + sabit alch değeri',member:x.member}))
+    const processing=v5Rows.filter((x:any)=>x.economy?.hasPrices&&x.economy?.outputName&&x.economy?.inputs?.length&&x.economy?.profitEach!==null&&x.rate>0&&(!x.member||mode==='MEMBER')).map((x:any)=>{
+      const inputSaleNet=x.economy.inputs.every((i:any)=>sell(i.name)!==null)?x.economy.inputs.reduce((n:number,i:any)=>n+((sell(i.name)||0)-geTax(sell(i.name)||0))*i.qty,0):null
+      const inputBuyCost=x.economy.inputs.every((i:any)=>i.price!==null)?x.economy.inputs.reduce((n:number,i:any)=>n+(i.price||0)*i.qty,0):null
+      const directInputProfit=inputSaleNet===null||inputBuyCost===null?null:inputSaleNet-inputBuyCost
+      const processProfit=x.economy.profitEach
+      return {id:`proc-alt-${x.id}`,item:x.economy.inputs.map((i:any)=>`${i.qty}× ${i.name}`).join(' + '),method:x.name,output:x.economy.outputName,inputCost:inputBuyCost,alternativeName:'Girdileri doğrudan GE’de sat',alternativeProfit:directInputProfit,chosenProfit:processProfit,delta:directInputProfit===null?null:processProfit-directInputProfit,rate:x.rate,gpHour:x.gp,capacityGpHour:x.capacityAdjustedGpHour,liquidity:x.liquidityLabel,basis:'Canlı GE alış/satış − GE vergisi',member:x.member}
+    }).filter((x:any)=>x.alternativeProfit!==null&&x.chosenProfit!==null)
+    return [...alchemy,...processing].sort((a:any,b:any)=>Math.abs(b.delta??0)-Math.abs(a.delta??0))
+  },[alchemyRows,v5Rows,mode,prices,mapping,volumes])
   const v5BuyOrderItems=useMemo(()=>{
     type RecipeUse={name:string;targetGpHour:number}
     type ItemOpportunity={
@@ -2753,7 +2786,7 @@ export default function App() {
     <main>
       <header>
         <div>
-          <h1>OSRS Economy Scanner V6.1.1 RC — Alchemy Tab Separation</h1>
+          <h1>OSRS Economy Scanner V6.2 RC — Realizable Profit & Alternative Use</h1>
           <p>
             Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
           </p>
@@ -2805,22 +2838,28 @@ export default function App() {
         </div>
         {(()=>{const filterRows=(rows:any[],nameKey='name')=>rows.filter((r:any)=>!alchemySearch||String(r[nameKey]||'').toLowerCase().includes(alchemySearch.toLowerCase())).filter((r:any)=>alchemyAccessFilter==='ALL'||(alchemyAccessFilter==='F2P'?!r.member:r.member)).filter((r:any)=>alchemyShowLocked||!r.locked).filter((r:any)=>alchemyDataFilter==='ALL'||(alchemyDataFilter==='EDITED'?(r.id?alchemyEdits[r.id]?.rate!==undefined:conversionEdits[r.name]?.rate!==undefined):!(r.id?alchemyEdits[r.id]?.rate!==undefined:conversionEdits[r.name]?.rate!==undefined))).filter((r:any)=>alchemyProfitFilter==='ALL'||(alchemyProfitFilter==='PROFIT'?(r.gpHour??r.profit??-1)>0:(r.gpHour??r.profit??-1)<=0)).filter((r:any)=>{const price=r.itemBuy!==undefined?r.itemBuy:r.inputBuy;return alchemyShowUnpriced||(price!==null&&price!==undefined)}).sort((a:any,b:any)=>alchemySort==='GP_ASC'?((a.gpHour??-Infinity)-(b.gpHour??-Infinity)):alchemySort==='PROFIT_DESC'?((b.profit??-Infinity)-(a.profit??-Infinity)):alchemySort==='VOLUME_DESC'?((b.volume??-Infinity)-(a.volume??-Infinity)):alchemySort==='NAME_ASC'?String(a.name).localeCompare(String(b.name)):((b.gpHour??-Infinity)-(a.gpHour??-Infinity)));return <>
           <h3>High Alchemy <span style={{fontSize:11,color:'#8b949e'}}>({filterRows(alchemyRows).length} eşleşme)</span></h3>
-          <div className="tableBox"><table><thead><tr><th>İşlem / alınan ürün ve canlı alış maliyetleri</th><th>Üyelik</th><th>Satış / High Alch geliri</th><th>Nature rune maliyeti</th><th>Fire rune maliyeti</th><th>Toplam maliyet</th><th>Expected Profit/item</th><th>Rate/h</th><th>Expected GP/h</th><th>24h hacim</th><th>Edit</th></tr></thead><tbody>
-          {filterRows(alchemyRows).map((r:any)=><tr key={r.id}><td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>Alış: {r.itemBuy===null?'FİYAT YOK':`${fmt(r.itemBuy)} GP`} ×1 + Nature rune ×1: {r.natureCost===null?'FİYAT YOK':`${fmt(r.natureCost)} GP`}{!alchemyDefaults.fireStaff?` + Fire rune ×5: ${r.fireCost===null?'FİYAT YOK':fmt(r.fireCost)+' GP'}`:''}</div></td><td>{r.member?'MEMBERS':'F2P'}</td><td>{fmt(r.alchValue)} GP coin</td><td>{r.natureCost===null?'FİYAT YOK':fmt(r.natureCost)}</td><td>{alchemyDefaults.fireStaff?'0 (Fire staff)':r.fireCost===null?'FİYAT YOK':fmt(r.fireCost)}</td><td>{r.itemBuy===null||r.natureCost===null||(!alchemyDefaults.fireStaff&&r.fireCost===null)?'FİYAT YOK':fmt(r.itemBuy+r.natureCost+(r.fireCost||0))}</td><td style={{color:r.profit===null?'#8b949e':r.profit>0?'#3fb950':'#f85149'}}>{fmt(r.profit)}</td><td>{fmt(r.rate)}</td><td><b>{fmt(r.gpHour)}</b></td><td>{fmt(r.volume)}</td><td><button type="button" onClick={()=>setAlchemyEditId(alchemyEditId===r.id?null:r.id)}>{alchemyEditId===r.id?'Kapat':'Edit'}</button></td></tr>)}
-          {!filterRows(alchemyRows).length&&<tr><td colSpan={11}>Filtreye uygun High Alchemy ürünü yok.</td></tr>}
+          <div className="tableBox"><table><thead><tr><th>İşlem / alınan ürün ve canlı alış maliyetleri</th><th>Üyelik</th><th>Satış / High Alch geliri</th><th>Nature rune maliyeti</th><th>Fire rune maliyeti</th><th>Toplam maliyet</th><th>Expected Profit/item</th><th>Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Piyasa</th><th>24h hacim</th><th>Edit</th></tr></thead><tbody>
+          {filterRows(alchemyRows).map((r:any)=><tr key={r.id}><td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>Alış: {r.itemBuy===null?'FİYAT YOK':`${fmt(r.itemBuy)} GP`} ×1 + Nature rune ×1: {r.natureCost===null?'FİYAT YOK':`${fmt(r.natureCost)} GP`}{!alchemyDefaults.fireStaff?` + Fire rune ×5: ${r.fireCost===null?'FİYAT YOK':fmt(r.fireCost)+' GP'}`:''}</div></td><td>{r.member?'MEMBERS':'F2P'}</td><td>{fmt(r.alchValue)} GP coin</td><td>{r.natureCost===null?'FİYAT YOK':fmt(r.natureCost)}</td><td>{alchemyDefaults.fireStaff?'0 (Fire staff)':r.fireCost===null?'FİYAT YOK':fmt(r.fireCost)}</td><td>{r.itemBuy===null||r.natureCost===null||(!alchemyDefaults.fireStaff&&r.fireCost===null)?'FİYAT YOK':fmt(r.itemBuy+r.natureCost+(r.fireCost||0))}</td><td style={{color:r.profit===null?'#8b949e':r.profit>0?'#3fb950':'#f85149'}}>{fmt(r.profit)}</td><td>{fmt(r.rate)}</td><td><b>{fmt(r.gpHour)}</b></td><td>{fmt(r.capacityGpHour)}</td><td>{r.liquidityLabel}</td><td>{fmt(r.volume)}</td><td><button type="button" onClick={()=>setAlchemyEditId(alchemyEditId===r.id?null:r.id)}>{alchemyEditId===r.id?'Kapat':'Edit'}</button></td></tr>)}
+          {!filterRows(alchemyRows).length&&<tr><td colSpan={13}>Filtreye uygun High Alchemy ürünü yok.</td></tr>}
           </tbody></table></div>
           {alchemyEditId&&(()=>{const r=alchemyRows.find((x:any)=>x.id===alchemyEditId);if(!r)return null;const e=alchemyEdits[r.id]||{};return <div style={{padding:10,border:'1px solid #58a6ff',borderRadius:8,margin:'8px 0'}}><b>Edit — {r.name}</b><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
             <label>İşlem/saat <input type="number" min="1" value={e.rate??r.rate} onChange={ev=>setAlchemyEdits(o=>({...o,[r.id]:{rate:Math.max(1,Number(ev.target.value)||1)}}))}/></label>
             <button type="button" onClick={()=>setAlchemyEdits(o=>{const n={...o};delete n[r.id];return n})}>Hızı varsayılana döndür</button></div><div style={{fontSize:10,color:'#8b949e',marginTop:6}}>Alış fiyatı, High Alchemy değeri ve rün maliyetleri otomatik alınır; bu alanlar manuel değiştirilemez.</div></div>})()}
           <h3>Skill gerektirmeyen dönüşümler <span style={{fontSize:11,color:'#8b949e'}}>({filterRows(noSkillConversions).length} eşleşme)</span></h3>
-          <div className="tableBox"><table><thead><tr><th>İşlem / girdi maliyeti</th><th>Durum</th><th>NPC işlem ücreti</th><th>Satış fiyatı (canlı GE)</th><th>GE vergisi</th><th>Toplam maliyet</th><th>Expected Profit/item</th><th>Rate/h</th><th>Expected GP/h</th><th>Edit</th></tr></thead><tbody>
-          {filterRows(noSkillConversions).map((r:any)=><tr key={r.name}><td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.location}</div><div style={{fontSize:10,color:'#8b949e'}}>Alış: {r.input} ×1 = {r.inputBuy===null?'FİYAT YOK':fmt(r.inputBuy)+' GP'}</div></td><td>{r.locked?'MEMBERS':'SKILL GEREKMİYOR'}</td><td>{fmt(r.fee)} GP</td><td>{r.outputSell===null?'FİYAT YOK':`${fmt(r.outputSell)} GP (${r.output})`}</td><td>{fmt(r.tax)}</td><td>{r.cost===null?'FİYAT YOK':fmt(r.cost)}</td><td style={{color:r.profit===null?'#8b949e':r.profit>0?'#3fb950':'#f85149'}}>{fmt(r.profit)}</td><td>{fmt(r.rate)}</td><td><b>{fmt(r.gpHour)}</b></td><td><button type="button" onClick={()=>setConversionEditId(conversionEditId===r.name?null:r.name)}>{conversionEditId===r.name?'Kapat':'Edit'}</button></td></tr>)}
-          {!filterRows(noSkillConversions).length&&<tr><td colSpan={10}>Filtreye uygun dönüşüm yok.</td></tr>}
+          <div className="tableBox"><table><thead><tr><th>İşlem / girdi maliyeti</th><th>Durum</th><th>NPC işlem ücreti</th><th>Satış fiyatı (canlı GE)</th><th>GE vergisi</th><th>Toplam maliyet</th><th>Expected Profit/item</th><th>Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Piyasa</th><th>Edit</th></tr></thead><tbody>
+          {filterRows(noSkillConversions).map((r:any)=><tr key={r.name}><td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.location}</div><div style={{fontSize:10,color:'#8b949e'}}>Alış: {r.input} ×1 = {r.inputBuy===null?'FİYAT YOK':fmt(r.inputBuy)+' GP'}</div></td><td>{r.locked?'MEMBERS':'SKILL GEREKMİYOR'}</td><td>{fmt(r.fee)} GP</td><td>{r.outputSell===null?'FİYAT YOK':`${fmt(r.outputSell)} GP (${r.output})`}</td><td>{fmt(r.tax)}</td><td>{r.cost===null?'FİYAT YOK':fmt(r.cost)}</td><td style={{color:r.profit===null?'#8b949e':r.profit>0?'#3fb950':'#f85149'}}>{fmt(r.profit)}</td><td>{fmt(r.rate)}</td><td><b>{fmt(r.gpHour)}</b></td><td>{fmt(r.capacityGpHour)}</td><td>{r.liquidityLabel}</td><td><button type="button" onClick={()=>setConversionEditId(conversionEditId===r.name?null:r.name)}>{conversionEditId===r.name?'Kapat':'Edit'}</button></td></tr>)}
+          {!filterRows(noSkillConversions).length&&<tr><td colSpan={12}>Filtreye uygun dönüşüm yok.</td></tr>}
           </tbody></table></div>
           {conversionEditId&&(()=>{const r=noSkillConversions.find((x:any)=>x.name===conversionEditId);if(!r)return null;const e=conversionEdits[r.name]||{};return <div style={{padding:10,border:'1px solid #58a6ff',borderRadius:8,margin:'8px 0'}}><b>Edit — {r.name}</b><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
             <label>İşlem/saat <input type="number" min="1" value={e.rate??r.rate} onChange={ev=>setConversionEdits(o=>({...o,[r.name]:{rate:Math.max(1,Number(ev.target.value)||1)}}))}/></label>
             <button type="button" onClick={()=>setConversionEdits(o=>{const n={...o};delete n[r.name];return n})}>Hızı varsayılana döndür</button></div><div style={{fontSize:10,color:'#8b949e',marginTop:6}}>Girdi alış, çıktı satış ve sabit NPC ücreti otomatik/oyun verisinden alınır; maliyetler manuel değiştirilemez.</div></div>})()}
-          <p style={{fontSize:10,color:'#8b949e'}}>High Alchemy kârı = High Alch geliri − ürünün canlı anlık alış fiyatı − Nature rune canlı alış fiyatı − (Fire staff yoksa 5 Fire rune canlı alış fiyatı). Dönüşüm kârı = çıktı canlı satış fiyatı − GE vergisi − girdi canlı alış fiyatı − sabit NPC ücreti. Saatlik hızlar tahmindir; GE limitleri ve emirlerin dolma süresi dahil değildir.</p>
+          <h3>Alternatif kullanım karşılaştırması</h3>
+          <p style={{fontSize:11,color:'#8b949e'}}>Aynı ürünü High Alchemy yapmak mı yoksa GE’de satmak mı daha mantıklı? İşlenebilir hammaddelerde ise işlemek mi yoksa girdileri doğrudan satmak mı daha iyi? Karşılaştırma, her iki seçenek için de aynı girdinin canlı alış maliyetini baz alır. Pozitif fark, seçilen işlem lehinedir.</p>
+          <div className="tableBox"><table><thead><tr><th>Ürün / girdi</th><th>Seçenek</th><th>Alternatif</th><th>Alternatif net kâr/adet</th><th>İşlem net kâr/adet</th><th>Fark (işlem − alternatif)</th><th>Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Piyasa durumu</th></tr></thead><tbody>
+          {alternativeUseRows.slice(0,250).map((r:any)=><tr key={r.id}><td><b>{r.item}</b>{r.output&&<div style={{fontSize:10,color:'#8b949e'}}>→ {r.output}</div>}</td><td>{r.method}</td><td>{r.alternativeName}</td><td>{fmt(r.alternativeProfit)}</td><td>{fmt(r.chosenProfit)}</td><td style={{color:r.delta===null?'#8b949e':r.delta>0?'#3fb950':r.delta<0?'#f85149':'inherit'}}><b>{fmt(r.delta)}</b>{r.delta!==null&&<div style={{fontSize:10}}>{r.delta>0?'İşlem daha iyi':r.delta<0?'Alternatif daha iyi':'Başabaş'}</div>}</td><td>{fmt(r.rate)}</td><td>{fmt(r.gpHour)}</td><td>{fmt(r.capacityGpHour)}</td><td>{r.liquidity||'—'}</td></tr>)}
+          {!alternativeUseRows.length&&<tr><td colSpan={10}>Karşılaştırma için yeterli canlı fiyat verisi bulunamadı.</td></tr>}
+          </tbody></table></div>
+          <p style={{fontSize:10,color:'#8b949e'}}>Gerçekleşebilir kapasite GP/h, her gerekli ürünün 24 saatlik GE hacminin en fazla %5’inin alınabileceği/satılabileceği varsayımıyla ve günlük çalışma sürene göre sınırlandırılır. Hacim verisi eksikse yöntem Top 10’a alınmaz. Bu konservatif bir planlama varsayımıdır; gerçek GE emir dolum süresinin garantisi değildir. High Alchemy kârı = sabit alch geliri − ürün alış fiyatı − Nature rune ve gerekirse Fire rune maliyeti.</p>
         </>})()}
       </section>}
 
