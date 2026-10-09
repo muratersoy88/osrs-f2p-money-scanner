@@ -1248,6 +1248,8 @@ export default function App() {
   const [smartError,setSmartError]=useState('')
   const [smartRecipeId,setSmartRecipeId]=useState('')
   const [smartRecipeSearch,setSmartRecipeSearch]=useState('')
+  const [alchemySearch,setAlchemySearch]=useState('')
+  const [alchemyShowUnpriced,setAlchemyShowUnpriced]=useState(true)
   const [orderHistory,setOrderHistory]=useState<OrderHistoryRow[]>(()=>{try{return JSON.parse(localStorage.getItem('osrs-order-history-v56')||'[]')}catch{return[]}})
   const [historyDraft,setHistoryDraft]=useState({item:'',side:'BUY' as OrderSide,quantity:500,orderPrice:0,filledQuantity:0,fillHours:'',status:'FILLED' as OrderStatus,averageFillPrice:''})
 
@@ -1510,6 +1512,44 @@ export default function App() {
     if (!d) return null
     return (d.highPriceVolume || 0) + (d.lowPriceVolume || 0)
   }
+
+  // Full item-level High Alchemy scanner, sourced from the OSRS Wiki mapping API.
+  // 1,200 casts/hour assumes the standard 5-tick cast and a fire staff (no fire-rune cost).
+  const alchemyRows = useMemo(() => {
+    const q = alchemySearch.trim().toLowerCase()
+    const nature = mapping.find((i:any)=>i.name?.toLowerCase()==='nature rune')
+    const natureCost = nature ? Number(prices[nature.id]?.high || 0) : 0
+    return mapping
+      .filter((i:any)=>i.highalch!==null && i.highalch!==undefined && Number.isFinite(Number(i.highalch)) && Number(i.highalch)>0)
+      .filter((i:any)=>!q || String(i.name||'').toLowerCase().includes(q))
+      .map((i:any)=>{
+        const itemBuy = prices[i.id]?.high == null ? null : Number(prices[i.id].high)
+        const alchValue = Number(i.highalch)
+        const profit = itemBuy===null || !natureCost ? null : alchValue-itemBuy-natureCost
+        const volData=volumes[i.id]
+        return {id:i.id,name:i.name,member:Boolean(i.members),alchValue,itemBuy,natureCost:natureCost||null,profit,gpHour:profit===null?null:profit*1200,volume:volData?(Number(volData.highPriceVolume||0)+Number(volData.lowPriceVolume||0)):null}
+      })
+      .sort((a:any,b:any)=>(b.gpHour??-Infinity)-(a.gpHour??-Infinity)||b.alchValue-a.alchValue)
+  },[mapping,prices,volumes,alchemySearch])
+
+  // Skill-free tanning conversions. Fees and processing speed are estimates for planning,
+  // not guaranteed route-cycle rates; current GE prices are refreshed from the Wiki API.
+  const noSkillConversions = useMemo(()=>[
+    {name:'Cowhide → Leather',input:'Cowhide',output:'Leather',fee:1,member:false,rate:2000,location:'Al Kharid tanner'},
+    {name:'Cowhide → Hard leather',input:'Cowhide',output:'Hard leather',fee:3,member:false,rate:2000,location:'Al Kharid tanner'},
+    {name:'Snake hide → Snake skin',input:'Snake hide',output:'Snake skin',fee:15,member:true,rate:1800,location:'Tanner'},
+    {name:'Green d’hide → Green dragon leather',input:'Green dragonhide',output:'Green dragon leather',fee:20,member:true,rate:1800,location:'Tanner'},
+    {name:'Blue d’hide → Blue dragon leather',input:'Blue dragonhide',output:'Blue dragon leather',fee:20,member:true,rate:1800,location:'Tanner'},
+    {name:'Red d’hide → Red dragon leather',input:'Red dragonhide',output:'Red dragon leather',fee:20,member:true,rate:1800,location:'Tanner'},
+    {name:'Black d’hide → Black dragon leather',input:'Black dragonhide',output:'Black dragon leather',fee:20,member:true,rate:1800,location:'Tanner'},
+  ].map((r:any)=>{
+    const inputBuy=buy(r.input), outputSell=sell(r.output)
+    const tax=outputSell===null?null:geTax(outputSell)
+    const net=outputSell===null||tax===null?null:outputSell-tax
+    const cost=inputBuy===null?null:inputBuy+r.fee
+    const profit=cost===null||net===null?null:net-cost
+    return {...r,inputBuy,outputSell,tax,cost,profit,gpHour:profit===null?null:profit*r.rate,locked:mode==='F2P'&&r.member}
+  }),[mapping,prices,volumes,mode])
 
   const loadSmartSeries=async(itemName:string)=>{
     const item=getItem(itemName)
@@ -2712,6 +2752,27 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      <section style={{margin:'14px 0',padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+        <h2 style={{marginTop:0}}>High Alchemy + Skill Gerektirmeyen Dönüşümler</h2>
+        <p style={{fontSize:12,color:'#8b949e',marginTop:-4}}>High Alchemy tablosu OSRS Wiki item mapping verisindeki alchemy değerine sahip tüm ürünleri listeler. Alchemy için Magic 55 gerekir; hız hesabı 1.200 cast/saat ve fire staff varsayar.</p>
+        <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'center',marginBottom:8}}>
+          <label>Ürün ara <input value={alchemySearch} onChange={e=>setAlchemySearch(e.target.value)} placeholder="Diamond amulet, rune platebody..." style={{width:260}} /></label>
+          <label><input type="checkbox" checked={alchemyShowUnpriced} onChange={e=>setAlchemyShowUnpriced(e.target.checked)}/> Fiyatı bulunmayanları da göster</label>
+          <b>High Alch ürünü: {alchemyRows.length}</b>
+          <span style={{fontSize:11,color:'#8b949e'}}>Nature rune alış maliyeti: {fmt(buy('Nature rune'))} GP/cast</span>
+        </div>
+        <div className="tableBox"><table><thead><tr><th>Ürün</th><th>Üyelik</th><th>High Alch değeri</th><th>Ürün alış</th><th>Nature rune</th><th>Net kâr/cast</th><th>Net GP/saat</th><th>24h hacim</th></tr></thead><tbody>
+          {alchemyRows.filter((r:any)=>alchemyShowUnpriced||r.itemBuy!==null).map((r:any)=><tr key={r.id}><td>{r.name}</td><td>{r.member?'MEMBERS':'F2P'}</td><td>{fmt(r.alchValue)} GP</td><td>{r.itemBuy===null?'FİYAT YOK':`${fmt(r.itemBuy)} GP`}</td><td>{r.natureCost===null?'FİYAT YOK':`${fmt(r.natureCost)} GP`}</td><td style={{color:r.profit===null?'#8b949e':r.profit>=0?'#3fb950':'#f85149'}}>{r.profit===null?'—':`${fmt(r.profit)} GP`}</td><td style={{fontWeight:800,color:r.gpHour===null?'#8b949e':r.gpHour>=0?'#3fb950':'#f85149'}}>{r.gpHour===null?'—':`${fmt(r.gpHour)} GP/h`}</td><td>{fmt(r.volume)}</td></tr>)}
+          {!alchemyRows.length&&<tr><td colSpan={8}>Alchemy değeri olan ürün bulunamadı; önce fiyatları güncelle.</td></tr>}
+        </tbody></table></div>
+        <p style={{fontSize:10,color:'#8b949e'}}>Hesap: High Alch değeri − ürünün anlık alış fiyatı − Nature rune anlık alış fiyatı. GE satış vergisi uygulanmaz; ürün alchemy ile coin’e dönüşür. Fire staff varsayımı nedeniyle fire rune maliyeti sıfır kabul edilir. GP/h yalnızca işlem süresidir; GE alış limitleri ve ürünlerin dolma süresi ayrıca değerlendirilmelidir.</p>
+        <h3>Skill gerektirmeyen dönüşümler</h3>
+        <p style={{fontSize:11,color:'#8b949e'}}>Kâr = çıktı için tahmini anlık satış geliri (GE vergisi sonrası) − girdinin anlık alış maliyeti − tabaklama ücreti. Saatlik hızlar rota/enerjiye göre değişebilen tahminlerdir.</p>
+        <div className="tableBox"><table><thead><tr><th>İşlem</th><th>Durum</th><th>Girdi alış</th><th>Tabaklama ücreti</th><th>Çıktı satış</th><th>Net kâr/adet</th><th>GP/saat</th><th>Hız varsayımı</th></tr></thead><tbody>
+          {noSkillConversions.map((r:any)=><tr key={r.name}><td>{r.name}<div style={{fontSize:10,color:'#8b949e'}}>{r.location}</div></td><td>{r.locked?'MEMBERS':'SKILL 1 / SKILL GEREKMİYOR'}</td><td>{r.inputBuy===null?'FİYAT YOK':`${fmt(r.inputBuy)} GP`}</td><td>{fmt(r.fee)} GP</td><td>{r.outputSell===null?'FİYAT YOK':`${fmt(r.outputSell)} GP`} {r.tax!==null&&<small>(tax {fmt(r.tax)})</small>}</td><td style={{color:r.profit===null?'#8b949e':r.profit>=0?'#3fb950':'#f85149'}}>{r.profit===null?'—':`${fmt(r.profit)} GP`}</td><td style={{fontWeight:800,color:r.gpHour===null?'#8b949e':r.gpHour>=0?'#3fb950':'#f85149'}}>{r.gpHour===null?'—':`${fmt(r.gpHour)} GP/h`}</td><td>{fmt(r.rate)}/h (tahmin)</td></tr>)}
+        </tbody></table></div>
+      </section>
 
       <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:8,flexWrap:'wrap',padding:'10px 0',background:'#0d1117',borderBottom:'1px solid #30363d'}}>
         {([
