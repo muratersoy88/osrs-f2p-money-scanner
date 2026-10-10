@@ -1208,7 +1208,7 @@ export default function App() {
   const [v4ViewAll, setV4ViewAll] = useState(false)
   const [v4KindFilter, setV4KindFilter] = useState('ALL')
   const [v4PlannerItem, setV4PlannerItem] = useState('')
-  const [activeTab, setActiveTab] = useState<'dashboard'|'smart'|'skills'|'alchemy'|'money'|'planner'|'database'|'coverage'|'bulk'>('dashboard')
+  const [activeTab, setActiveTab] = useState<'dashboard'|'smart'|'skills'|'alchemy'|'alchemyGoal'|'money'|'planner'|'database'|'coverage'|'bulk'>('dashboard')
   const [v5Page,setV5Page]=useState<V5PageId>('melee')
   const [v5Search,setV5Search]=useState('')
   const [v5ShowLocked,setV5ShowLocked]=useState(true)
@@ -1248,6 +1248,7 @@ export default function App() {
   const [smartError,setSmartError]=useState('')
   const [smartRecipeId,setSmartRecipeId]=useState('')
   const [smartRecipeSearch,setSmartRecipeSearch]=useState('')
+  const [alchemyGoalTarget,setAlchemyGoalTarget]=useState(()=>Math.max(1,Number(localStorage.getItem('osrs-alchemy-goal-target-v62')||750000)))
   const [alchemySearch,setAlchemySearch]=useState('')
   const [alchemyShowUnpriced,setAlchemyShowUnpriced]=useState(true)
   const [alchemyAccessFilter,setAlchemyAccessFilter]=useState('ALL')
@@ -1435,6 +1436,7 @@ export default function App() {
   },[mapping,updated])
 
   useEffect(()=>{localStorage.setItem('osrs-v5-edits',JSON.stringify(v5Edits))},[v5Edits])
+  useEffect(()=>{localStorage.setItem('osrs-alchemy-goal-target-v62',String(alchemyGoalTarget))},[alchemyGoalTarget])
   useEffect(()=>{localStorage.setItem('osrs-alchemy-defaults-v61',JSON.stringify(alchemyDefaults))},[alchemyDefaults])
   useEffect(()=>{localStorage.setItem('osrs-alchemy-edits-v61',JSON.stringify(alchemyEdits))},[alchemyEdits])
   useEffect(()=>{localStorage.setItem('osrs-skillless-edits-v61',JSON.stringify(conversionEdits))},[conversionEdits])
@@ -1539,6 +1541,7 @@ export default function App() {
         const itemBuy=prices[i.id]?.high == null ? null : Number(prices[i.id].high)
         const itemSell=prices[i.id]?.low == null ? null : Number(prices[i.id].low)
         const alchValue=Number(i.highalch)
+        const buyLimit=Number(i.limit)>0?Number(i.limit):null
         const natureCost=liveNatureCost
         const fireCost=alchemyDefaults.fireStaff?0:liveFireCost
         const rate=edit.rate??alchemyDefaults.castsPerHour
@@ -1557,10 +1560,32 @@ export default function App() {
         const alternativeDelta=profit===null||directSellProfit===null?null:profit-directSellProfit
         const volumeRatio=capacityRate===null||rate<=0?null:capacityRate/rate
         const liquidityLabel=volumeRatio===null?'DATA REQUIRED':volumeRatio>=0.8?'HIGH':volumeRatio>=0.4?'MEDIUM':'LOW'
-        return {id:String(i.id),name:i.name,member:Boolean(i.members),locked:mode==='F2P'&&Boolean(i.members),alchValue,itemBuy,itemSell,directSellNet,directSellProfit,alternativeDelta,natureCost,fireCost,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,marketCapacityPerDay,liquidityLabel,volume:volume24h,liveAlchValue:Number(i.highalch),liveItemBuy:itemBuy,liveNatureCost:natureCost,liveFireCost}
+        return {id:String(i.id),name:i.name,member:Boolean(i.members),locked:mode==='F2P'&&Boolean(i.members),buyLimit,alchValue,itemBuy,itemSell,directSellNet,directSellProfit,alternativeDelta,natureCost,fireCost,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,marketCapacityPerDay,liquidityLabel,volume:volume24h,liveAlchValue:Number(i.highalch),liveItemBuy:itemBuy,liveNatureCost:natureCost,liveFireCost}
       })
       .sort((a:any,b:any)=>(b.gpHour??-Infinity)-(a.gpHour??-Infinity)||b.alchValue-a.alchValue)
   },[mapping,prices,volumes,alchemyDefaults,alchemyEdits,mode,dailyMaxHours])
+
+  // Goal planner: greedily uses the most profitable known items first, never exceeding each item's GE buy limit per 4-hour window.
+  const alchemyGoalPlan = useMemo(()=>{
+    let remaining=Math.max(1,Number(alchemyGoalTarget)||1)
+    const eligible=alchemyRows
+      .filter((r:any)=>r.profit!==null&&r.profit>0&&r.itemBuy!==null&&r.natureCost!==null&&r.buyLimit!==null&&r.buyLimit>0&&!r.locked&&(!r.member||mode==='MEMBER'))
+      .sort((a:any,b:any)=>(b.profit??0)-(a.profit??0)||(b.capacityGpHour??0)-(a.capacityGpHour??0))
+    const plan:any[]=[]
+    for(const r of eligible){
+      if(remaining<=0)break
+      const qty=Math.min(r.buyLimit,Math.max(1,Math.ceil(remaining/r.profit)))
+      if(!Number.isFinite(qty)||qty<=0)continue
+      const costPer=r.itemBuy+r.natureCost+(r.fireCost||0)
+      const totalItemCost=r.itemBuy*qty
+      const totalRuneCost=(r.natureCost+(r.fireCost||0))*qty
+      const totalCost=totalItemCost+totalRuneCost
+      const totalProfit=r.profit*qty
+      plan.push({...r,qty,costPer,totalItemCost,totalRuneCost,totalCost,totalProfit,remainingAfter:Math.max(0,remaining-totalProfit)})
+      remaining-=totalProfit
+    }
+    return {rows:plan,target:Math.max(1,Number(alchemyGoalTarget)||1),remaining:Math.max(0,remaining),totalProfit:plan.reduce((s,r)=>s+r.totalProfit,0),totalCost:plan.reduce((s,r)=>s+r.totalCost,0),totalItems:plan.reduce((s,r)=>s+r.qty,0),complete:remaining<=0}
+  },[alchemyRows,alchemyGoalTarget,mode])
 
   // Skill-free tanning conversions. Fees and processing speed are estimates for planning,
   // not guaranteed route-cycle rates; current GE prices are refreshed from the Wiki API.
@@ -2812,7 +2837,7 @@ export default function App() {
 
       <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:8,flexWrap:'wrap',padding:'10px 0',background:'#0d1117',borderBottom:'1px solid #30363d'}}>
         {([
-          ['dashboard','Dashboard'],['smart','Smart Order'],['skills','21 Skill Views'],['alchemy','Alchemy & Skill-Free'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],['coverage','Database Coverage'],['bulk','Bulk Data Entry'],
+          ['dashboard','Dashboard'],['smart','Smart Order'],['skills','21 Skill Views'],['alchemy','Alchemy & Skill-Free'],['alchemyGoal','Alchemy Profit Goal'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],['coverage','Database Coverage'],['bulk','Bulk Data Entry'],
         ] as const).map(([id,label])=><button key={id} type="button" onClick={()=>setActiveTab(id)}
           style={{fontWeight:activeTab===id?800:500,outline:activeTab===id?'2px solid #58a6ff':'none'}}>{label}</button>)}
       </nav>
@@ -2863,6 +2888,24 @@ export default function App() {
         </>})()}
       </section>}
 
+
+      {activeTab==='alchemyGoal'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+        <h2 style={{marginTop:0}}>High Alchemy — Kâr Hedefi Planlayıcı</h2>
+        <p style={{fontSize:11,color:'#8b949e'}}>Hedef net kârını gir. Program, canlı GE alış fiyatlarını, High Alchemy değerini, Nature rune maliyetini (Fire staff açıksa Fire rune maliyeti sıfır) ve GE'nin ürün başına alış limitini kullanarak hedefe ulaşacak bir liste oluşturur. Her ürün için bir adet 4 saatlik GE alış limiti kullanılır; aynı üründe limit aşılmaz. Sıralama net kâr/adet en yüksekten başlar.</p>
+        <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'end',padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8,marginBottom:12}}>
+          <label style={{fontWeight:700}}>Hedef net kâr (GP)<br/><input type="number" min="1" step="10000" value={alchemyGoalTarget} onChange={e=>setAlchemyGoalTarget(Math.max(1,Number(e.target.value)||1))} style={{width:190,fontSize:18,fontWeight:800}}/></label>
+          <div><div style={{fontSize:10,color:'#8b949e'}}>Planlanan net kâr</div><strong style={{fontSize:20,color:alchemyGoalPlan.complete?'#3fb950':'#f85149'}}>{fmt(alchemyGoalPlan.totalProfit)} GP</strong></div>
+          <div><div style={{fontSize:10,color:'#8b949e'}}>Ürün alışları + rünler</div><strong style={{fontSize:20}}>{fmt(alchemyGoalPlan.totalCost)} GP</strong></div>
+          <div><div style={{fontSize:10,color:'#8b949e'}}>Toplam eşya</div><strong style={{fontSize:20}}>{fmt(alchemyGoalPlan.totalItems)}</strong></div>
+          <div><div style={{fontSize:10,color:'#8b949e'}}>Durum</div><strong style={{color:alchemyGoalPlan.complete?'#3fb950':'#f85149'}}>{alchemyGoalPlan.complete?'HEDEFE ULAŞILDI':'LİMİTLERLE HEDEF TAMAMLANAMIYOR'}</strong></div>
+        </div>
+        {!alchemyGoalPlan.complete&&<p style={{color:'#f85149',fontSize:12}}>Mevcut fiyatı kârlı, fiyatı güncel ve alış limiti bilinen ürünlerin her birinden bir GE limit penceresi kullanıldığında hedefe ulaşılamıyor. Eksik kalan: {fmt(alchemyGoalPlan.remaining)} GP. Daha sonra 4 saatlik limitler yenilenince aynı ürünlerden tekrar alınabilir; bu tabloda aynı ürün için limit aşımı yapılmıyor.</p>}
+        <div className="tableBox"><table><thead><tr><th>#</th><th>Ürün</th><th>GE alış limiti / önerilen adet</th><th>Alış fiyatı/adet</th><th>Alch geliri/adet</th><th>Nature rune</th><th>Fire rune</th><th>Toplam maliyet/adet</th><th>Net kâr/adet</th><th>Toplam ürün alış maliyeti</th><th>Toplam rün maliyeti</th><th>Genel toplam maliyet</th><th>Toplam net kâr</th><th>GP/h (tahmin)</th></tr></thead><tbody>
+          {alchemyGoalPlan.rows.map((r:any,i:number)=><tr key={r.id}><td>{i+1}</td><td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.member?'MEMBERS':'F2P'} • High Alchemy</div></td><td><b>{fmt(r.qty)}</b> / {fmt(r.buyLimit)} <div style={{fontSize:10,color:'#8b949e'}}>limit başına 4 saat</div></td><td>{fmt(r.itemBuy)} GP</td><td>{fmt(r.alchValue)} GP</td><td>{fmt(r.natureCost)} GP</td><td>{alchemyDefaults.fireStaff?'0 (Fire staff)':fmt(r.fireCost)+' GP'}</td><td>{fmt(r.costPer)} GP</td><td style={{color:'#3fb950'}}><b>{fmt(r.profit)} GP</b></td><td>{fmt(r.totalItemCost)} GP</td><td>{fmt(r.totalRuneCost)} GP</td><td>{fmt(r.totalCost)} GP</td><td style={{color:'#3fb950'}}><b>{fmt(r.totalProfit)} GP</b></td><td>{fmt(r.gpHour)}</td></tr>)}
+          {!alchemyGoalPlan.rows.length&&<tr><td colSpan={14}>Şu anda alış limiti ve fiyat bilgisi bulunan kârlı High Alchemy ürünü yok. GE fiyatları/ürün verileri güncellendikten sonra tekrar dene.</td></tr>}
+          </tbody></table></div>
+        <p style={{fontSize:10,color:'#8b949e',marginTop:8}}>Fiyatlar GE Wiki API verilerinden otomatik alınır; alış fiyatı anlık kesin dolum fiyatı değildir. GE alış limitleri mapping verisinde mevcut olduğunda kullanılır. Limit verisi olmayan ürünler plana alınmaz. Nature rune ve gerekirse Fire rune maliyetleri kârdan düşülür; Fire staff varsayımı mevcut Alchemy sekmesindeki ayara bağlıdır. GP/h tahmini işlem hızına dayanır ve piyasa kapasitesi garantisi değildir.</p>
+      </section>}
 
             {activeTab==='dashboard'&&<div>
               <section style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
