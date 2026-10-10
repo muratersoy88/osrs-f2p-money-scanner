@@ -1574,13 +1574,24 @@ export default function App() {
     const plan:any[]=[]
     for(const r of eligible){
       if(remaining<=0)break
-      const qty=Math.min(r.buyLimit,Math.max(1,Math.ceil(remaining/r.profit)))
+      // Defensively narrow live market fields: the Wiki API may omit prices or
+      // limits for some items, so those rows must never enter arithmetic.
+      if(typeof r.profit!=='number'||!Number.isFinite(r.profit)||r.profit<=0)continue
+      if(typeof r.itemBuy!=='number'||!Number.isFinite(r.itemBuy)||r.itemBuy<0)continue
+      if(typeof r.natureCost!=='number'||!Number.isFinite(r.natureCost)||r.natureCost<0)continue
+      if(typeof r.buyLimit!=='number'||!Number.isFinite(r.buyLimit)||r.buyLimit<=0)continue
+      const profit:number=r.profit
+      const itemBuy:number=r.itemBuy
+      const natureCost:number=r.natureCost
+      const buyLimit:number=r.buyLimit
+      const fireCost:number=typeof r.fireCost==='number'&&Number.isFinite(r.fireCost)?r.fireCost:0
+      const qty=Math.min(buyLimit,Math.max(1,Math.ceil(remaining/profit)))
       if(!Number.isFinite(qty)||qty<=0)continue
-      const costPer=r.itemBuy+r.natureCost+(r.fireCost||0)
-      const totalItemCost=r.itemBuy*qty
-      const totalRuneCost=(r.natureCost+(r.fireCost||0))*qty
+      const costPer=itemBuy+natureCost+fireCost
+      const totalItemCost=itemBuy*qty
+      const totalRuneCost=(natureCost+fireCost)*qty
       const totalCost=totalItemCost+totalRuneCost
-      const totalProfit=r.profit*qty
+      const totalProfit=profit*qty
       plan.push({...r,qty,costPer,totalItemCost,totalRuneCost,totalCost,totalProfit,remainingAfter:Math.max(0,remaining-totalProfit)})
       remaining-=totalProfit
     }
