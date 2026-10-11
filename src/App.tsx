@@ -1569,7 +1569,10 @@ export default function App() {
   const alchemyGoalPlan = useMemo(()=>{
     let remaining=Math.max(1,Number(alchemyGoalTarget)||1)
     const eligible=alchemyRows
-      .filter((r:any)=>r.profit!==null&&r.profit>0&&r.itemBuy!==null&&r.natureCost!==null&&r.buyLimit!==null&&r.buyLimit>0&&!r.locked&&(!r.member||mode==='MEMBER'))
+      // Daily goal planner intentionally excludes hard-to-buy niche items:
+      // require GE buy limit >=70 and conservative 5% market capacity >=70 units/day.
+      // marketCapacityPerDay is null when any required item's volume data is missing.
+      .filter((r:any)=>r.profit!==null&&r.profit>0&&r.itemBuy!==null&&r.natureCost!==null&&r.buyLimit!==null&&r.buyLimit>=70&&r.marketCapacityPerDay!==null&&r.marketCapacityPerDay>=70&&r.capacityRate!==null&&r.capacityRate>0&&!r.locked&&(!r.member||mode==='MEMBER'))
       .sort((a:any,b:any)=>(b.profit??0)-(a.profit??0)||(b.capacityGpHour??0)-(a.capacityGpHour??0))
     const plan:any[]=[]
     for(const r of eligible){
@@ -2902,7 +2905,7 @@ export default function App() {
 
       {activeTab==='alchemyGoal'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
         <h2 style={{marginTop:0}}>High Alchemy — Kâr Hedefi Planlayıcı</h2>
-        <p style={{fontSize:11,color:'#8b949e'}}>Hedef net kârını gir. Program, canlı GE alış fiyatlarını, High Alchemy değerini, Nature rune maliyetini (Fire staff açıksa Fire rune maliyeti sıfır) ve GE'nin ürün başına alış limitini kullanarak hedefe ulaşacak bir liste oluşturur. Her ürün için bir adet 4 saatlik GE alış limiti kullanılır; aynı üründe limit aşılmaz. Sıralama net kâr/adet en yüksekten başlar.</p>
+        <p style={{fontSize:11,color:'#8b949e'}}>Hedef net kârını gir. Program canlı GE fiyatlarını ve rune maliyetlerini kullanır. Günlük plan yalnızca GE alış limiti en az 70 adet olan ve mevcut hacim verisine göre muhafazakâr piyasa kapasitesi en az 70 adet/gün olan ürünleri listeler. Hacim verisi eksik, düşük hacimli veya özel/nadir ürünler otomatik elenir. Her ürün için tek bir 4 saatlik GE alış limiti kullanılır; sıralama net kâr/adet en yüksekten başlar.</p>
         <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'end',padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8,marginBottom:12}}>
           <label style={{fontWeight:700}}>Hedef net kâr (GP)<br/><input type="number" min="1" step="10000" value={alchemyGoalTarget} onChange={e=>setAlchemyGoalTarget(Math.max(1,Number(e.target.value)||1))} style={{width:190,fontSize:18,fontWeight:800}}/></label>
           <div><div style={{fontSize:10,color:'#8b949e'}}>Planlanan net kâr</div><strong style={{fontSize:20,color:alchemyGoalPlan.complete?'#3fb950':'#f85149'}}>{fmt(alchemyGoalPlan.totalProfit)} GP</strong></div>
@@ -2915,7 +2918,7 @@ export default function App() {
           {alchemyGoalPlan.rows.map((r:any,i:number)=><tr key={r.id}><td>{i+1}</td><td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.member?'MEMBERS':'F2P'} • High Alchemy</div></td><td><b>{fmt(r.qty)}</b> / {fmt(r.buyLimit)} <div style={{fontSize:10,color:'#8b949e'}}>limit başına 4 saat</div></td><td>{fmt(r.itemBuy)} GP</td><td>{fmt(r.alchValue)} GP</td><td>{fmt(r.natureCost)} GP</td><td>{alchemyDefaults.fireStaff?'0 (Fire staff)':fmt(r.fireCost)+' GP'}</td><td>{fmt(r.costPer)} GP</td><td style={{color:'#3fb950'}}><b>{fmt(r.profit)} GP</b></td><td>{fmt(r.totalItemCost)} GP</td><td>{fmt(r.totalRuneCost)} GP</td><td>{fmt(r.totalCost)} GP</td><td style={{color:'#3fb950'}}><b>{fmt(r.totalProfit)} GP</b></td><td>{fmt(r.gpHour)}</td></tr>)}
           {!alchemyGoalPlan.rows.length&&<tr><td colSpan={14}>Şu anda alış limiti ve fiyat bilgisi bulunan kârlı High Alchemy ürünü yok. GE fiyatları/ürün verileri güncellendikten sonra tekrar dene.</td></tr>}
           </tbody></table></div>
-        <p style={{fontSize:10,color:'#8b949e',marginTop:8}}>Fiyatlar GE Wiki API verilerinden otomatik alınır; alış fiyatı anlık kesin dolum fiyatı değildir. GE alış limitleri mapping verisinde mevcut olduğunda kullanılır. Limit verisi olmayan ürünler plana alınmaz. Nature rune ve gerekirse Fire rune maliyetleri kârdan düşülür; Fire staff varsayımı mevcut Alchemy sekmesindeki ayara bağlıdır. GP/h tahmini işlem hızına dayanır ve piyasa kapasitesi garantisi değildir.</p>
+        <p style={{fontSize:10,color:'#8b949e',marginTop:8}}>Fiyatlar GE Wiki API verilerinden otomatik alınır; alış fiyatı anlık kesin dolum fiyatı değildir. Plan filtresi: GE alış limiti ≥70 adet ve muhafazakâr piyasa kapasitesi ≥70 adet/gün; eksik hacim verisi olan ürünler alınmaz. Nature rune ve gerekirse Fire rune maliyetleri kârdan düşülür. GP/h işlem hızına dayalı tahmindir; gerçek emir dolumunu garanti etmez.</p>
       </section>}
 
             {activeTab==='dashboard'&&<div>
