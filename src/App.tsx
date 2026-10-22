@@ -1690,7 +1690,7 @@ export default function App() {
         const capPerDay=dailyCaps.length===volumesNeeded.length&&dailyCaps.length>0?Math.min(...dailyCaps):null
         const capacityRate=capPerDay===null?null:Math.min(rate,capPerDay/Math.max(1,dailyMaxHours))
         const capacityGpHour=profit===null||capacityRate===null?null:profit*capacityRate
-        const positiveVolumes=volumesNeeded.filter((v:any)=>v!==null&&v>0)
+        const positiveVolumes: number[] = volumesNeeded.filter((v: number | null | undefined): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0)
         const volumeValue=positiveVolumes.length?Math.min(...positiveVolumes):null
         return {...base,id:`${tab}-${h.key}`,tab,buyLimit:rowBuyLimit,inputCost,outputPrice,tax,netSell,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,volume:volumeValue,inputs,output,hasPrices:inputCost!==null&&outputPrice!==null&&profit!==null}
       }
