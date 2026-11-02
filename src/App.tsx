@@ -1273,7 +1273,7 @@ export default function App() {
   const [herbloreSort,setHerbloreSort]=useState('GP_DESC')
   const [herbloreProfitFilter,setHerbloreProfitFilter]=useState('ALL')
   const [herbloreShowLocked,setHerbloreShowLocked]=useState(true)
-  const [herbloreShowUnpriced,setHerbloreShowUnpriced]=useState(false)
+  const [herbloreShowUnpriced,setHerbloreShowUnpriced]=useState(true)
   const [orderHistory,setOrderHistory]=useState<OrderHistoryRow[]>(()=>{try{return JSON.parse(localStorage.getItem('osrs-order-history-v56')||'[]')}catch{return[]}})
   const [historyDraft,setHistoryDraft]=useState({item:'',side:'BUY' as OrderSide,quantity:500,orderPrice:0,filledQuantity:0,fillHours:'',status:'FILLED' as OrderStatus,averageFillPrice:''})
 
@@ -1646,14 +1646,23 @@ export default function App() {
   // Herblore live-profit views: every price is read from current Wiki GE data.
   // Rates are planning estimates, not editable prices or guaranteed production rates.
   const herbloreRows = useMemo(()=>{
+    // Canonical 15 grimy herbs. Explicit Wiki item IDs prevent name-matching gaps.
     const herbDefs=[
-      {key:'guam',herb:'Guam leaf',level:3},{key:'marrentill',herb:'Marrentill',level:5},
-      {key:'tarromin',herb:'Tarromin',level:11},{key:'harralander',herb:'Harralander',level:20},
-      {key:'ranarr',herb:'Ranarr weed',level:25},{key:'toadflax',herb:'Toadflax',level:30},
-      {key:'irit',herb:'Irit leaf',level:40},{key:'avantoe',herb:'Avantoe',level:48},
-      {key:'kwuarm',herb:'Kwuarm',level:54},{key:'huasca',herb:'Huasca',level:58},{key:'snapdragon',herb:'Snapdragon',level:59},
-      {key:'cadantine',herb:'Cadantine',level:65},{key:'lantadyme',herb:'Lantadyme',level:67},
-      {key:'dwarfweed',herb:'Dwarf weed',level:70},{key:'torstol',herb:'Torstol',level:75},
+      {key:'guam',herb:'Guam leaf',grimyId:199,level:3},
+      {key:'marrentill',herb:'Marrentill',grimyId:201,level:5},
+      {key:'tarromin',herb:'Tarromin',grimyId:203,level:11},
+      {key:'harralander',herb:'Harralander',grimyId:205,level:20},
+      {key:'ranarr',herb:'Ranarr weed',grimyId:207,level:25},
+      {key:'irit',herb:'Irit leaf',grimyId:209,level:40},
+      {key:'avantoe',herb:'Avantoe',grimyId:211,level:48},
+      {key:'kwuarm',herb:'Kwuarm',grimyId:213,level:54},
+      {key:'cadantine',herb:'Cadantine',grimyId:215,level:65},
+      {key:'dwarfweed',herb:'Dwarf weed',grimyId:217,level:70},
+      {key:'torstol',herb:'Torstol',grimyId:219,level:75},
+      {key:'lantadyme',herb:'Lantadyme',grimyId:2485,level:67},
+      {key:'snapdragon',herb:'Snapdragon',grimyId:3051,level:59},
+      {key:'toadflax',herb:'Toadflax',grimyId:3049,level:30},
+      {key:'huasca',herb:'Huasca',grimyId:30094,level:58},
     ]
     const vialBuy=buy('Vial of water')
     const vialItem=getItem('Vial of water')
@@ -1666,7 +1675,7 @@ export default function App() {
       const grimyName=`Grimy ${h.herb.toLowerCase()}`
       const cleanName=h.herb
       const unfinishedName=`${h.herb} potion (unf)`
-      const grimyItem=getItem(grimyName), cleanItem=getItem(cleanName), unfinishedItem=getItem(unfinishedName)
+      const grimyItem=mapping.find((item:any)=>Number(item.id)===h.grimyId)||getItem(grimyName), cleanItem=getItem(cleanName), unfinishedItem=getItem(unfinishedName)
       const grimyBuy=grimyItem&&prices[grimyItem.id]?.high!=null?Number(prices[grimyItem.id].high):null
       const cleanBuy=cleanItem&&prices[cleanItem.id]?.high!=null?Number(prices[cleanItem.id].high):null
       const cleanSell=cleanItem&&prices[cleanItem.id]?.low!=null?Number(prices[cleanItem.id].low):null
