@@ -1711,13 +1711,14 @@ export default function App() {
           const herbLimit=Number(grimyItem?.limit||0)||null
           const natureLimit=Number(natureItem?.limit||0)>0?Math.floor(Number(natureItem.limit)*27/2):null
           const earthLimit=degrimeEarthStaff?null:(Number(earthItem?.limit||0)>0?Math.floor(Number(earthItem.limit)*27/4):null)
-          const limits=[herbLimit,natureLimit,...(!degrimeEarthStaff?[earthLimit]:[])].filter((v:any)=>typeof v==='number'&&v>0)
+          const limits=[herbLimit,natureLimit,...(!degrimeEarthStaff?[earthLimit]:[])].filter((v): v is number=>typeof v==='number'&&Number.isFinite(v)&&v>0)
           const buyLimit=limits.length===(degrimeEarthStaff?2:3)?Math.min(...limits):null
-          const caps=[grimyVol,cleanVol,natureVol===null?null:natureVol*27/2,...(!degrimeEarthStaff?[earthVol===null?null:earthVol*27/4]:[])].filter((v:any)=>typeof v==='number'&&v>0).map((v:number)=>v*0.05)
+          const caps=[grimyVol,cleanVol,natureVol===null?null:natureVol*27/2,...(!degrimeEarthStaff?[earthVol===null?null:earthVol*27/4]:[])].filter((v): v is number=>typeof v==='number'&&Number.isFinite(v)&&v>0).map(v=>v*0.05)
           const capPerDay=caps.length===(degrimeEarthStaff?3:4)?Math.min(...caps):null
           const capacityRate=capPerDay===null?null:Math.min(rate,capPerDay/Math.max(1,dailyMaxHours))
           const capacityGpHour=profit===null||capacityRate===null?null:profit*capacityRate
-          const volumeValue=[grimyVol,cleanVol].filter((v:any)=>typeof v==='number'&&v>0).length?Math.min(...[grimyVol,cleanVol].filter((v:any)=>typeof v==='number'&&v>0)):null
+          const validVolumes=[grimyVol,cleanVol].filter((v): v is number=>typeof v==='number'&&Number.isFinite(v)&&v>0)
+          const volumeValue=validVolumes.length?Math.min(...validVolumes):null
           const magicLocked=Number(levels.Magic||1)<70
           return {...base,id:`degrime-${h.key}`,tab:'degrime',levelLocked:currentLevel<h.level||magicLocked,magicLocked,spell:'Degrime (Magic 70)',buyLimit,inputCost,outputPrice:cleanSell,tax:taxClean,netSell:cleanNet,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,volume:volumeValue,inputs:[`${grimyName} ×1: ${grimyBuy===null?'fiyat yok':fmt(grimyBuy)} GP`,natureBuy===null?'Nature rune ×2/cast: fiyat yok':`Nature rune: 2 / 27 herb = ${fmt(2*natureBuy/27)} GP/herb`,degrimeEarthStaff?'Earth staff: 4 Earth rune maliyeti yok':earthBuy===null?'Earth rune ×4/cast: fiyat yok':`Earth rune: 4 / 27 herb = ${fmt(4*earthBuy/27)} GP/herb`],output:cleanName,hasPrices:inputCost!==null&&cleanSell!==null&&profit!==null}
         })(),
