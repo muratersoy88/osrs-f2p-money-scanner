@@ -1274,6 +1274,7 @@ export default function App() {
   const [herbloreProfitFilter,setHerbloreProfitFilter]=useState('ALL')
   const [herbloreShowLocked,setHerbloreShowLocked]=useState(true)
   const [herbloreShowUnpriced,setHerbloreShowUnpriced]=useState(true)
+  const [herbloreMinVolume,setHerbloreMinVolume]=useState('0')
   const [orderHistory,setOrderHistory]=useState<OrderHistoryRow[]>(()=>{try{return JSON.parse(localStorage.getItem('osrs-order-history-v56')||'[]')}catch{return[]}})
   const [historyDraft,setHistoryDraft]=useState({item:'',side:'BUY' as OrderSide,quantity:500,orderPrice:0,filledQuantity:0,fillHours:'',status:'FILLED' as OrderStatus,averageFillPrice:''})
 
@@ -1705,8 +1706,11 @@ export default function App() {
         const capacityRate=capPerDay===null?null:Math.min(rate,capPerDay/Math.max(1,dailyMaxHours))
         const capacityGpHour=profit===null||capacityRate===null?null:profit*capacityRate
         const positiveVolumes: number[] = volumesNeeded.filter((v: number | null | undefined): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0)
-        const volumeValue=positiveVolumes.length?Math.min(...positiveVolumes):null
-        return {...base,id:`${tab}-${h.key}`,tab,buyLimit:rowBuyLimit,inputCost,outputPrice,tax,netSell,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,volume:volumeValue,inputs,output,hasPrices:inputCost!==null&&outputPrice!==null&&profit!==null}
+        const volumeValue=positiveVolumes.length===volumesNeeded.length&&positiveVolumes.length>0?Math.min(...positiveVolumes):null
+        const inputVolumes=tab==='clean-potion'?[cleanVol,vialVol]:tab==='grimy-potion'?[grimyVol,vialVol]:[grimyVol]
+        const normalizedInputVolume=inputVolumes.every((v:any)=>typeof v==='number'&&Number.isFinite(v))?Math.min(...inputVolumes as number[]):null
+        const outputVolume=tab==='clean-potion'||tab==='grimy-potion'?unfinishedVol:cleanVol
+        return {...base,id:`${tab}-${h.key}`,tab,buyLimit:rowBuyLimit,inputCost,outputPrice,tax,netSell,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,volume:volumeValue,inputVolume:normalizedInputVolume,outputVolume,inputs,output,hasPrices:inputCost!==null&&outputPrice!==null&&profit!==null}
       }
       return {
         grimyClean:make('grimy-clean',grimyBuy,cleanSell,cleanProfit,cleanRate,[`${grimyName} ×1: ${grimyBuy===null?'fiyat yok':fmt(grimyBuy)} GP`],cleanName,[grimyVol,cleanVol]),
@@ -1729,7 +1733,7 @@ export default function App() {
           const validVolumes=[grimyVol,cleanVol].filter((v): v is number=>typeof v==='number'&&Number.isFinite(v)&&v>0)
           const volumeValue=validVolumes.length?Math.min(...validVolumes):null
           const magicLocked=Number(levels.Magic||1)<70
-          return {...base,id:`degrime-${h.key}`,tab:'degrime',levelLocked:currentLevel<h.level||magicLocked,magicLocked,spell:'Degrime (Magic 70)',buyLimit,inputCost,outputPrice:cleanSell,tax:taxClean,netSell:cleanNet,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,volume:volumeValue,inputs:[`${grimyName} ×1: ${grimyBuy===null?'fiyat yok':fmt(grimyBuy)} GP`,natureBuy===null?'Nature rune ×2/cast: fiyat yok':`Nature rune: 2 / 27 herb = ${fmt(2*natureBuy/27)} GP/herb`,degrimeEarthStaff?'Earth staff: 4 Earth rune maliyeti yok':earthBuy===null?'Earth rune ×4/cast: fiyat yok':`Earth rune: 4 / 27 herb = ${fmt(4*earthBuy/27)} GP/herb`],output:cleanName,hasPrices:inputCost!==null&&cleanSell!==null&&profit!==null}
+          return {...base,id:`degrime-${h.key}`,tab:'degrime',levelLocked:currentLevel<h.level||magicLocked,magicLocked,spell:'Degrime (Magic 70)',buyLimit,inputCost,outputPrice:cleanSell,tax:taxClean,netSell:cleanNet,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,volume:volumeValue,inputVolume:grimyVol,outputVolume:cleanVol,inputs:[`${grimyName} ×1: ${grimyBuy===null?'fiyat yok':fmt(grimyBuy)} GP`,natureBuy===null?'Nature rune ×2/cast: fiyat yok':`Nature rune: 2 / 27 herb = ${fmt(2*natureBuy/27)} GP/herb`,degrimeEarthStaff?'Earth staff: 4 Earth rune maliyeti yok':earthBuy===null?'Earth rune ×4/cast: fiyat yok':`Earth rune: 4 / 27 herb = ${fmt(4*earthBuy/27)} GP/herb`],output:cleanName,hasPrices:inputCost!==null&&cleanSell!==null&&profit!==null}
         })(),
       }
     })
@@ -1741,9 +1745,10 @@ export default function App() {
       .filter((r:any)=>!herbloreSearch||`${r.herb} ${r.grimyName} ${r.cleanName} ${r.unfinishedName} ${r.output} ${r.spell||''}`.toLowerCase().includes(herbloreSearch.toLowerCase()))
       .filter((r:any)=>herbloreShowLocked||(!r.levelLocked&&!r.accountLocked))
       .filter((r:any)=>herbloreShowUnpriced||r.hasPrices)
+      .filter((r:any)=>Number(herbloreMinVolume)<=0||((r.volume??-1)>=Number(herbloreMinVolume)))
       .filter((r:any)=>herbloreProfitFilter==='ALL'||(herbloreProfitFilter==='PROFIT'?(r.profit??-Infinity)>0:(r.profit??0)<=0))
       .sort((a:any,b:any)=>herbloreSort==='GP_ASC'?((a.gpHour??-Infinity)-(b.gpHour??-Infinity)):herbloreSort==='PROFIT_DESC'?((b.profit??-Infinity)-(a.profit??-Infinity)):herbloreSort==='LEVEL_ASC'?a.level-b.level:herbloreSort==='VOLUME_DESC'?((b.volume??-Infinity)-(a.volume??-Infinity)):herbloreSort==='NAME_ASC'?a.herb.localeCompare(b.herb):((b.gpHour??-Infinity)-(a.gpHour??-Infinity)))
-  },[herbloreRows,herbloreSubTab,herbloreSearch,herbloreShowLocked,herbloreShowUnpriced,herbloreProfitFilter,herbloreSort])
+  },[herbloreRows,herbloreSubTab,herbloreSearch,herbloreShowLocked,herbloreShowUnpriced,herbloreProfitFilter,herbloreSort,herbloreMinVolume])
 
   const loadSmartSeries=async(itemName:string)=>{
     const item=getItem(itemName)
@@ -2983,15 +2988,16 @@ export default function App() {
           <input value={herbloreSearch} onChange={e=>setHerbloreSearch(e.target.value)} placeholder="Herb / potion ara..." style={{minWidth:210}}/>
           <select value={herbloreProfitFilter} onChange={e=>setHerbloreProfitFilter(e.target.value)}><option value="ALL">Kâr/Zarar: tümü</option><option value="PROFIT">Yalnızca kârlı</option><option value="LOSS">Zarar / fiyat eksik</option></select>
           <select value={herbloreSort} onChange={e=>setHerbloreSort(e.target.value)}><option value="GP_DESC">Expected GP/h ↓</option><option value="GP_ASC">Expected GP/h ↑</option><option value="PROFIT_DESC">Kâr/adet ↓</option><option value="LEVEL_ASC">Herblore level ↑</option><option value="VOLUME_DESC">Hacim ↓</option><option value="NAME_ASC">İsim A–Z</option></select>
+          <select value={herbloreMinVolume} onChange={e=>setHerbloreMinVolume(e.target.value)}><option value="0">Min. 24h hacim: Tümü</option><option value="100">Min. 100 adet</option><option value="250">Min. 250 adet</option><option value="500">Min. 500 adet</option><option value="1000">Min. 1.000 adet</option><option value="2500">Min. 2.500 adet</option><option value="5000">Min. 5.000 adet</option><option value="10000">Min. 10.000 adet</option></select>
           <label style={{display:'flex',alignItems:'center',gap:5}}><input type="checkbox" checked={herbloreShowLocked} onChange={e=>setHerbloreShowLocked(e.target.checked)}/> Level/üyelik kilitlerini göster</label>
           <label style={{display:'flex',alignItems:'center',gap:5}}><input type="checkbox" checked={herbloreShowUnpriced} onChange={e=>setHerbloreShowUnpriced(e.target.checked)}/> Fiyatı eksik kayıtları göster</label>
         </div>
         <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Herblore seviyen: <b>{levels.Herblore||1}</b> • Gösterilen satır: <b>{herbloreCurrentRows.length}</b> • Güncel piyasa: {updated?updated.toLocaleString('tr-TR'):'Henüz yüklenmedi'}</div>
-        <div className="tableBox"><table><thead><tr><th>#</th><th>Herb / işlem</th><th>Level / erişim</th><th>Alınan ürün ve maliyetler</th><th>Satış ürünü / canlı satış</th><th>GE vergi</th><th>Net maliyet</th><th>Kâr / adet</th><th>Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>24h hacim</th><th>Alım limiti</th></tr></thead><tbody>
-          {herbloreCurrentRows.map((r:any,i:number)=><tr key={r.id} style={{opacity:(r.levelLocked||r.accountLocked)?0.62:1}}><td>{i+1}</td><td><b>{r.herb}</b><div style={{fontSize:10,color:'#8b949e'}}>{herbloreSubTab==='grimyClean'?'Temizleme':herbloreSubTab==='cleanPotion'?'Unfinished potion üretimi':herbloreSubTab==='grimyPotion'?'Temizleme + unfinished potion':'Degrime • Magic 70'}</div></td><td><b>{r.level}</b>{r.levelLocked&&<div style={{fontSize:10,color:'#d29922'}}>🔒 {[r.magicLocked?'Magic 70 gerekli':null,(levels.Herblore||1)<r.level?`${r.level-(levels.Herblore||1)} Herblore level eksik`:null].filter(Boolean).join(' • ')}</div>}{r.accountLocked&&<div style={{fontSize:10,color:'#d29922'}}>MEMBERS</div>}</td><td>{r.inputs.map((x:string,j:number)=><div key={j}>{x}</div>)}</td><td>{r.output}: {r.outputPrice===null?'FİYAT YOK':`${fmt(r.outputPrice)} GP`}</td><td>{fmt(r.tax)} GP</td><td>{fmt(r.inputCost)} GP</td><td style={{color:r.profit===null?'#8b949e':r.profit>0?'#3fb950':'#f85149'}}><b>{fmt(r.profit)} GP</b></td><td>{fmt(r.rate)}</td><td><b>{fmt(r.gpHour)}</b></td><td>{fmt(r.capacityGpHour)}</td><td>{fmt(r.volume)}</td><td>{fmt(r.buyLimit)}</td></tr>)}
-          {!herbloreCurrentRows.length&&<tr><td colSpan={13}>Filtreye uygun fiyatlı Herblore işlemi bulunamadı. Fiyatları güncelle veya “Fiyatı eksik kayıtları göster” seçeneğini aç.</td></tr>}
+        <div className="tableBox"><table><thead><tr><th>#</th><th>Herb / işlem</th><th>Level / erişim</th><th>Alınan ürün ve maliyetler</th><th>Satış ürünü / canlı satış</th><th>GE vergi</th><th>Net maliyet</th><th>Kâr / adet</th><th>Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Girdi hacmi / 24h</th><th>Çıktı hacmi / 24h</th><th>Alım limiti</th></tr></thead><tbody>
+          {herbloreCurrentRows.map((r:any,i:number)=><tr key={r.id} style={{opacity:(r.levelLocked||r.accountLocked)?0.62:1}}><td>{i+1}</td><td><b>{r.herb}</b><div style={{fontSize:10,color:'#8b949e'}}>{herbloreSubTab==='grimyClean'?'Temizleme':herbloreSubTab==='cleanPotion'?'Unfinished potion üretimi':herbloreSubTab==='grimyPotion'?'Temizleme + unfinished potion':'Degrime • Magic 70'}</div></td><td><b>{r.level}</b>{r.levelLocked&&<div style={{fontSize:10,color:'#d29922'}}>🔒 {[r.magicLocked?'Magic 70 gerekli':null,(levels.Herblore||1)<r.level?`${r.level-(levels.Herblore||1)} Herblore level eksik`:null].filter(Boolean).join(' • ')}</div>}{r.accountLocked&&<div style={{fontSize:10,color:'#d29922'}}>MEMBERS</div>}</td><td>{r.inputs.map((x:string,j:number)=><div key={j}>{x}</div>)}</td><td>{r.output}: {r.outputPrice===null?'FİYAT YOK':`${fmt(r.outputPrice)} GP`}</td><td>{fmt(r.tax)} GP</td><td>{fmt(r.inputCost)} GP</td><td style={{color:r.profit===null?'#8b949e':r.profit>0?'#3fb950':'#f85149'}}><b>{fmt(r.profit)} GP</b></td><td>{fmt(r.rate)}</td><td><b>{fmt(r.gpHour)}</b></td><td>{fmt(r.capacityGpHour)}</td><td>{fmt(r.inputVolume)}</td><td>{fmt(r.outputVolume)}</td><td>{fmt(r.buyLimit)}</td></tr>)}
+          {!herbloreCurrentRows.length&&<tr><td colSpan={14}>Filtreye uygun fiyatlı Herblore işlemi bulunamadı. Fiyatları güncelle veya “Fiyatı eksik kayıtları göster” seçeneğini aç.</td></tr>}
         </tbody></table></div>
-        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Satış geliri = güncel GE sell fiyatı − GE vergisi. GP/h, normal temizleme için 5.000 adet/saat, unfinished potion üretimi için 2.500 adet/saat ve Degrime için 600 cast/saat × 27 herb varsayar. Degrime maliyetine herb başına 2/27 Nature rune ve Earth staff yoksa 4/27 Earth rune eklenir. Capacity GP/h, ilgili girdilerin ve çıktının 24 saatlik hacminin %5'i ve günlük çalışma süresi üzerinden sınırlandırılır. “Unf Potion” tam iksir değildir; ikinci bileşen eklenmemiş unfinished potion'dır.</p>
+        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Satış geliri = güncel GE sell fiyatı − GE vergisi. GP/h, normal temizleme için 5.000 adet/saat, unfinished potion üretimi için 2.500 adet/saat ve Degrime için 600 cast/saat × 27 herb varsayar. Degrime maliyetine herb başına 2/27 Nature rune ve Earth staff yoksa 4/27 Earth rune eklenir. Girdi ve çıktıların 24 saatlik hacimleri ayrı gösterilir; hacim filtresi işlemdeki en düşük hacimli piyasa tarafını (darboğazı) esas alır. Capacity GP/h, ilgili girdilerin ve çıktının 24 saatlik hacminin %5'i ve günlük çalışma süresi üzerinden sınırlandırılır. “Unf Potion” tam iksir değildir; ikinci bileşen eklenmemiş unfinished potion'dır.</p>
       </section>}
 
       {activeTab==='alchemy'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
