@@ -1521,12 +1521,13 @@ export default function App() {
   const items = useMemo(() => {
     const result: Record<string, any> = {}
     mapping.forEach((i) => {
-      result[i.name.toLowerCase()] = i
+      const itemName=typeof i?.name==='string'?i.name.trim():''
+      if(itemName) result[itemName.toLowerCase()] = i
     })
     return result
   }, [mapping])
 
-  const getItem = (name: string) => items[name.toLowerCase()]
+  const getItem = (name: string) => typeof name==='string'&&name.trim()?items[name.trim().toLowerCase()]:undefined
 
   const buy = (name: string): number | null => {
     const i = getItem(name)
@@ -2536,7 +2537,8 @@ export default function App() {
     const priority=(s:string)=>s==='MEASURED'||s==='GERÇEK'||s==='LIVE GE + MEASURED RATE'?4:s.startsWith('LIVE GE')?3:s==='USER THEORY'||s==='LIVE/ESTIMATE'?2:1
     const byName=new Map<string,any>()
     all.forEach(x=>{
-      const key=x.name.trim().toLowerCase()
+      const key=typeof x?.name==='string'?x.name.trim().toLowerCase():''
+      if(!key)return
       const prev=byName.get(key)
       if(!prev||priority(x.source)>priority(prev.source)||(priority(x.source)===priority(prev.source)&&(x.gp??0)>(prev.gp??0))) byName.set(key,x)
     })
@@ -2554,7 +2556,8 @@ export default function App() {
     // Verified V5 production methods: no historical/stale prices, only current GE data.
     v5Rows.forEach((r:any)=>{
       if(!r.open||r.quality!=='VERIFIED'||!r.economyReady||!r.economy?.inputs?.length||!r.economy?.outputName||!r.rate||r.rate<=0||r.member&&mode!=='MEMBER')return
-      const ins=r.economy.inputs.map((x:any)=>({name:x.name,qty:Number(x.qty)||1}))
+      const ins=r.economy.inputs.filter((x:any)=>typeof x?.name==='string'&&x.name.trim()).map((x:any)=>({name:x.name.trim(),qty:Number(x.qty)||1}))
+      if(!ins.length||ins.length!==r.economy.inputs.length)return
       const pairs=ins.map((x:any)=>pair(x.name));const out=pair(r.economy.outputName)
       if(pairs.some((x:any)=>!x)||!out)return
       const vols=[...pairs.map((x:any)=>x.vol),out.vol]
@@ -2572,7 +2575,7 @@ export default function App() {
       ]
       defs.forEach((d:any)=>{
         if(!d.r||d.r.levelLocked||mode!=='MEMBER')return
-        const ins=d.inputs.map((x:any)=>({name:x.name,qty:x.qty}));const ip=ins.map((x:any)=>pair(x.name));const op=pair(d.output)
+        const ins=d.inputs.filter((x:any)=>typeof x?.name==='string'&&x.name.trim()).map((x:any)=>({name:x.name.trim(),qty:x.qty}));if(ins.length!==d.inputs.length||typeof d.output!=='string'||!d.output.trim())return;const ip=ins.map((x:any)=>pair(x.name));const op=pair(d.output)
         if(ip.some((x:any)=>!x)||!op)return
         const vols=[...ip.map((x:any)=>x.vol),op.vol];if(vols.some(x=>x<=0))return
         const lims=ins.map((x:any,i:number)=>ip[i].limit>0?Math.floor(ip[i].limit/x.qty):0);if(lims.some((x:number)=>x<=0))return
