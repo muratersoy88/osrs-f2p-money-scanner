@@ -1286,7 +1286,6 @@ export default function App() {
   const [herbloreMinVolume,setHerbloreMinVolume]=useState('0')
   const [portfolioCapital,setPortfolioCapital]=useState(()=>Math.max(1,Number(localStorage.getItem('osrs-portfolio-capital-v645')||10000000)))
   const [portfolioProfile,setPortfolioProfile]=useState<'FAST'|'BALANCED'|'PATIENT'>('BALANCED')
-  const [portfolioRisk,setPortfolioRisk]=useState<'LOW'|'MEDIUM'|'HIGH'>('LOW')
   const [orderHistory,setOrderHistory]=useState<OrderHistoryRow[]>(()=>{try{return JSON.parse(localStorage.getItem('osrs-order-history-v56')||'[]')}catch{return[]}})
   const [historyDraft,setHistoryDraft]=useState({item:'',side:'BUY' as OrderSide,quantity:500,orderPrice:0,filledQuantity:0,fillHours:'',status:'FILLED' as OrderStatus,averageFillPrice:''})
 
