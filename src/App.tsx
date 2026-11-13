@@ -1531,29 +1531,37 @@ export default function App() {
     const top=mapping.map((item:any)=>({item,vol:Number(volumes[item.id]?.highPriceVolume||0)+Number(volumes[item.id]?.lowPriceVolume||0)})).filter(x=>x.vol>=1000).sort((a,b)=>b.vol-a.vol).slice(0,30)
     if(Date.now()-Number(localStorage.getItem('osrs-market-weekly-time-v2')||0)<30*60_000)return
     if(!top.length)return
-    const scanStarted=Date.now();setMarketScanTime(scanStarted);localStorage.setItem('osrs-market-weekly-time-v2',String(scanStarted))
     setMarketWeeklyLoading(true)
     ;(async()=>{
-      const results=await Promise.all(top.map(async({item})=>{
-        try{
-          const res=await fetch(`${API}/timeseries?timestep=1h&id=${item.id}`);if(!res.ok)return null
-          const json=await res.json();const cutoff=Math.floor(Date.now()/1000)-7*24*60*60
-          const pts=(json.data||[]).filter((x:any)=>Number(x.timestamp)>=cutoff)
-          const hv=pts.reduce((n:number,x:any)=>n+Number(x.highPriceVolume||0),0),lv=pts.reduce((n:number,x:any)=>n+Number(x.lowPriceVolume||0),0)
-          const hp=hv?pts.reduce((n:number,x:any)=>n+Number(x.avgHighPrice||0)*Number(x.highPriceVolume||0),0)/hv:null
-          const lp=lv?pts.reduce((n:number,x:any)=>n+Number(x.avgLowPrice||0)*Number(x.lowPriceVolume||0),0)/lv:null
-          const weekdayVolume=pts.filter((x:any)=>new Date(Number(x.timestamp)*1000).getDay()!==0&&new Date(Number(x.timestamp)*1000).getDay()!==6).reduce((n:number,x:any)=>n+Number(x.highPriceVolume||0)+Number(x.lowPriceVolume||0),0)
-          const weekendVolume=pts.filter((x:any)=>[0,6].includes(new Date(Number(x.timestamp)*1000).getDay())).reduce((n:number,x:any)=>n+Number(x.highPriceVolume||0)+Number(x.lowPriceVolume||0),0)
-          const hourTotals:Record<number,number>={};pts.forEach((x:any)=>{const h=new Date(Number(x.timestamp)*1000).getHours();hourTotals[h]=(hourTotals[h]||0)+Number(x.highPriceVolume||0)+Number(x.lowPriceVolume||0)})
-          const busiestHour=Number(Object.entries(hourTotals).sort((a:any,b:any)=>b[1]-a[1])[0]?.[0]||0)
-          if(!pts.length)return null
-          const samples=pts.map((x:any)=>({t:Number(x.timestamp)*1000,high:x.avgHighPrice==null?null:Number(x.avgHighPrice),low:x.avgLowPrice==null?null:Number(x.avgLowPrice),highVolume:Number(x.highPriceVolume||0),lowVolume:Number(x.lowPriceVolume||0)}))
-          return [String(item.id),{avgHigh:hp,avgLow:lp,highVolume:hv,lowVolume:lv,points:pts.length,weekdayVolume,weekendVolume,busiestHour,fetchedAt:Date.now(),samples}] as const
-        }catch{return null}
-      }))
-      if(!cancelled){const rows=results.filter(Boolean) as Array<readonly [string,MarketWeeklyRow]>;setMarketWeekly(old=>({...old,...Object.fromEntries(rows)}))}
-      if(!cancelled)setMarketWeeklyLoading(false)
-    })()
+      const results:Array<readonly [string,MarketWeeklyRow]|null>=[]
+      // Keep requests in small batches: firing 30 timeseries calls simultaneously can be throttled.
+      for(let i=0;i<top.length;i+=5){
+        const batch=await Promise.all(top.slice(i,i+5).map(async({item})=>{
+          try{
+            const res=await fetch(`${API}/timeseries?timestep=1h&id=${item.id}`);if(!res.ok)return null
+            const json=await res.json();const cutoff=Math.floor(Date.now()/1000)-7*24*60*60
+            const pts=(json.data||[]).filter((x:any)=>Number(x.timestamp)>=cutoff)
+            if(!pts.length)return null
+            const hv=pts.reduce((n:number,x:any)=>n+Number(x.highPriceVolume||0),0),lv=pts.reduce((n:number,x:any)=>n+Number(x.lowPriceVolume||0),0)
+            const hp=hv?pts.reduce((n:number,x:any)=>n+Number(x.avgHighPrice||0)*Number(x.highPriceVolume||0),0)/hv:null
+            const lp=lv?pts.reduce((n:number,x:any)=>n+Number(x.avgLowPrice||0)*Number(x.lowPriceVolume||0),0)/lv:null
+            const weekdayVolume=pts.filter((x:any)=>new Date(Number(x.timestamp)*1000).getDay()!==0&&new Date(Number(x.timestamp)*1000).getDay()!==6).reduce((n:number,x:any)=>n+Number(x.highPriceVolume||0)+Number(x.lowPriceVolume||0),0)
+            const weekendVolume=pts.filter((x:any)=>[0,6].includes(new Date(Number(x.timestamp)*1000).getDay())).reduce((n:number,x:any)=>n+Number(x.highPriceVolume||0)+Number(x.lowPriceVolume||0),0)
+            const hourTotals:Record<number,number>={};pts.forEach((x:any)=>{const h=new Date(Number(x.timestamp)*1000).getHours();hourTotals[h]=(hourTotals[h]||0)+Number(x.highPriceVolume||0)+Number(x.lowPriceVolume||0)})
+            const busiestHour=Number(Object.entries(hourTotals).sort((a:any,b:any)=>b[1]-a[1])[0]?.[0]||0)
+            const samples=pts.map((x:any)=>({t:Number(x.timestamp)*1000,high:x.avgHighPrice==null?null:Number(x.avgHighPrice),low:x.avgLowPrice==null?null:Number(x.avgLowPrice),highVolume:Number(x.highPriceVolume||0),lowVolume:Number(x.lowPriceVolume||0)}))
+            return [String(item.id),{avgHigh:hp,avgLow:lp,highVolume:hv,lowVolume:lv,points:pts.length,weekdayVolume,weekendVolume,busiestHour,fetchedAt:Date.now(),samples}] as const
+          }catch{return null}
+        }))
+        results.push(...batch)
+      }
+      if(!cancelled){
+        const rows=results.filter(Boolean) as Array<readonly [string,MarketWeeklyRow]>
+        if(rows.length){setMarketWeekly(old=>({...old,...Object.fromEntries(rows)}));const completed=Date.now();setMarketScanTime(completed);localStorage.setItem('osrs-market-weekly-time-v2',String(completed))}
+        else {setMarketScanTime(0);localStorage.setItem('osrs-market-weekly-time-v2','0')}
+        setMarketWeeklyLoading(false)
+      }
+    })().catch(()=>{if(!cancelled){setMarketScanTime(0);localStorage.setItem('osrs-market-weekly-time-v2','0');setMarketWeeklyLoading(false)}})
   },[updated,mapping,volumes])
 
   useEffect(() => {
@@ -3215,7 +3223,7 @@ export default function App() {
         <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:10}}><label style={{display:'flex',gap:6,alignItems:'center'}}>İşlem profili <select value={portfolioProfile} onChange={e=>setPortfolioProfile(e.target.value as any)}><option value="FAST">FAST — mevcut fiyattan hızlı</option><option value="BALANCED">BALANCED — orta seviye limit emir</option><option value="PATIENT">PATIENT — daha avantajlı fiyatı bekle</option></select></label>
           <label style={{display:'flex',gap:6,alignItems:'center'}}><input type="checkbox" checked={marketSoundEnabled} onChange={e=>setMarketSoundEnabled(e.target.checked)}/> Sesli fırsat alarmı</label>
           <button type="button" onClick={()=>{setMarketScanTime(0);localStorage.setItem('osrs-market-weekly-time-v2','0');refresh()}}>Fiyatları ve haftalık ortalamayı yenile</button>
-          <span style={{fontSize:11,color:'#8b949e'}}>Haftalık veri: {marketWeeklyLoading?'çekiliyor…':marketScanTime?new Date(marketScanTime).toLocaleString('tr-TR'):'henüz alınmadı'} • Yerel geçmiş: {Object.values(marketHistory).reduce((n,a)=>n+a.length,0).toLocaleString('tr-TR')} kayıt</span>
+          <span style={{fontSize:11,color:'#8b949e'}}>Haftalık veri: {marketWeeklyLoading?'çekiliyor…':marketScanTime?new Date(marketScanTime).toLocaleString('tr-TR'):'henüz alınmadı'} • Hazır ürün: {Object.keys(marketWeekly).length} • Yerel geçmiş: {Object.values(marketHistory).reduce((n,a)=>n+a.length,0).toLocaleString('tr-TR')} kayıt</span>
         </div>
         <div style={{padding:10,border:'1px solid #30363d',borderRadius:6,marginBottom:10}}><b>{marketRadarRows.length} ciddi fiyat iskontosu</b><div style={{fontSize:11,color:'#8b949e'}}>Alarm koşulu: 7 günlük ortalamaya göre ≥%10 düşüş • 24h hacim ≥1.000 • pozitif vergi sonrası ortalama dönüş • ürün başına en fazla %50 sermaye • 6 saatlik tahmini satış kapasitesi</div></div>
         {marketRadarRows.length?<div className="tableBox"><table><thead><tr><th>Ürün / karar</th><th>Alış emri koy</th><th>Satış emri koy</th><th>Alış miktarı</th><th>Bağlanacak GP</th><th>Net kâr</th><th>Net GP/h</th><th>Alış / satış dolum tahmini</th><th>Toplam dönüş</th><th>İskonto</th><th>24h hacim</th><th>Hafta içi / sonu</th><th>Yoğun saat</th><th>Emir notu</th></tr></thead><tbody>{marketRadarRows.map((r:any)=><tr key={r.id}><td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.action}</div></td><td><b>{fmt(r.buyOffer)} GP</b></td><td><b>{fmt(r.sellOffer)} GP</b></td><td>{fmt(r.qty)}</td><td>{fmt(r.capital)} GP</td><td style={{color:'#3fb950'}}><b>{fmt(r.expectedProfit)} GP</b></td><td style={{color:r.expectedGpHour>=600000?'#3fb950':'#d29922'}}><b>{fmt(r.expectedGpHour)} GP/h</b></td><td>{r.buyFillHours===null?'Veri yok':r.buyFillHours.toFixed(1)+'h'} / {r.sellFillHours===null?'Veri yok':r.sellFillHours.toFixed(1)+'h'}</td><td style={{color:r.withinSixHours?'#3fb950':'#d29922'}}>{r.expectedHours===null?'Bilinmiyor':r.expectedHours.toFixed(1)+'h'}{!r.withinSixHours?' • 6h üstü':''}</td><td style={{color:'#3fb950'}}><b>{fmt(r.discount*100,1)}%</b></td><td>{fmt(r.volume)}</td><td>{fmt(((marketWeekly[r.id]?.weekdayVolume||0)/5)/Math.max(1,(marketWeekly[r.id]?.weekendVolume||0)/2),2)}×</td><td>{marketWeekly[r.id]?.busiestHour??'—'}:00</td><td><button type="button" onClick={()=>copyText(`${r.name}\nProfil: ${r.profile}\nALIŞ EMRİ: ${r.buyOffer} GP × ${r.qty} adet\nSATIŞ EMRİ: ${r.sellOffer} GP\nSermaye: ${Math.round(r.capital)} GP\nTahmini net kâr: ${Math.round(r.expectedProfit)} GP\nTahmini net GP/h: ${Math.round(r.expectedGpHour)}\nTahmini dönüş: ${r.expectedHours?.toFixed(1)??'—'} saat`)}>Emri kopyala</button></td></tr>)}</tbody></table></div>:<div style={{padding:12,border:'1px solid #30363d',borderRadius:6}}>Şu anda tüm koşulları karşılayan doğrulanmış bir fırsat yok. Bu olumlu bir sonuç olabilir; sırf sermaye kullanmak için işlem önerilmez.</div>}
