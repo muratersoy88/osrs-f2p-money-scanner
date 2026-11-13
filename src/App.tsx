@@ -1208,7 +1208,7 @@ export default function App() {
   const [v4ViewAll, setV4ViewAll] = useState(false)
   const [v4KindFilter, setV4KindFilter] = useState('ALL')
   const [v4PlannerItem, setV4PlannerItem] = useState('')
-  const [activeTab, setActiveTab] = useState<'dashboard'|'smart'|'skills'|'herblore'|'alchemy'|'alchemyGoal'|'money'|'planner'|'database'|'coverage'|'bulk'>('dashboard')
+  const [activeTab, setActiveTab] = useState<'dashboard'|'smart'|'skills'|'herblore'|'alchemy'|'alchemyGoal'|'portfolio'|'money'|'planner'|'database'|'coverage'|'bulk'>('dashboard')
   const [v5Page,setV5Page]=useState<V5PageId>('melee')
   const [v5Search,setV5Search]=useState('')
   const [v5ShowLocked,setV5ShowLocked]=useState(true)
@@ -1275,6 +1275,9 @@ export default function App() {
   const [herbloreShowLocked,setHerbloreShowLocked]=useState(true)
   const [herbloreShowUnpriced,setHerbloreShowUnpriced]=useState(true)
   const [herbloreMinVolume,setHerbloreMinVolume]=useState('0')
+  const [portfolioCapital,setPortfolioCapital]=useState(()=>Math.max(1,Number(localStorage.getItem('osrs-portfolio-capital-v645')||10000000)))
+  const [portfolioProfile,setPortfolioProfile]=useState<'FAST'|'BALANCED'|'PATIENT'>('BALANCED')
+  const [portfolioRisk,setPortfolioRisk]=useState<'LOW'|'MEDIUM'|'HIGH'>('LOW')
   const [orderHistory,setOrderHistory]=useState<OrderHistoryRow[]>(()=>{try{return JSON.parse(localStorage.getItem('osrs-order-history-v56')||'[]')}catch{return[]}})
   const [historyDraft,setHistoryDraft]=useState({item:'',side:'BUY' as OrderSide,quantity:500,orderPrice:0,filledQuantity:0,fillHours:'',status:'FILLED' as OrderStatus,averageFillPrice:''})
 
@@ -1450,6 +1453,7 @@ export default function App() {
   },[mapping,updated])
 
   useEffect(()=>{localStorage.setItem('osrs-v5-edits',JSON.stringify(v5Edits))},[v5Edits])
+  useEffect(()=>{localStorage.setItem('osrs-portfolio-capital-v645',String(portfolioCapital))},[portfolioCapital])
   useEffect(()=>{localStorage.setItem('osrs-alchemy-goal-target-v62',String(alchemyGoalTarget))},[alchemyGoalTarget])
   useEffect(()=>{localStorage.setItem('osrs-alchemy-defaults-v61',JSON.stringify(alchemyDefaults))},[alchemyDefaults])
   useEffect(()=>{localStorage.setItem('osrs-alchemy-edits-v61',JSON.stringify(alchemyEdits))},[alchemyEdits])
@@ -2543,6 +2547,79 @@ export default function App() {
       return d!==0?d:((b.gp??0)-(a.gp??0))||priority(b.source)-priority(a.source)
     })
   },[v5Rows,v5IncludeUnverified])
+  const portfolioCandidates = useMemo(()=>{
+    type PC={id:string;group:string;name:string;kind:string;skill:string;level:number;member:boolean;rate:number;rateSource:string;inputs:{name:string;qty:number}[];output:string;outputQty:number;fixedOutput?:number;buyLimit:number;volume:number;buyUnit:number;sellUnit:number;taxed:boolean;attention:string;requirements:string[]}
+    const candidates:PC[]=[]
+    const pair=(name:string)=>{const item=getItem(name);if(!item)return null;const d=prices[item.id];if(!d||d.high==null||d.low==null)return null;return {item,high:Number(d.high),low:Number(d.low),vol:volume(name)??0,limit:Number(item.limit||0)}}
+    // Verified V5 production methods: no historical/stale prices, only current GE data.
+    v5Rows.forEach((r:any)=>{
+      if(!r.open||r.quality!=='VERIFIED'||!r.economyReady||!r.economy?.inputs?.length||!r.economy?.outputName||!r.rate||r.rate<=0||r.member&&mode!=='MEMBER')return
+      const ins=r.economy.inputs.map((x:any)=>({name:x.name,qty:Number(x.qty)||1}))
+      const pairs=ins.map(x=>pair(x.name));const out=pair(r.economy.outputName)
+      if(pairs.some((x:any)=>!x)||!out)return
+      const vols=[...pairs.map((x:any)=>x.vol),out.vol]
+      const limits=pairs.map((x:any)=>x.limit>0?x.limit:0)
+      if(vols.some(x=>!Number.isFinite(x)||x<=0)||limits.some(x=>x<=0))return
+      candidates.push({id:`v5-${r.id}`,group:`v5-${r.id}`,name:r.name,kind:'Üretim / işleme',skill:(r.skills||[]).join(', '),level:r.level,member:Boolean(r.member),rate:r.rate,rateSource:r.rateSource||'Tahmin',inputs:ins,output:r.economy.outputName,outputQty:Number(r.economy.outputQty)||1,buyLimit:Math.min(...limits.map((x:number,i:number)=>Math.floor(x/ins[i].qty))),volume:Math.min(...vols),buyUnit:0,sellUnit:0,taxed:true,attention:r.attention||'MEDIUM',requirements:r.requirements||[]})
+    })
+    // Herblore's 15 herbs, all four routes; one route per herb can enter a portfolio.
+    herbloreRows.forEach((h:any)=>{
+      const defs=[
+        {r:h.grimyClean,key:'grimyClean',inputs:[{name:h.grimyName,qty:1}],output:h.cleanName,rate:5000,skill:'Herblore',level:h.level,extra:0},
+        {r:h.cleanPotion,key:'cleanPotion',inputs:[{name:h.cleanName,qty:1},{name:'Vial of water',qty:1}],output:h.unfinishedName,rate:2500,skill:'Herblore',level:h.level,extra:0},
+        {r:h.grimyPotion,key:'grimyPotion',inputs:[{name:h.grimyName,qty:1},{name:'Vial of water',qty:1}],output:h.unfinishedName,rate:2500,skill:'Herblore',level:h.level,extra:0},
+        {r:h.degrime,key:'degrime',inputs:[{name:h.grimyName,qty:1},{name:'Nature rune',qty:2/27},...(!degrimeEarthStaff?[{name:'Earth rune',qty:4/27}]:[])],output:h.cleanName,rate:16200,skill:'Herblore / Magic',level:h.level,extra:0}
+      ]
+      defs.forEach((d:any)=>{
+        if(!d.r||d.r.levelLocked||mode!=='MEMBER')return
+        const ins=d.inputs.map((x:any)=>({name:x.name,qty:x.qty}));const ip=ins.map((x:any)=>pair(x.name));const op=pair(d.output)
+        if(ip.some((x:any)=>!x)||!op)return
+        const vols=[...ip.map((x:any)=>x.vol),op.vol];if(vols.some(x=>x<=0))return
+        const lims=ins.map((x:any,i:number)=>ip[i].limit>0?Math.floor(ip[i].limit/x.qty):0);if(lims.some((x:number)=>x<=0))return
+        candidates.push({id:`herb-${h.key}-${d.key}`,group:`herb-${h.key}`,name:`${h.herb} • ${d.key==='grimyClean'?'Grimy → Clean':d.key==='cleanPotion'?'Clean → Unf':d.key==='grimyPotion'?'Grimy → Unf':'Degrime'}`,kind:'Herblore',skill:d.skill,level:d.level,member:true,rate:d.rate,rateSource:'Tahmin',inputs:ins,output:d.output,outputQty:1,buyLimit:Math.min(...lims),volume:Math.min(...vols),buyUnit:0,sellUnit:0,taxed:true,attention:'LOW',requirements:d.key==='degrime'?['A Kingdom Divided','Magic 70']:[]})
+      })
+    })
+    // High Alchemy is included as a separate market option, with rune cost and NPC output value.
+    alchemyRows.forEach((r:any)=>{
+      if(r.locked||r.profit===null||r.profit<=0||!r.itemBuy||!r.natureCost||!r.volume||r.volume<=0||!r.buyLimit)return
+      const nature=pair('Nature rune');const item=pair(r.name);if(!nature||!item)return
+      candidates.push({id:`alch-${r.id}`,group:`alch-${r.id}`,name:`${r.name} • High Alchemy`,kind:'High Alchemy',skill:'Magic',level:55,member:Boolean(r.member),rate:r.rate,rateSource:'Tahmin',inputs:[{name:r.name,qty:1},{name:'Nature rune',qty:1}],output:'High Alchemy (NPC)',outputQty:1,fixedOutput:r.alchValue,buyLimit:Math.min(r.buyLimit,nature.limit),volume:Math.min(item.vol,nature.vol),buyUnit:0,sellUnit:0,taxed:false,attention:'LOW',requirements:['Magic 55']})
+    })
+    const profile=portfolioProfile
+    const riskCfg=portfolioRisk==='LOW'?{minVol:2500,participation:.01,maxShare:.22,minScore:0}:portfolioRisk==='MEDIUM'?{minVol:500,participation:.025,maxShare:.28,minScore:0}:{minVol:100,participation:.05,maxShare:.32,minScore:0}
+    const prepared=candidates.map(c=>{
+      const ps=c.inputs.map(x=>pair(x.name));const out=c.fixedOutput?null:pair(c.output)
+      if(ps.some((x:any)=>!x)||(!c.fixedOutput&&!out))return null
+      const plannedInputs=c.inputs.map((x:any,i:number)=>({...x,orderPrice:profile==='FAST'?ps[i].high:profile==='BALANCED'?(ps[i].high+ps[i].low)/2:ps[i].low}))
+      const inputCost=plannedInputs.reduce((n:number,x:any)=>n+x.orderPrice*x.qty,0)
+      const outputPrice=c.fixedOutput|| (profile==='FAST'?out.low:profile==='BALANCED'?(out.high+out.low)/2:out.high)
+      const outputNet=c.fixedOutput?c.fixedOutput:outputPrice*c.outputQty-geTax(outputPrice)*c.outputQty
+      const profit=outputNet-inputCost
+      const bottleneck=Math.min(c.volume,...ps.map((x:any)=>x.vol),...(out?[out.vol]:[]))
+      const marketQty=Math.max(0,Math.floor(bottleneck*riskCfg.participation))
+      const qtyCap=Math.min(c.buyLimit,marketQty)
+      const unitCapital=inputCost
+      const rate=Math.min(c.rate,Math.max(0,marketQty)/Math.max(1,dailyMaxHours))
+      const capacityGpHour=profit>0?profit*rate:0
+      const liquidityRatio=bottleneck>0?Math.min(1,marketQty/Math.max(1,c.rate*dailyMaxHours)):0
+      const riskScore=portfolioRisk==='LOW'?(bottleneck>=10000?1:0.75):portfolioRisk==='MEDIUM'?(bottleneck>=2500?1:0.65):(bottleneck>=1000?1:0.55)
+      const score=profit>0&&unitCapital>0?capacityGpHour*riskScore*(c.attention==='AFK'||c.attention==='LOW'?1.12:1):0
+      return {...c,plannedInputs,inputCost,outputPrice,outputNet,profit,unitCapital,bottleneck,qtyCap,capacityGpHour,liquidityRatio,score,profile}
+    }).filter((x:any)=>x&&x.profit>0&&x.qtyCap>0&&x.score>0&&x.bottleneck>=riskCfg.minVol&&x.unitCapital>0)
+    const selected:any[]=[];const usedGroups=new Set<string>();let remaining=Math.max(0,portfolioCapital)
+    while(selected.length<8){
+      const next=prepared.filter((x:any)=>!usedGroups.has(x.group)&&x.unitCapital<=remaining&&x.unitCapital<=portfolioCapital*riskCfg.maxShare).sort((a:any,b:any)=>b.score-a.score)[0]
+      if(!next)break
+      const allocation=Math.min(remaining,portfolioCapital*riskCfg.maxShare,Math.max(next.unitCapital,portfolioCapital/Math.max(3,Math.min(6,prepared.length))))
+      const qty=Math.min(next.qtyCap,Math.floor(allocation/next.unitCapital))
+      if(qty<1){usedGroups.add(next.group);continue}
+      const used=qty*next.unitCapital
+      selected.push({...next,qty,capitalUsed:used,expectedProfit:qty*next.profit,expectedHours:next.rate>0?qty/next.rate:null,expectedGpHour:next.capacityGpHour,volumeShare:next.bottleneck>0?qty/next.bottleneck:1})
+      remaining-=used;usedGroups.add(next.group)
+    }
+    return {rows:selected,used:selected.reduce((n,x)=>n+x.capitalUsed,0),reserve:Math.max(0,portfolioCapital-selected.reduce((n,x)=>n+x.capitalUsed,0)),profit:selected.reduce((n,x)=>n+x.expectedProfit,0),gpHour:selected.reduce((n,x)=>n+x.expectedGpHour,0),candidateCount:prepared.length}
+  },[v5Rows,herbloreRows,alchemyRows,mapping,prices,volumes,mode,portfolioCapital,portfolioProfile,portfolioRisk,dailyMaxHours,degrimeEarthStaff])
+
   const v4RequirementNames = V4_ACTIVITY_DATABASE.flatMap(a => [...(a.requirements.quests ?? []), ...(a.requirements.areas ?? []), ...(a.requirements.diary ?? []), ...(a.requirements.minigame ?? [])])
   const requirementNames=Array.from(new Set([...RECIPES.flatMap(r=>[r.questRequirement,r.accessRequirement,r.regionRequirement,r.diaryRequirement,r.minigameRequirement,r.equipment]),...GATHERING.flatMap(a=>[a.questRequirement,a.accessRequirement,a.regionRequirement,a.equipment]),...v4RequirementNames].filter(Boolean))) as string[]
   const requirementGroups = useMemo(() => {
@@ -2971,7 +3048,7 @@ export default function App() {
 
       <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:8,flexWrap:'wrap',padding:'10px 0',background:'#0d1117',borderBottom:'1px solid #30363d'}}>
         {([
-          ['dashboard','Dashboard'],['smart','Smart Order'],['skills','21 Skill Views'],['herblore','Herblore'],['alchemy','Alchemy & Skill-Free'],['alchemyGoal','Alchemy Profit Goal'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],['coverage','Database Coverage'],['bulk','Bulk Data Entry'],
+          ['dashboard','Dashboard'],['smart','Smart Order'],['skills','21 Skill Views'],['herblore','Herblore'],['alchemy','Alchemy & Skill-Free'],['alchemyGoal','Alchemy Profit Goal'],['portfolio','Capital Portfolio'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],['coverage','Database Coverage'],['bulk','Bulk Data Entry'],
         ] as const).map(([id,label])=><button key={id} type="button" onClick={()=>setActiveTab(id)}
           style={{fontWeight:activeTab===id?800:500,outline:activeTab===id?'2px solid #58a6ff':'none'}}>{label}</button>)}
       </nav>
@@ -2998,6 +3075,28 @@ export default function App() {
           {!herbloreCurrentRows.length&&<tr><td colSpan={14}>Filtreye uygun fiyatlı Herblore işlemi bulunamadı. Fiyatları güncelle veya “Fiyatı eksik kayıtları göster” seçeneğini aç.</td></tr>}
         </tbody></table></div>
         <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Satış geliri = güncel GE sell fiyatı − GE vergisi. GP/h, normal temizleme için 5.000 adet/saat, unfinished potion üretimi için 2.500 adet/saat ve Degrime için 600 cast/saat × 27 herb varsayar. Degrime maliyetine herb başına 2/27 Nature rune ve Earth staff yoksa 4/27 Earth rune eklenir. Girdi ve çıktıların 24 saatlik hacimleri ayrı gösterilir; hacim filtresi işlemdeki en düşük hacimli piyasa tarafını (darboğazı) esas alır. Capacity GP/h, ilgili girdilerin ve çıktının 24 saatlik hacminin %5'i ve günlük çalışma süresi üzerinden sınırlandırılır. “Unf Potion” tam iksir değildir; ikinci bileşen eklenmemiş unfinished potion'dır.</p>
+      </section>}
+
+      {activeTab==='portfolio'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+        <h2 style={{marginTop:0}}>Capital Portfolio — Sermaye Dağıtım Planı</h2>
+        <p style={{fontSize:11,color:'#8b949e'}}>Mevcut hesabın, doğrulanmış V5 işlemleri, Herblore ve High Alchemy seçenekleri arasından 3–8 farklı işlem seçer. Kâr ve GP/h tahmindir; emirlerin dolmasını veya ürünlerin belirli sürede satılmasını garanti etmez. Yalnızca güncel fiyatı, 24h hacmi ve GE limiti bulunan kârlı işlemler değerlendirilir.</p>
+        <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'end',padding:10,border:'1px solid #30363d',borderRadius:8}}>
+          <label style={{display:'grid',gap:4}}>Sermaye (GP)<input type="number" min="1" step="100000" value={portfolioCapital} onChange={e=>setPortfolioCapital(Math.max(1,Number(e.target.value)||1))} style={{width:180}}/></label>
+          <label style={{display:'grid',gap:4}}>Risk seviyesi<select value={portfolioRisk} onChange={e=>setPortfolioRisk(e.target.value as any)}><option value="LOW">Düşük — likidite öncelikli</option><option value="MEDIUM">Orta — denge</option><option value="HIGH">Yüksek — daha geniş aday havuzu</option></select></label>
+          <label style={{display:'grid',gap:4}}>İşlem profili<select value={portfolioProfile} onChange={e=>setPortfolioProfile(e.target.value as any)}><option value="FAST">FAST — hemen al / hemen sat</option><option value="BALANCED">BALANCED — 4–5 saat bekle</option><option value="PATIENT">PATIENT — gece emir bırak</option></select></label>
+        </div>
+        <div style={{display:'flex',gap:7,flexWrap:'wrap',margin:'10px 0'}}>{(['FAST','BALANCED','PATIENT'] as const).map(x=><button key={x} onClick={()=>setPortfolioProfile(x)} style={{fontWeight:portfolioProfile===x?800:500,outline:portfolioProfile===x?'2px solid #58a6ff':'none'}}>{x}</button>)}</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8,marginBottom:10}}>
+          <div style={{padding:9,border:'1px solid #30363d',borderRadius:6}}>Önerilen kalem <b style={{display:'block',fontSize:20}}>{portfolioCandidates.rows.length}</b></div>
+          <div style={{padding:9,border:'1px solid #30363d',borderRadius:6}}>Bağlanan sermaye <b style={{display:'block',fontSize:20}}>{fmt(portfolioCandidates.used)} GP</b></div>
+          <div style={{padding:9,border:'1px solid #30363d',borderRadius:6}}>Rezerv <b style={{display:'block',fontSize:20}}>{fmt(portfolioCandidates.reserve)} GP</b></div>
+          <div style={{padding:9,border:'1px solid #30363d',borderRadius:6}}>Tahmini net kâr <b style={{display:'block',fontSize:20,color:portfolioCandidates.profit>0?'#3fb950':'inherit'}}>{fmt(portfolioCandidates.profit)} GP</b></div>
+        </div>
+        <div style={{fontSize:11,color:'#8b949e',marginBottom:8}}>Risk seviyesi, her işlemde kullanılacak 24h hacim payını sınırlar: Düşük %1 / Orta %2,5 / Yüksek %5. Ayrıca işlem başına sermaye payı sırasıyla %22 / %28 / %32 ile sınırlandırılır. Mevcut hesap modu: {mode} • Magic: {levels.Magic||1} • Herblore: {levels.Herblore||1}.</div>
+        {portfolioCandidates.rows.length>=3?<div className="tableBox"><table><thead><tr><th>#</th><th>İşlem</th><th>Skill / erişim</th><th>Alış planı</th><th>Yapılacak işlem → satış</th><th>Adet</th><th>Bağlanan sermaye</th><th>24h hacim</th><th>Net kâr</th><th>GP/h (kapasite)</th><th>Tahmini işlem süresi</th></tr></thead><tbody>
+          {portfolioCandidates.rows.map((r:any,i:number)=><tr key={r.id}><td>{i+1}</td><td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.kind} • {r.rateSource}</div></td><td>{r.skill} {r.level?`• Lv ${r.level}`:''}{r.requirements?.length>0&&<div style={{fontSize:10,color:'#d29922'}}>{r.requirements.join(' • ')}</div>}</td><td>{r.plannedInputs.map((x:any)=><div key={x.name}>{fmt(x.qty*r.qty,2)}× {x.name} @ {fmt(x.orderPrice)} GP</div>)}<div style={{fontSize:10,color:'#8b949e'}}>Birim işlem maliyeti: {fmt(r.unitCapital)} GP</div></td><td>{r.kind==='High Alchemy'?`High Alchemy → NPC (${fmt(r.outputPrice)} GP)`: <>{r.kind==='Herblore'?'Herblore':'İşleme'} → {fmt(r.qty*r.outputQty)}× {r.output} @ {fmt(r.outputPrice)} GP</>}</td><td><b>{fmt(r.qty)}</b></td><td>{fmt(r.capitalUsed)} GP</td><td>{fmt(r.bottleneck)} adet</td><td style={{color:'#3fb950'}}><b>{fmt(r.expectedProfit)} GP</b></td><td>{fmt(r.expectedGpHour)} GP/h</td><td>{r.expectedHours===null?'—':`${fmt(r.expectedHours,1)} saat`}</td></tr>)}
+        </tbody></table></div>:<div style={{padding:12,border:'1px solid #d29922',borderRadius:6}}>Bu sermaye ve risk ayarında 3 farklı ve yeterince likit işlem bulunamadı (şu an uygun aday: {portfolioCandidates.rows.length}). Fiyatları yenile, sermayeyi veya risk seviyesini değiştir. Sistem 3 kaleme ulaşmak için düşük likiditeli veya zarar ihtimali yüksek işlemleri zorla önermeyecek.</div>}
+        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Önemli: FAST alışta güncel instant-buy (high), satışta instant-sell (low) fiyatını; BALANCED iki fiyatın ortalamasını; PATIENT alışta low, satışta high fiyatını varsayar. Bu son iki profil limit emirlerinin dolacağı anlamına gelmez. GP/h, seçilen miktarın üretim hızına göre tahmini aktif işlem süresidir; emir bekleme ve satış bekleme süresini içermez. Gerçekleşen alış/satış fiyatları ve dolum süreleri farklı olabilir. Piyasa riski sıfırlanamaz.</p>
       </section>}
 
       {activeTab==='alchemy'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
