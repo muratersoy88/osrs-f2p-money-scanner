@@ -2555,11 +2555,11 @@ export default function App() {
     v5Rows.forEach((r:any)=>{
       if(!r.open||r.quality!=='VERIFIED'||!r.economyReady||!r.economy?.inputs?.length||!r.economy?.outputName||!r.rate||r.rate<=0||r.member&&mode!=='MEMBER')return
       const ins=r.economy.inputs.map((x:any)=>({name:x.name,qty:Number(x.qty)||1}))
-      const pairs=ins.map(x=>pair(x.name));const out=pair(r.economy.outputName)
+      const pairs=ins.map((x:any)=>pair(x.name));const out=pair(r.economy.outputName)
       if(pairs.some((x:any)=>!x)||!out)return
       const vols=[...pairs.map((x:any)=>x.vol),out.vol]
       const limits=pairs.map((x:any)=>x.limit>0?x.limit:0)
-      if(vols.some(x=>!Number.isFinite(x)||x<=0)||limits.some(x=>x<=0))return
+      if(vols.some((x:number)=>!Number.isFinite(x)||x<=0)||limits.some((x:number)=>x<=0))return
       candidates.push({id:`v5-${r.id}`,group:`v5-${r.id}`,name:r.name,kind:'Üretim / işleme',skill:(r.skills||[]).join(', '),level:r.level,member:Boolean(r.member),rate:r.rate,rateSource:r.rateSource||'Tahmin',inputs:ins,output:r.economy.outputName,outputQty:Number(r.economy.outputQty)||1,buyLimit:Math.min(...limits.map((x:number,i:number)=>Math.floor(x/ins[i].qty))),volume:Math.min(...vols),buyUnit:0,sellUnit:0,taxed:true,attention:r.attention||'MEDIUM',requirements:r.requirements||[]})
     })
     // Herblore's 15 herbs, all four routes; one route per herb can enter a portfolio.
@@ -2588,14 +2588,16 @@ export default function App() {
     const profile=portfolioProfile
     const riskCfg=portfolioRisk==='LOW'?{minVol:2500,participation:.01,maxShare:.22,minScore:0}:portfolioRisk==='MEDIUM'?{minVol:500,participation:.025,maxShare:.28,minScore:0}:{minVol:100,participation:.05,maxShare:.32,minScore:0}
     const prepared=candidates.map(c=>{
-      const ps=c.inputs.map(x=>pair(x.name));const out=c.fixedOutput?null:pair(c.output)
-      if(ps.some((x:any)=>!x)||(!c.fixedOutput&&!out))return null
-      const plannedInputs=c.inputs.map((x:any,i:number)=>({...x,orderPrice:profile==='FAST'?ps[i].high:profile==='BALANCED'?(ps[i].high+ps[i].low)/2:ps[i].low}))
+      const ps=c.inputs.map((x:any)=>pair(x.name));const out=c.fixedOutput?null:pair(c.output)
+      if(ps.some((x:any)=>x===null)||(!c.fixedOutput&&out===null))return null
+      const validPs=ps as Array<NonNullable<(typeof ps)[number]>>
+      const validOut=out as NonNullable<typeof out>|null
+      const plannedInputs=c.inputs.map((x:any,i:number)=>({...x,orderPrice:profile==='FAST'?validPs[i].high:profile==='BALANCED'?(validPs[i].high+validPs[i].low)/2:validPs[i].low}))
       const inputCost=plannedInputs.reduce((n:number,x:any)=>n+x.orderPrice*x.qty,0)
-      const outputPrice=c.fixedOutput|| (profile==='FAST'?out.low:profile==='BALANCED'?(out.high+out.low)/2:out.high)
+      const outputPrice=c.fixedOutput??(profile==='FAST'?validOut!.low:profile==='BALANCED'?(validOut!.high+validOut!.low)/2:validOut!.high)
       const outputNet=c.fixedOutput?c.fixedOutput:outputPrice*c.outputQty-geTax(outputPrice)*c.outputQty
       const profit=outputNet-inputCost
-      const bottleneck=Math.min(c.volume,...ps.map((x:any)=>x.vol),...(out?[out.vol]:[]))
+      const bottleneck=Math.min(c.volume,...validPs.map((x:any)=>x.vol),...(validOut?[validOut.vol]:[]))
       const marketQty=Math.max(0,Math.floor(bottleneck*riskCfg.participation))
       const qtyCap=Math.min(c.buyLimit,marketQty)
       const unitCapital=inputCost
