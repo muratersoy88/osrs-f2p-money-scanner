@@ -2698,41 +2698,51 @@ export default function App() {
 
   const marketRadarRows=useMemo(()=>{
     const profile=portfolioProfile
-    return mapping.map((item:any)=>{
-      const id=String(item.id),p=prices[id],v=volumes[id],w=marketWeekly[id]
-      if(!p||p.high==null||p.low==null||!w||!Number.isFinite(Number(p.high))||!Number.isFinite(Number(p.low))||!w.avgHigh||w.points<12)return null
-      const vol=Number(v?.highPriceVolume||0)+Number(v?.lowPriceVolume||0)
-      const samples=(w.samples||[]).filter(x=>x.high&&x.high>0&&x.low&&x.low>0)
+    // Always show live-priced products, even when 7-day history is unavailable.
+    // Historical samples improve limit-price estimates; they are not a prerequisite for displaying a quote.
+    const liquid=mapping.map((item:any)=>({item,vol:Number(volumes[String(item.id)]?.highPriceVolume||0)+Number(volumes[String(item.id)]?.lowPriceVolume||0)}))
+      .sort((a,b)=>b.vol-a.vol).slice(0,30)
+    return liquid.map(({item,vol})=>{
+      const id=String(item.id),p=prices[id],w=marketWeekly[id]
+      if(!p||p.high==null||p.low==null||!Number.isFinite(Number(p.high))||!Number.isFinite(Number(p.low)))return null
+      const high=Number(p.high),low=Number(p.low),spread=Math.max(0,high-low)
+      const samples=(w?.samples||[]).filter(x=>x.high&&x.high>0&&x.low&&x.low>0)
       const buyPairs=samples.filter(x=>x.low&&x.low>0).map(x=>({v:Number(x.low),w:Math.max(1,x.lowVolume)}))
       const sellPairs=samples.filter(x=>x.high&&x.high>0).map(x=>({v:Number(x.high),w:Math.max(1,x.highVolume)}))
-      const qBuy=profile==='FAST'?null:profile==='BALANCED'?.50:.20
-      const qSell=profile==='FAST'?null:profile==='BALANCED'?.50:.80
-      const buyOffer=profile==='FAST'?Number(p.high):(weightedQuantile(buyPairs,qBuy!)??w.avgLow??Number(p.low))
-      const sellOffer=profile==='FAST'?Number(p.low):(weightedQuantile(sellPairs,qSell!)??w.avgHigh??Number(p.high))
+      const historical=Boolean(w&&w.points>=12&&w.avgHigh)
+      const buyOffer=profile==='FAST'?high:profile==='BALANCED'?(historical?(weightedQuantile(buyPairs,.50)??low):Math.round(low+spread*.25)):(historical?(weightedQuantile(buyPairs,.20)??low):low)
+      const sellOffer=profile==='FAST'?low:profile==='BALANCED'?(historical?(weightedQuantile(sellPairs,.50)??high):Math.round(low+spread*.75)):(historical?(weightedQuantile(sellPairs,.80)??high):high)
+      const avgHigh=Number(w?.avgHigh||high)
       const unitProfit=sellOffer-geTax(sellOffer)-buyOffer
-      const discount=(w.avgHigh-buyOffer)/w.avgHigh
-      const buyHits=profile==='FAST'?1:samples.filter(x=>x.low!==null&&x.low<=buyOffer*1.01).length
-      const sellHits=profile==='FAST'?1:samples.filter(x=>x.high!==null&&x.high>=sellOffer*.99).length
-      const buyFillHours=profile==='FAST'?.25:buyHits>0?Math.max(.5,168/buyHits):null
-      const sellFillHours=profile==='FAST'?.25:sellHits>0?Math.max(.5,168/sellHits):null
+      const discount=(avgHigh-buyOffer)/Math.max(1,avgHigh)
+      const buyHits=historical?samples.filter(x=>x.low!==null&&x.low<=buyOffer*1.01).length:0
+      const sellHits=historical?samples.filter(x=>x.high!==null&&x.high>=sellOffer*.99).length:0
+      const buyFillHours=profile==='FAST'?.25:historical&&buyHits>0?Math.max(.5,168/buyHits):null
+      const sellFillHours=profile==='FAST'?.25:historical&&sellHits>0?Math.max(.5,168/sellHits):null
       const expectedHours=buyFillHours!==null&&sellFillHours!==null?buyFillHours+sellFillHours:null
-      const sixHourQty=Math.floor(vol/8)
       const volumeCap=Math.floor(vol*.05)
       const affordableQty=Math.floor((portfolioCapital*.5)/Math.max(1,buyOffer))
-      const qty=Math.max(0,Math.min(sixHourQty,volumeCap,affordableQty,Number(item.limit||sixHourQty)))
+      const qty=Math.max(0,Math.min(Math.floor(vol/8),volumeCap,affordableQty,Number(item.limit||Math.floor(vol/8))))
       const capital=qty*buyOffer
       const expectedProfit=qty*unitProfit
       const expectedGpHour=expectedHours&&expectedHours>0?expectedProfit/expectedHours:0
       const withinSixHours=expectedHours!==null&&expectedHours<=6
-      const action=unitProfit<=0||discount<.10||qty<=0||expectedGpHour<600000?'BEKLE':profile==='FAST'?'ŞİMDİ AL / SAT':profile==='BALANCED'?'TEKLİF KOY':'SABIRLI TEKLİF KOY'
-      return {id,name:item.name,profile,high:Number(p.high),low:Number(p.low),buyOffer:Math.round(buyOffer),sellOffer:Math.round(sellOffer),avgHigh:w.avgHigh,avgLow:w.avgLow,discount,volume:vol,qty,capital,unitProfit,expectedProfit,expectedGpHour,buyFillHours,sellFillHours,expectedHours,withinSixHours,action,history:marketHistory[id]||[],points:w.points}
-    }).filter((x:any)=>x&&x.volume>=1000&&x.discount>=.10&&x.qty>0&&x.unitProfit>0&&x.expectedProfit>0&&x.expectedGpHour>=600000)
-      .sort((a:any,b:any)=>b.expectedGpHour-a.expectedGpHour)
+      let reason=''
+      if(!historical)reason='7 günlük geçmiş henüz yok; fiyatlar güncel high/low aralığından türetildi'
+      else if(discount<.10)reason='%10 fiyat avantajı eşiği sağlanmıyor'
+      else if(vol<1000||qty<=0)reason='Hacim veya ayrılabilir sermaye yetersiz'
+      else if(unitProfit<=0)reason='Vergi sonrası net kâr negatif'
+      else if(expectedGpHour<600000)reason='600K GP/h altı'
+      else if(expectedHours===null||expectedHours>6)reason='6 saatlik dönüş hedefi doğrulanamıyor'
+      const qualified=historical&&discount>=.10&&vol>=1000&&qty>0&&unitProfit>0&&expectedGpHour>=600000&&expectedHours!==null&&expectedHours<=6
+      const action=qualified?(profile==='FAST'?'ŞİMDİ AL / SAT':profile==='BALANCED'?'TEKLİF KOY':'SABIRLI TEKLİF KOY'):'BEKLE'
+      return {id,name:item.name,profile,high,low,buyOffer:Math.round(buyOffer),sellOffer:Math.round(sellOffer),avgHigh,avgLow:Number(w?.avgLow||low),discount,volume:vol,qty,capital,unitProfit,expectedProfit,expectedGpHour,buyFillHours,sellFillHours,expectedHours,withinSixHours,action,reason,history:marketHistory[id]||[],points:w?.points||0,historical}
+    }).filter(Boolean).sort((a:any,b:any)=>Number(b.action!=='BEKLE')-Number(a.action!=='BEKLE')||b.expectedGpHour-a.expectedGpHour)
   },[mapping,prices,volumes,marketWeekly,marketHistory,portfolioCapital,portfolioProfile])
 
   useEffect(()=>{
     if(!marketSoundEnabled||!marketRadarRows.length)return
-    const fresh=marketRadarRows.filter((x:any)=>Date.now()-Number(marketAlertLog[x.id]||0)>6*60*60_000)
+    const fresh=marketRadarRows.filter((x:any)=>x.action!=='BEKLE'&&Date.now()-Number(marketAlertLog[x.id]||0)>6*60*60_000)
     if(!fresh.length)return
     const next={...marketAlertLog};fresh.forEach((x:any)=>{next[x.id]=Date.now()});setMarketAlertLog(next)
     if(marketSoundEnabled){try{const Ctx=(window as any).AudioContext||(window as any).webkitAudioContext;if(Ctx){const ctx=new Ctx();[0,1,2].forEach((n)=>{const osc=ctx.createOscillator(),gain=ctx.createGain();osc.type='sine';osc.frequency.value=880-n*120;gain.gain.value=.08;osc.connect(gain);gain.connect(ctx.destination);osc.start(ctx.currentTime+n*.22);osc.stop(ctx.currentTime+n*.22+.16)});window.setTimeout(()=>ctx.close(),1200)}}catch{}}
@@ -3226,7 +3236,7 @@ export default function App() {
           <span style={{fontSize:11,color:'#8b949e'}}>Haftalık veri: {marketWeeklyLoading?'çekiliyor…':marketScanTime?new Date(marketScanTime).toLocaleString('tr-TR'):'henüz alınmadı'} • Hazır ürün: {Object.keys(marketWeekly).length} • Yerel geçmiş: {Object.values(marketHistory).reduce((n,a)=>n+a.length,0).toLocaleString('tr-TR')} kayıt</span>
         </div>
         <div style={{padding:10,border:'1px solid #30363d',borderRadius:6,marginBottom:10}}><b>{marketRadarRows.length} ciddi fiyat iskontosu</b><div style={{fontSize:11,color:'#8b949e'}}>Alarm koşulu: 7 günlük ortalamaya göre ≥%10 düşüş • 24h hacim ≥1.000 • pozitif vergi sonrası ortalama dönüş • ürün başına en fazla %50 sermaye • 6 saatlik tahmini satış kapasitesi</div></div>
-        {marketRadarRows.length?<div className="tableBox"><table><thead><tr><th>Ürün / karar</th><th>Alış emri koy</th><th>Satış emri koy</th><th>Alış miktarı</th><th>Bağlanacak GP</th><th>Net kâr</th><th>Net GP/h</th><th>Alış / satış dolum tahmini</th><th>Toplam dönüş</th><th>İskonto</th><th>24h hacim</th><th>Hafta içi / sonu</th><th>Yoğun saat</th><th>Emir notu</th></tr></thead><tbody>{marketRadarRows.map((r:any)=><tr key={r.id}><td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.action}</div></td><td><b>{fmt(r.buyOffer)} GP</b></td><td><b>{fmt(r.sellOffer)} GP</b></td><td>{fmt(r.qty)}</td><td>{fmt(r.capital)} GP</td><td style={{color:'#3fb950'}}><b>{fmt(r.expectedProfit)} GP</b></td><td style={{color:r.expectedGpHour>=600000?'#3fb950':'#d29922'}}><b>{fmt(r.expectedGpHour)} GP/h</b></td><td>{r.buyFillHours===null?'Veri yok':r.buyFillHours.toFixed(1)+'h'} / {r.sellFillHours===null?'Veri yok':r.sellFillHours.toFixed(1)+'h'}</td><td style={{color:r.withinSixHours?'#3fb950':'#d29922'}}>{r.expectedHours===null?'Bilinmiyor':r.expectedHours.toFixed(1)+'h'}{!r.withinSixHours?' • 6h üstü':''}</td><td style={{color:'#3fb950'}}><b>{fmt(r.discount*100,1)}%</b></td><td>{fmt(r.volume)}</td><td>{fmt(((marketWeekly[r.id]?.weekdayVolume||0)/5)/Math.max(1,(marketWeekly[r.id]?.weekendVolume||0)/2),2)}×</td><td>{marketWeekly[r.id]?.busiestHour??'—'}:00</td><td><button type="button" onClick={()=>copyText(`${r.name}\nProfil: ${r.profile}\nALIŞ EMRİ: ${r.buyOffer} GP × ${r.qty} adet\nSATIŞ EMRİ: ${r.sellOffer} GP\nSermaye: ${Math.round(r.capital)} GP\nTahmini net kâr: ${Math.round(r.expectedProfit)} GP\nTahmini net GP/h: ${Math.round(r.expectedGpHour)}\nTahmini dönüş: ${r.expectedHours?.toFixed(1)??'—'} saat`)}>Emri kopyala</button></td></tr>)}</tbody></table></div>:<div style={{padding:12,border:'1px solid #30363d',borderRadius:6}}>Şu anda tüm koşulları karşılayan doğrulanmış bir fırsat yok. Bu olumlu bir sonuç olabilir; sırf sermaye kullanmak için işlem önerilmez.</div>}
+        {marketRadarRows.length?<div className="tableBox"><table><thead><tr><th>Ürün / karar</th><th>Alış emri koy</th><th>Satış emri koy</th><th>Alış miktarı</th><th>Bağlanacak GP</th><th>Net kâr</th><th>Net GP/h</th><th>Alış / satış dolum tahmini</th><th>Toplam dönüş</th><th>İskonto</th><th>24h hacim</th><th>Hafta içi / sonu</th><th>Yoğun saat</th><th>Emir notu</th></tr></thead><tbody>{marketRadarRows.map((r:any)=><tr key={r.id}><td><b>{r.name}</b><div style={{fontSize:10,color:r.action==='BEKLE'?'#d29922':'#3fb950'}}>{r.action}{r.reason?` • ${r.reason}`:''}</div></td><td><b>{fmt(r.buyOffer)} GP</b></td><td><b>{fmt(r.sellOffer)} GP</b></td><td>{fmt(r.qty)}</td><td>{fmt(r.capital)} GP</td><td style={{color:'#3fb950'}}><b>{fmt(r.expectedProfit)} GP</b></td><td style={{color:r.expectedGpHour>=600000?'#3fb950':'#d29922'}}><b>{fmt(r.expectedGpHour)} GP/h</b></td><td>{r.buyFillHours===null?'Geçmiş yok':r.buyFillHours.toFixed(1)+'h'} / {r.sellFillHours===null?'Geçmiş yok':r.sellFillHours.toFixed(1)+'h'}</td><td style={{color:r.withinSixHours?'#3fb950':'#d29922'}}>{r.expectedHours===null?'Doğrulanamadı':r.expectedHours.toFixed(1)+'h'}{!r.withinSixHours?' • 6h üstü':''}</td><td style={{color:'#3fb950'}}><b>{fmt(r.discount*100,1)}%</b></td><td>{fmt(r.volume)}</td><td>{fmt(((marketWeekly[r.id]?.weekdayVolume||0)/5)/Math.max(1,(marketWeekly[r.id]?.weekendVolume||0)/2),2)}×</td><td>{marketWeekly[r.id]?.busiestHour??'—'}:00</td><td><button type="button" onClick={()=>copyText(`${r.name}\nProfil: ${r.profile}\nALIŞ EMRİ: ${r.buyOffer} GP × ${r.qty} adet\nSATIŞ EMRİ: ${r.sellOffer} GP\nSermaye: ${Math.round(r.capital)} GP\nTahmini net kâr: ${Math.round(r.expectedProfit)} GP\nTahmini net GP/h: ${Math.round(r.expectedGpHour)}\nTahmini dönüş: ${r.expectedHours?.toFixed(1)??'—'} saat`)}>Emri kopyala</button></td></tr>)}</tbody></table></div>:<div style={{padding:12,border:'1px solid #30363d',borderRadius:6}}>Canlı fiyat verisi henüz gelmedi. Üstteki ‘Fiyatları ve haftalık ortalamayı yenile’ düğmesine bas; yine boşsa OSRS Wiki fiyat API bağlantısı başarısız oluyor.</div>}
         <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}> FAST mevcut anlık alış/satış fiyatlarını; BALANCED 7 günlük düşük/yüksek fiyat dağılımının orta dilimlerini; PATIENT daha derin %20/%80 dilimlerini kullanır. Limit emirlerinin dolması garanti değildir. Dolum süresi, 7 günlük saatlik örneklerde hedef fiyatın görüldüğü saatlerin sıklığından tahmin edilir; 6 saati aşan dönüşler açıkça işaretlenir. Net kâr GE vergisi düşülerek hesaplanır. Alım miktarı toplam sermayenin %50'sini ve son 24h hacminin %5'ini aşmaz. Fiyatlar dakikada bir yenilenir; 7 günlük seri 30 dakikada bir güncellenir. Yerel fiyat/hacim örnekleri tarayıcıda saklanır. Tarama en yüksek hacimli 30 ürüne odaklanır.</p>
       </section>}
 
