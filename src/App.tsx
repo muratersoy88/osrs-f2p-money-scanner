@@ -1729,21 +1729,22 @@ export default function App() {
   const herbloreRows = useMemo(()=>{
     // Canonical 15 grimy herbs. Explicit Wiki item IDs prevent name-matching gaps.
     const herbDefs=[
-      {key:'guam',herb:'Guam leaf',grimyId:199,level:3},
-      {key:'marrentill',herb:'Marrentill',grimyId:201,level:5},
-      {key:'tarromin',herb:'Tarromin',grimyId:203,level:11},
-      {key:'harralander',herb:'Harralander',grimyId:205,level:20},
-      {key:'ranarr',herb:'Ranarr weed',grimyId:207,level:25},
-      {key:'irit',herb:'Irit leaf',grimyId:209,level:40},
-      {key:'avantoe',herb:'Avantoe',grimyId:211,level:48},
-      {key:'kwuarm',herb:'Kwuarm',grimyId:213,level:54},
-      {key:'cadantine',herb:'Cadantine',grimyId:215,level:65},
-      {key:'dwarfweed',herb:'Dwarf weed',grimyId:217,level:70},
-      {key:'torstol',herb:'Torstol',grimyId:219,level:75},
-      {key:'lantadyme',herb:'Lantadyme',grimyId:2485,level:67},
-      {key:'snapdragon',herb:'Snapdragon',grimyId:3051,level:59},
-      {key:'toadflax',herb:'Toadflax',grimyId:3049,level:30},
-      {key:'huasca',herb:'Huasca',grimyId:30094,level:58},
+      {key:'guam',herb:'Guam leaf',grimyId:199,level:3,vial:'Vial of water'},
+      {key:'marrentill',herb:'Marrentill',grimyId:201,level:5,vial:'Vial of water'},
+      {key:'tarromin',herb:'Tarromin',grimyId:203,level:11,vial:'Vial of water'},
+      {key:'harralander',herb:'Harralander',grimyId:205,level:20,vial:'Vial of water'},
+      {key:'ranarr',herb:'Ranarr weed',grimyId:207,level:25,vial:'Vial of water'},
+      {key:'toadflax',herb:'Toadflax',grimyId:3049,level:30,vial:'Vial of water'},
+      {key:'irit',herb:'Irit leaf',grimyId:209,level:40,vial:'Vial of water'},
+      {key:'avantoe',herb:'Avantoe',grimyId:211,level:48,vial:'Vial of water'},
+      {key:'kwuarm',herb:'Kwuarm',grimyId:213,level:54,vial:'Vial of water'},
+      {key:'huasca',herb:'Huasca',grimyId:30094,level:58,vial:'Vial of water'},
+      {key:'snapdragon',herb:'Snapdragon',grimyId:3051,level:59,vial:'Vial of water'},
+      {key:'cadantine',herb:'Cadantine',grimyId:215,level:65,vial:'Vial of water'},
+      {key:'lantadyme',herb:'Lantadyme',grimyId:2485,level:67,vial:'Vial of water'},
+      {key:'dwarfweed',herb:'Dwarf weed',grimyId:217,level:70,vial:'Vial of water'},
+      {key:'torstol',herb:'Torstol',grimyId:219,level:75,vial:'Vial of water'},
+      {key:'cadantine_blood',herb:'Cadantine',grimyId:215,level:80,vial:'Vial of blood',customUnf:'Cadantine blood potion (unf)'},
     ]
     const vialBuy=buy('Vial of water')
     const vialItem=getItem('Vial of water')
@@ -1755,7 +1756,10 @@ export default function App() {
     return herbDefs.map((h:any)=>{
       const grimyName=`Grimy ${h.herb.toLowerCase()}`
       const cleanName=h.herb
-      const unfinishedName=`${h.herb} potion (unf)`
+      const unfinishedName=h.customUnf || `${h.herb} potion (unf)`
+      const rowVialBuy=buy(h.vial||'Vial of water')
+      const rowVialItem=getItem(h.vial||'Vial of water')
+      const rowVialVol=rowVialItem&&volumes[rowVialItem.id]?Number(volumes[rowVialItem.id].highPriceVolume||0)+Number(volumes[rowVialItem.id].lowPriceVolume||0):null
       const grimyItem=mapping.find((item:any)=>Number(item.id)===h.grimyId)||getItem(grimyName), cleanItem=getItem(cleanName), unfinishedItem=getItem(unfinishedName)
       const grimyBuy=grimyItem&&prices[grimyItem.id]?.high!=null?Number(prices[grimyItem.id].high):null
       const cleanBuy=cleanItem&&prices[cleanItem.id]?.high!=null?Number(prices[cleanItem.id].high):null
@@ -1770,14 +1774,14 @@ export default function App() {
       const unfinishedNet=unfinishedSell===null||taxUnf===null?null:unfinishedSell-taxUnf
       const cleanRate=5000, potionRate=2500
       const cleanProfit=grimyBuy===null||cleanNet===null?null:cleanNet-grimyBuy
-      const potionProfit=cleanBuy===null||vialBuy===null||unfinishedNet===null?null:unfinishedNet-cleanBuy-vialBuy
-      const chainProfit=grimyBuy===null||vialBuy===null||unfinishedNet===null?null:unfinishedNet-grimyBuy-vialBuy
+      const potionProfit=cleanBuy===null||rowVialBuy===null||unfinishedNet===null?null:unfinishedNet-cleanBuy-rowVialBuy
+      const chainProfit=grimyBuy===null||rowVialBuy===null||unfinishedNet===null?null:unfinishedNet-grimyBuy-rowVialBuy
       const buyLimit=Number(grimyItem?.limit||cleanItem?.limit||unfinishedItem?.limit||0)||null
       const currentLevel=Number(levels.Herblore||1)
-      const base={...h,grimyName,cleanName,unfinishedName,member:true,levelLocked:currentLevel<h.level,accountLocked:mode!=='MEMBER',buyLimit,grimyBuy,cleanBuy,cleanSell,unfinishedSell,vialBuy,cleanVol,grimyVol,unfinishedVol,volume:null as number|null}
+      const base={...h,grimyName,cleanName,unfinishedName,member:true,levelLocked:currentLevel<h.level,accountLocked:mode!=='MEMBER',buyLimit,grimyBuy,cleanBuy,cleanSell,unfinishedSell,vialBuy:rowVialBuy,cleanVol,grimyVol,unfinishedVol,volume:null as number|null}
       const make=(tab:string,inputCost:number|null,outputPrice:number|null,profit:number|null,rate:number,inputs:string[],output:string,volumesNeeded:(number|null)[])=>{
         const tax=outputPrice===null?null:geTax(outputPrice)
-        const limitItems=tab==='clean-potion'?[cleanItem,vialItem]:tab==='grimy-potion'?[grimyItem,vialItem]:[grimyItem]
+        const limitItems=tab==='clean-potion'?[cleanItem,rowVialItem]:tab==='grimy-potion'?[grimyItem,rowVialItem]:[grimyItem]
         const availableLimits=limitItems.map((item:any)=>Number(item?.limit||0)).filter((v:number)=>v>0)
         const rowBuyLimit=availableLimits.length===limitItems.length?Math.min(...availableLimits):null
         const netSell=outputPrice===null||tax===null?null:outputPrice-tax
@@ -1787,15 +1791,15 @@ export default function App() {
         const capacityGpHour=profit===null||capacityRate===null?null:profit*capacityRate
         const positiveVolumes: number[] = volumesNeeded.filter((v: number | null | undefined): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0)
         const volumeValue=positiveVolumes.length===volumesNeeded.length&&positiveVolumes.length>0?Math.min(...positiveVolumes):null
-        const inputVolumes=tab==='clean-potion'?[cleanVol,vialVol]:tab==='grimy-potion'?[grimyVol,vialVol]:[grimyVol]
+        const inputVolumes=tab==='clean-potion'?[cleanVol,rowVialVol]:tab==='grimy-potion'?[grimyVol,rowVialVol]:[grimyVol]
         const normalizedInputVolume=inputVolumes.every((v:any)=>typeof v==='number'&&Number.isFinite(v))?Math.min(...inputVolumes as number[]):null
         const outputVolume=tab==='clean-potion'||tab==='grimy-potion'?unfinishedVol:cleanVol
         return {...base,id:`${tab}-${h.key}`,tab,buyLimit:rowBuyLimit,inputCost,outputPrice,tax,netSell,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,volume:volumeValue,inputVolume:normalizedInputVolume,outputVolume,inputs,output,hasPrices:inputCost!==null&&outputPrice!==null&&profit!==null}
       }
       return {
         grimyClean:make('grimy-clean',grimyBuy,cleanSell,cleanProfit,cleanRate,[`${grimyName} ×1: ${grimyBuy===null?'fiyat yok':fmt(grimyBuy)} GP`],cleanName,[grimyVol,cleanVol]),
-        cleanPotion:make('clean-potion',cleanBuy===null||vialBuy===null?null:cleanBuy+vialBuy,unfinishedSell,potionProfit,potionRate,[`${cleanName} ×1: ${cleanBuy===null?'fiyat yok':fmt(cleanBuy)} GP`,`Vial of water ×1: ${vialBuy===null?'fiyat yok':fmt(vialBuy)} GP`],unfinishedName,[cleanVol,vialVol,unfinishedVol]),
-        grimyPotion:make('grimy-potion',grimyBuy===null||vialBuy===null?null:grimyBuy+vialBuy,unfinishedSell,chainProfit,Math.min(cleanRate,potionRate),[`${grimyName} ×1: ${grimyBuy===null?'fiyat yok':fmt(grimyBuy)} GP`,`Vial of water ×1: ${vialBuy===null?'fiyat yok':fmt(vialBuy)} GP`],unfinishedName,[grimyVol,vialVol,unfinishedVol]),
+        cleanPotion:make('clean-potion',cleanBuy===null||rowVialBuy===null?null:cleanBuy+rowVialBuy,unfinishedSell,potionProfit,potionRate,[`${cleanName} ×1: ${cleanBuy===null?'fiyat yok':fmt(cleanBuy)} GP`,`${h.vial||'Vial of water'} ×1: ${rowVialBuy===null?'fiyat yok':fmt(rowVialBuy)} GP`],unfinishedName,[cleanVol,rowVialVol,unfinishedVol]),
+        grimyPotion:make('grimy-potion',grimyBuy===null||rowVialBuy===null?null:grimyBuy+rowVialBuy,unfinishedSell,chainProfit,Math.min(cleanRate,potionRate),[`${grimyName} ×1: ${grimyBuy===null?'fiyat yok':fmt(grimyBuy)} GP`,`${h.vial||'Vial of water'} ×1: ${rowVialBuy===null?'fiyat yok':fmt(rowVialBuy)} GP`],unfinishedName,[grimyVol,rowVialVol,unfinishedVol]),
         degrime:(()=>{
           const runeCost=natureBuy===null?null:(2*natureBuy+(degrimeEarthStaff?0:(earthBuy===null?NaN:4*earthBuy)))/27
           const inputCost=grimyBuy===null||runeCost===null||!Number.isFinite(runeCost)?null:grimyBuy+runeCost
@@ -2624,77 +2628,125 @@ export default function App() {
       return d!==0?d:((b.gp??0)-(a.gp??0))||priority(b.source)-priority(a.source)
     })
   },[v5Rows,v5IncludeUnverified])
-  const portfolioCandidates = useMemo(()=>{
-    type PC={id:string;group:string;name:string;kind:string;skill:string;level:number;member:boolean;rate:number;rateSource:string;inputs:{name:string;qty:number}[];output:string;outputQty:number;fixedOutput?:number;buyLimit:number;volume:number;buyUnit:number;sellUnit:number;taxed:boolean;attention:string;requirements:string[]}
-    const candidates:PC[]=[]
-    const pair=(name:string)=>{const item=getItem(name);if(!item)return null;const d=prices[item.id];if(!d||d.high==null||d.low==null)return null;return {item,high:Number(d.high),low:Number(d.low),vol:volume(name)??0,limit:Number(item.limit||0)}}
-    // Verified V5 production methods: no historical/stale prices, only current GE data.
-    v5Rows.forEach((r:any)=>{
-      if((!r.open&&!(r.member&&r.current>=r.level))||r.quality!=='VERIFIED'||!r.economyReady||!r.economy?.inputs?.length||!r.economy?.outputName||!r.rate||r.rate<=0||r.member&&mode!=='MEMBER')return
-      const ins=r.economy.inputs.filter((x:any)=>typeof x?.name==='string'&&x.name.trim()).map((x:any)=>({name:x.name.trim(),qty:Number(x.qty)||1}))
-      if(!ins.length||ins.length!==r.economy.inputs.length)return
-      const pairs=ins.map((x:any)=>pair(x.name));const out=pair(r.economy.outputName)
-      if(pairs.some((x:any)=>!x)||!out)return
-      const vols=[...pairs.map((x:any)=>x.vol),out.vol]
-      const limits=pairs.map((x:any)=>x.limit>0?x.limit:0)
-      if(vols.some((x:number)=>!Number.isFinite(x)||x<=0)||limits.some((x:number)=>x<=0))return
-      candidates.push({id:`v5-${r.id}`,group:`v5-${r.id}`,name:r.name,kind:'Üretim / işleme',skill:(r.skills||[]).join(', '),level:r.level,member:Boolean(r.member),rate:r.rate,rateSource:r.rateSource||'Tahmin',inputs:ins,output:r.economy.outputName,outputQty:Number(r.economy.outputQty)||1,buyLimit:Math.min(...limits.map((x:number,i:number)=>Math.floor(x/ins[i].qty))),volume:Math.min(...vols),buyUnit:0,sellUnit:0,taxed:true,attention:r.attention||'MEDIUM',requirements:r.requirements||[]})
+  // 16 Herblore Grimy -> Unfinished Potion Gece Emir Planlayıcısı
+  const nightHerblorePlan = useMemo(() => {
+    const recipes = [
+      { name: 'Cadantine blood potion (unf)', grimy: 'Grimy cadantine', vial: 'Vial of blood', level: 80 },
+      { name: 'Huasca potion (unf)', grimy: 'Grimy huasca', vial: 'Vial of water', level: 58 },
+      { name: 'Snapdragon potion (unf)', grimy: 'Grimy snapdragon', vial: 'Vial of water', level: 63 },
+      { name: 'Ranarr potion (unf)', grimy: 'Grimy ranarr weed', vial: 'Vial of water', level: 30 },
+      { name: 'Kwuarm potion (unf)', grimy: 'Grimy kwuarm', vial: 'Vial of water', level: 55 },
+      { name: 'Torstol potion (unf)', grimy: 'Grimy torstol', vial: 'Vial of water', level: 78 },
+      { name: 'Lantadyme potion (unf)', grimy: 'Grimy lantadyme', vial: 'Vial of water', level: 69 },
+      { name: 'Cadantine potion (unf)', grimy: 'Grimy cadantine', vial: 'Vial of water', level: 66 },
+      { name: 'Irit potion (unf)', grimy: 'Grimy irit leaf', vial: 'Vial of water', level: 45 },
+      { name: 'Guam potion (unf)', grimy: 'Grimy guam leaf', vial: 'Vial of water', level: 3 },
+      { name: 'Dwarf weed potion (unf)', grimy: 'Grimy dwarf weed', vial: 'Vial of water', level: 72 },
+      { name: 'Avantoe potion (unf)', grimy: 'Grimy avantoe', vial: 'Vial of water', level: 50 },
+      { name: 'Toadflax potion (unf)', grimy: 'Grimy toadflax', vial: 'Vial of water', level: 34 },
+      { name: 'Tarromin potion (unf)', grimy: 'Grimy tarromin', vial: 'Vial of water', level: 12 },
+      { name: 'Harralander potion (unf)', grimy: 'Grimy harralander', vial: 'Vial of water', level: 22 },
+      { name: 'Marrentill potion (unf)', grimy: 'Grimy marrentill', vial: 'Vial of water', level: 5 },
+    ]
+
+    const userHerbLvl = Number(levels.Herblore || 1)
+
+    const evaluated = recipes.map((rec) => {
+      const grimyItem = getItem(rec.grimy)
+      const vialItem = getItem(rec.vial)
+      const unfItem = getItem(rec.name)
+      if (!grimyItem || !vialItem || !unfItem) return null
+
+      const gPrice = prices[grimyItem.id]
+      const vPrice = prices[vialItem.id]
+      const uPrice = prices[unfItem.id]
+      if (!gPrice?.high || !gPrice?.low || !vPrice?.high || !uPrice?.high || !uPrice?.low) return null
+
+      const gVol = volume(rec.grimy) || 0
+      const uVol = volume(rec.name) || 0
+      const bottleneckVol = Math.min(gVol, uVol)
+
+      // Risk filtresi: Elinde kalmaması için 24h hacmi 1.500 altındaki ölü piyasaları ele
+      if (bottleneckVol < 1500) return null
+
+      const gSpread = Math.max(1, Number(gPrice.high) - Number(gPrice.low))
+      const uSpread = Math.max(1, Number(uPrice.high) - Number(uPrice.low))
+
+      const gAdv = smartAdvice(rec.grimy, portfolioProfile, 1000)
+      const uAdv = smartAdvice(rec.name, portfolioProfile, 1000)
+
+      let grimyBuyOrder = 0
+      let unfSellOrder = 0
+
+      if (gAdv && uAdv) {
+        grimyBuyOrder = gAdv.recBuy
+        unfSellOrder = uAdv.recSell
+      } else {
+        if (portfolioProfile === 'FAST') {
+          grimyBuyOrder = Number(gPrice.high)
+          unfSellOrder = Number(uPrice.low)
+        } else if (portfolioProfile === 'BALANCED') {
+          grimyBuyOrder = Math.round(Number(gPrice.low) + gSpread * 0.35)
+          unfSellOrder = Math.round(Number(uPrice.high) - uSpread * 0.35)
+        } else {
+          grimyBuyOrder = Math.round(Number(gPrice.low) + gSpread * 0.10)
+          unfSellOrder = Math.round(Number(uPrice.high) - uSpread * 0.10)
+        }
+      }
+
+      const vialCost = Number(vPrice.high)
+      const totalUnitCost = grimyBuyOrder + vialCost
+      const netSellAfterTax = unfSellOrder - geTax(unfSellOrder)
+      const netProfitPerItem = netSellAfterTax - totalUnitCost
+
+      const geLimit = Number(grimyItem.limit || 11000)
+      const safeMarketCap = Math.floor(bottleneckVol * 0.05)
+      const maxSafeQty = Math.max(0, Math.min(geLimit, safeMarketCap))
+
+      return {
+        ...rec,
+        unlocked: userHerbLvl >= rec.level,
+        grimyBuyOrder,
+        vialCost,
+        unfSellOrder,
+        netProfitPerItem,
+        totalUnitCost,
+        maxSafeQty,
+        bottleneckVol,
+        hourlyPotential: netProfitPerItem * 2500,
+      }
     })
-    // Herblore's 15 herbs, all four routes; one route per herb can enter a portfolio.
-    herbloreRows.forEach((h:any)=>{
-      const defs=[
-        {r:h.grimyClean,key:'grimyClean',inputs:[{name:h.grimyName,qty:1}],output:h.cleanName,rate:5000,skill:'Herblore',level:h.level,extra:0},
-        {r:h.cleanPotion,key:'cleanPotion',inputs:[{name:h.cleanName,qty:1},{name:'Vial of water',qty:1}],output:h.unfinishedName,rate:2500,skill:'Herblore',level:h.level,extra:0},
-        {r:h.grimyPotion,key:'grimyPotion',inputs:[{name:h.grimyName,qty:1},{name:'Vial of water',qty:1}],output:h.unfinishedName,rate:2500,skill:'Herblore',level:h.level,extra:0},
-        {r:h.degrime,key:'degrime',inputs:[{name:h.grimyName,qty:1},{name:'Nature rune',qty:2/27},...(!degrimeEarthStaff?[{name:'Earth rune',qty:4/27}]:[])],output:h.cleanName,rate:16200,skill:'Herblore / Magic',level:h.level,extra:0}
-      ]
-      defs.forEach((d:any)=>{
-        if(!d.r||d.r.levelLocked)return
-        const ins=d.inputs.filter((x:any)=>typeof x?.name==='string'&&x.name.trim()).map((x:any)=>({name:x.name.trim(),qty:x.qty}));if(ins.length!==d.inputs.length||typeof d.output!=='string'||!d.output.trim())return;const ip=ins.map((x:any)=>pair(x.name));const op=pair(d.output)
-        if(ip.some((x:any)=>!x)||!op)return
-        const vols=[...ip.map((x:any)=>x.vol),op.vol];if(vols.some(x=>x<=0))return
-        const lims=ins.map((x:any,i:number)=>ip[i].limit>0?Math.floor(ip[i].limit/x.qty):0);if(lims.some((x:number)=>x<=0))return
-        candidates.push({id:`herb-${h.key}-${d.key}`,group:`herb-${h.key}`,name:`${h.herb} • ${d.key==='grimyClean'?'Grimy → Clean':d.key==='cleanPotion'?'Clean → Unf':d.key==='grimyPotion'?'Grimy → Unf':'Degrime'}`,kind:'Herblore',skill:d.skill,level:d.level,member:true,rate:d.rate,rateSource:'Tahmin',inputs:ins,output:d.output,outputQty:1,buyLimit:Math.min(...lims),volume:Math.min(...vols),buyUnit:0,sellUnit:0,taxed:true,attention:'LOW',requirements:d.key==='degrime'?['A Kingdom Divided','Magic 70']:[]})
+    .filter((x): x is NonNullable<typeof x> => x !== null && x.unlocked && x.netProfitPerItem > 0 && x.maxSafeQty >= 50)
+    .sort((a, b) => b.netProfitPerItem - a.netProfitPerItem)
+
+    let remainingCap = Math.max(0, portfolioCapital)
+    const maxPerItemCap = portfolioCapital * 0.40
+    const rows: any[] = []
+
+    for (const item of evaluated) {
+      if (remainingCap < item.totalUnitCost || rows.length >= 8) break
+      const allocatable = Math.min(remainingCap, maxPerItemCap)
+      const qty = Math.min(item.maxSafeQty, Math.floor(allocatable / item.totalUnitCost))
+      if (qty < 10) continue
+
+      const capitalUsed = qty * item.totalUnitCost
+      const totalNetProfit = qty * item.netProfitPerItem
+      rows.push({
+        ...item,
+        qty,
+        capitalUsed,
+        totalNetProfit,
       })
-    })
-    // High Alchemy intentionally excluded: one-by-one manual casting belongs only in its dedicated screen.
-    const profile=portfolioProfile
-    const riskCfg=portfolioRisk==='LOW'?{minVol:2500,participation:.05,maxShare:.50,minScore:0}:portfolioRisk==='MEDIUM'?{minVol:500,participation:.05,maxShare:.50,minScore:0}:{minVol:100,participation:.05,maxShare:.50,minScore:0}
-    const prepared=candidates.filter(c=>c.kind==='Herblore'&&c.id.includes('-grimyPotion')).map(c=>{
-      const ps=c.inputs.map((x:any)=>pair(x.name));const out=c.fixedOutput?null:pair(c.output)
-      if(ps.some((x:any)=>x===null)||(!c.fixedOutput&&out===null))return null
-      const validPs=ps as Array<NonNullable<(typeof ps)[number]>>
-      const validOut=out as NonNullable<typeof out>|null
-      const plannedInputs=c.inputs.map((x:any,i:number)=>({...x,orderPrice:profile==='FAST'?validPs[i].high:profile==='BALANCED'?(validPs[i].high+validPs[i].low)/2:validPs[i].low}))
-      const inputCost=plannedInputs.reduce((n:number,x:any)=>n+x.orderPrice*x.qty,0)
-      const outputPrice=c.fixedOutput??(profile==='FAST'?validOut!.low:profile==='BALANCED'?(validOut!.high+validOut!.low)/2:validOut!.high)
-      const outputNet=c.fixedOutput?c.fixedOutput:outputPrice*c.outputQty-geTax(outputPrice)*c.outputQty
-      const profit=outputNet-inputCost
-      const bottleneck=Math.min(c.volume,...validPs.map((x:any)=>x.vol),...(validOut?[validOut.vol]:[]))
-      const marketQty=Math.max(0,Math.floor(bottleneck*riskCfg.participation))
-      const qtyCap=Math.min(c.buyLimit,marketQty)
-      const unitCapital=inputCost
-      const rate=Math.min(c.rate,Math.max(0,marketQty)/Math.max(1,dailyMaxHours))
-      const capacityGpHour=profit>0?profit*rate:0
-      const liquidityRatio=bottleneck>0?Math.min(1,marketQty/Math.max(1,c.rate*dailyMaxHours)):0
-      const riskScore=portfolioRisk==='LOW'?(bottleneck>=10000?1:0.75):portfolioRisk==='MEDIUM'?(bottleneck>=2500?1:0.65):(bottleneck>=1000?1:0.55)
-      const effortFactor=c.attention==='AFK'?1.25:c.attention==='LOW'?1.15:c.attention==='MEDIUM'?0.90:0.65
-      const score=profit>0&&unitCapital>0?capacityGpHour*riskScore*effortFactor:0
-      return {...c,plannedInputs,inputCost,outputPrice,outputNet,profit,unitCapital,bottleneck,qtyCap,capacityGpHour,liquidityRatio,effortFactor,score,profile}
-    }).filter((x:any)=>x&&x.profit>0&&x.capacityGpHour>=600000&&x.qtyCap>0&&x.score>0&&x.bottleneck>=riskCfg.minVol&&x.unitCapital>0)
-    const selected:any[]=[];const usedGroups=new Set<string>();let remaining=Math.max(0,portfolioCapital)
-    while(selected.length<8){
-      const next=prepared.filter((x:any)=>!usedGroups.has(x.group)&&x.unitCapital<=remaining&&x.unitCapital<=portfolioCapital*riskCfg.maxShare).sort((a:any,b:any)=>b.score-a.score)[0]
-      if(!next)break
-      const allocation=Math.min(remaining,portfolioCapital*riskCfg.maxShare,Math.max(next.unitCapital,portfolioCapital/Math.max(3,Math.min(6,prepared.length))))
-      const qty=Math.min(next.qtyCap,Math.floor(allocation/next.unitCapital))
-      if(qty<1){usedGroups.add(next.group);continue}
-      const used=qty*next.unitCapital
-      selected.push({...next,qty,capitalUsed:used,expectedProfit:qty*next.profit,expectedHours:next.rate>0?qty/next.rate:null,expectedGpHour:next.capacityGpHour,volumeShare:next.bottleneck>0?qty/next.bottleneck:1})
-      remaining-=used;usedGroups.add(next.group)
+      remainingCap -= capitalUsed
     }
-    return {rows:selected,used:selected.reduce((n,x)=>n+x.capitalUsed,0),reserve:Math.max(0,portfolioCapital-selected.reduce((n,x)=>n+x.capitalUsed,0)),profit:selected.reduce((n,x)=>n+x.expectedProfit,0),gpHour:selected.reduce((n,x)=>n+x.expectedGpHour,0),candidateCount:prepared.length}
-  },[v5Rows,herbloreRows,alchemyRows,mapping,prices,volumes,mode,portfolioCapital,portfolioProfile,portfolioRisk,dailyMaxHours,degrimeEarthStaff])
+
+    return {
+      rows,
+      totalUsed: rows.reduce((s, r) => s + r.capitalUsed, 0),
+      remainingCap,
+      totalProfit: rows.reduce((s, r) => s + r.totalNetProfit, 0),
+    }
+  }, [mapping, prices, volumes, levels.Herblore, portfolioCapital, portfolioProfile, smartSeries])
 
   const marketRadarRows=useMemo(()=>{
     const profile=portfolioProfile
@@ -3205,20 +3257,108 @@ export default function App() {
         <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Satış geliri = güncel GE sell fiyatı − GE vergisi. GP/h, normal temizleme için 5.000 adet/saat, unfinished potion üretimi için 2.500 adet/saat ve Degrime için 600 cast/saat × 27 herb varsayar. Degrime maliyetine herb başına 2/27 Nature rune ve Earth staff yoksa 4/27 Earth rune eklenir. Girdi ve çıktıların 24 saatlik hacimleri ayrı gösterilir; hacim filtresi işlemdeki en düşük hacimli piyasa tarafını (darboğazı) esas alır. Capacity GP/h, ilgili girdilerin ve çıktının 24 saatlik hacminin %5'i ve günlük çalışma süresi üzerinden sınırlandırılır. “Unf Potion” tam iksir değildir; ikinci bileşen eklenmemiş unfinished potion'dır.</p>
       </section>}
 
-      {activeTab==='portfolio'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
-        <h2 style={{marginTop:0}}>Herblore GE Emir Planı</h2>
-        <p style={{fontSize:11,color:'#8b949e'}}>Grimy herb al → sabah unfinished potion üret → seçtiğin profilde satış emri bırak. Yalnızca hacim, sermaye ve kâr koşullarını geçen grimy→unf fırsatları gösterilir.</p>
-        <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'end',padding:10,border:'1px solid #30363d',borderRadius:8}}>
-          <label style={{display:'grid',gap:4}}>Sermaye (GP)<input type="number" min="1" step="100000" value={portfolioCapital} onChange={e=>setPortfolioCapital(Math.max(1,Number(e.target.value)||1))} style={{width:180}}/></label>
-          <label style={{display:'grid',gap:4}}>İşlem profili<select value={portfolioProfile} onChange={e=>setPortfolioProfile(e.target.value as any)}><option value="FAST">FAST — hemen al / hemen sat</option><option value="BALANCED">BALANCED — 4–5 saat bekle</option><option value="PATIENT">PATIENT — gece emir bırak</option></select></label>
-        </div>
-        <div style={{fontSize:12,margin:'8px 0'}}>Fırsat: <b>{portfolioCandidates.rows.length}</b> · Bağlanan: <b>{fmt(portfolioCandidates.used)} GP</b> · Boşta: <b>{fmt(portfolioCandidates.reserve)} GP</b> · Tahmini net kâr: <b style={{color:portfolioCandidates.profit>0?'#3fb950':'inherit'}}>{fmt(portfolioCandidates.profit)} GP</b></div>
-        <div style={{fontSize:11,color:'#8b949e',marginBottom:8}}>Düşük risk: 24h hacmin en fazla %5'i, ürün başına sermayenin en fazla %50'si. Net 600K GP/h altı listelenmez • Üyelik: {mode} • Herblore: {levels.Herblore||1}.</div>
-        {portfolioCandidates.rows.length>0?<div className="tableBox"><table><thead><tr><th>Herb</th><th>Grimy alış emri</th><th>Unf satış emri</th><th>Adet</th><th>Bağlanan GP</th><th>Tahmini net kâr</th></tr></thead><tbody>
-          {portfolioCandidates.rows.map((r:any)=><tr key={r.id}><td><b>{r.name.replace(' • Grimy → Unf','')}</b></td><td>{fmt(r.plannedInputs[0]?.orderPrice)} GP</td><td>{fmt(r.outputPrice)} GP</td><td><b>{fmt(r.qty)}</b></td><td>{fmt(r.capitalUsed)} GP</td><td style={{color:'#3fb950'}}><b>{fmt(r.expectedProfit)} GP</b></td></tr>)}
-        </tbody></table></div>:<div style={{padding:10,border:'1px solid #d29922',borderRadius:6}}>Şu an 600K net GP/h, hacim ve sermaye koşullarını birlikte geçen grimy→unfinished fırsat yok. Eşiği düşürüp riskli ürün eklemedim.</div>}
-        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>FAST mevcut anlık fiyatlara yakın; BALANCED orta fiyatlara; PATIENT daha avantajlı alış ve satış hedeflerine göre hesaplanır. Dolum garantisi yoktur. Kâr hesabı vial of water ve GE satış vergisini içerir. Miktar, alış limiti, 24 saatlik hacmin en fazla %5'i ve ürün başına sermayenin en fazla %50'siyle sınırlandırılır. Fiyatlar ve kâr tahminidir; piyasa riski sıfırlanamaz.</p>
-      </section>}
+      {activeTab === 'portfolio' && (
+        <section style={{ marginTop: 12, padding: 14, border: '1px solid #30363d', borderRadius: 8, background: '#161b22' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 12 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 18 }}>Gece GE Herblore Emir Listesi</h2>
+              <div style={{ fontSize: 11, color: '#8b949e' }}>
+                Herblore Lv.{levels.Herblore || 1} • Hacim ve GE limiti korumalı • Vergi + Vial dahil net kâr
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <label style={{ fontSize: 12 }}>
+                Sermaye (GP):{' '}
+                <input
+                  type="number"
+                  min="10000"
+                  step="500000"
+                  value={portfolioCapital}
+                  onChange={(e) => setPortfolioCapital(Math.max(1000, Number(e.target.value) || 0))}
+                  style={{ width: 140, fontWeight: 'bold' }}
+                />
+              </label>
+
+              <label style={{ fontSize: 12 }}>
+                Emir Modu:{' '}
+                <select
+                  value={portfolioProfile}
+                  onChange={(e) => setPortfolioProfile(e.target.value as any)}
+                  style={{ fontWeight: 'bold' }}
+                >
+                  <option value="PATIENT">PATIENT (Gece Yatarken)</option>
+                  <option value="BALANCED">BALANCED (4-5 Saatlik)</option>
+                  <option value="FAST">FAST (Acil / Anında)</option>
+                </select>
+              </label>
+
+              <button
+                type="button"
+                onClick={() => {
+                  nightHerblorePlan.rows.forEach((r) => {
+                    loadSmartSeries(r.grimy)
+                    loadSmartSeries(r.name)
+                  })
+                }}
+              >
+                ↻ 24h Derinlik Analizi Yükle
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 20, padding: '10px 12px', background: '#0d1117', borderRadius: 6, border: '1px solid #30363d', marginBottom: 12, fontSize: 13 }}>
+            <div>Bağlanacak Sermaye: <b>{fmt(nightHerblorePlan.totalUsed)} GP</b></div>
+            <div>Boşta Kalan: <b>{fmt(nightHerblorePlan.remainingCap)} GP</b></div>
+            <div>Sabah Tahmini Net Kâr: <b style={{ color: '#3fb950', fontSize: 15 }}>+{fmt(nightHerblorePlan.totalProfit)} GP</b></div>
+          </div>
+
+          <div className="tableBox">
+            <table>
+              <thead>
+                <tr>
+                  <th>Alınacak Grimy Herb</th>
+                  <th>Mod</th>
+                  <th>Grimy Alış Emri</th>
+                  <th>Alınacak Adet</th>
+                  <th>Vial Maliyeti</th>
+                  <th>Sabah Satış Emri (Unf)</th>
+                  <th>Net Kâr / Adet</th>
+                  <th>Toplam Bağlanan GP</th>
+                  <th>Toplam Net Kâr</th>
+                  <th>24h Hacim</th>
+                </tr>
+              </thead>
+              <tbody>
+                {nightHerblorePlan.rows.map((r) => (
+                  <tr key={r.name}>
+                    <td>
+                      <b>{r.grimy}</b>
+                      <div style={{ fontSize: 10, color: '#8b949e' }}>→ {r.name} (Lv.{r.level})</div>
+                    </td>
+                    <td><b>{portfolioProfile}</b></td>
+                    <td style={{ color: '#58a6ff', fontWeight: 'bold', fontSize: 13 }}>{fmt(r.grimyBuyOrder)} GP</td>
+                    <td style={{ fontWeight: 'bold', fontSize: 13 }}>{fmt(r.qty)}</td>
+                    <td style={{ color: '#8b949e' }}>{fmt(r.vialCost)} GP</td>
+                    <td style={{ color: '#e3b341', fontWeight: 'bold', fontSize: 13 }}>{fmt(r.unfSellOrder)} GP</td>
+                    <td style={{ color: '#3fb950' }}>+{fmt(r.netProfitPerItem)} GP</td>
+                    <td>{fmt(r.capitalUsed)} GP</td>
+                    <td style={{ color: '#3fb950', fontWeight: 'bold' }}>+{fmt(r.totalNetProfit)} GP</td>
+                    <td style={{ fontSize: 11, color: '#8b949e' }}>{fmt(r.bottleneckVol)}</td>
+                  </tr>
+                ))}
+                {!nightHerblorePlan.rows.length && (
+                  <tr>
+                    <td colSpan={10} style={{ textAlign: 'center', padding: 16 }}>
+                      Mevcut Herblore seviyen ({levels.Herblore || 1}) ve piyasa fiyatları ile risksiz kâr bırakan fırsat bulunamadı. Üstten "Fiyatları Güncelle" butonuna bas.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {activeTab==='market'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
         <h2 style={{marginTop:0}}>GE Fırsat Radarı — Canlı Piyasa İskontosu</h2>
