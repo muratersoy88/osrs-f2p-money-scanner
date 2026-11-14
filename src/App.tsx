@@ -17,6 +17,9 @@ type CompetitionRisk = 'LOW' | 'MEDIUM' | 'HIGH'
 type PlayerMode = 'ACTIVE' | 'NORMAL' | 'CHILL'
 type BondScenario = 'EXPECTED' | 'CONSERVATIVE'
 type NightSample = { t:number; high:number|null; low:number|null }
+type NightS3 = { PATIENT:number; BALANCED:number; FAST:number }
+type NightLedgerRow = { item:string; side:'BUY'|'SELL'; qty:number; price:number; filled:number|null; hours:number|null; avg:number|null }
+type NightLedgerBatch = { id:string; date:string; strategy:string; rows:NightLedgerRow[] }
 type ProgressionPriority = 'PROFIT' | 'BALANCED' | 'PROGRESSION'
 type Measurement = { date:string; skillLevel:number; quantity:number; minutes:number; itemsPerHour:number; buyPrice?:number; sellPrice?:number; profit?:number; xp?:number; successful?:number; failed?:number; burnt?:number; outputs?:Record<string,number> }
 
@@ -1295,6 +1298,8 @@ export default function App() {
   const [nightOnly600,setNightOnly600]=useState(false)
   const [nightLevelFilter,setNightLevelFilter]=useState(false)
   const [nightCopied,setNightCopied]=useState(false)
+  const [nightLedger,setNightLedger]=useState<NightLedgerBatch[]>(()=>{try{const v=JSON.parse(localStorage.getItem('osrs-night-ledger-v1')||'[]');return Array.isArray(v)?v:[]}catch{return[]}})
+  useEffect(()=>{try{localStorage.setItem('osrs-night-ledger-v1',JSON.stringify(nightLedger))}catch{/* storage full or unavailable */}},[nightLedger])
   const [orderHistory,setOrderHistory]=useState<OrderHistoryRow[]>(()=>{try{return JSON.parse(localStorage.getItem('osrs-order-history-v56')||'[]')}catch{return[]}})
   const [historyDraft,setHistoryDraft]=useState({item:'',side:'BUY' as OrderSide,quantity:500,orderPrice:0,filledQuantity:0,fillHours:'',status:'FILLED' as OrderStatus,averageFillPrice:''})
 
@@ -2721,6 +2726,28 @@ export default function App() {
     return list
   },[herbloreRows])
 
+  const nightV5=useMemo(()=>{
+    const list:any[]=[]
+    v5Rows.forEach((r:any)=>{
+      if((!r.open&&!(r.member&&r.current>=r.level))||r.quality!=='VERIFIED'||!r.economyReady||!r.economy?.inputs?.length||!r.economy?.outputName||!(r.rate>0))return
+      if(r.member&&mode!=='MEMBER')return
+      const out=String(r.economy.outputName).trim()
+      if(!out||/\(unf\)$/i.test(out))return
+      const ins=r.economy.inputs.filter((x:any)=>typeof x?.name==='string'&&x.name.trim()).map((x:any)=>({name:x.name.trim(),qty:Number(x.qty)||1}))
+      if(!ins.length||ins.length!==r.economy.inputs.length)return
+      list.push({key:`v5-${r.id}`,name:String(r.name),skill:(r.skills||[]).join(', '),level:r.level,rate:Number(r.rate),rateSource:r.rateSource||'Tahmin',inputs:ins,output:out,outputQty:Number(r.economy.outputQty)||1,coinFee:Number(r.coinFee||0),gp:typeof r.gp==='number'?r.gp:-Infinity})
+    })
+    const seen=new Set<string>()
+    return list.sort((x,y)=>y.gp-x.gp).filter(x=>{const k=x.output.toLowerCase();if(seen.has(k))return false;seen.add(k);return true}).slice(0,30)
+  },[v5Rows,mode])
+
+  const nightFetchNames=useMemo(()=>{
+    const names:string[]=[]
+    nightHerbs.forEach((h:any)=>names.push(h.grimyName,h.cleanName,h.unfinishedName))
+    nightV5.forEach((m:any)=>{m.inputs.forEach((x:any)=>names.push(x.name));names.push(m.output)})
+    return Array.from(new Set(names.filter(n=>typeof n==='string'&&n)))
+  },[nightHerbs,nightV5])
+
   // ---- Gece Emir Listesi: hourly history (last 24h) for herb items, fetched only while the tab is open ----
   useEffect(()=>{
     if(activeTab!=='night'||!mapping.length||!Object.keys(prices).length)return
@@ -2728,7 +2755,7 @@ export default function App() {
     let cancelled=false
     setNightLoading(true)
     ;(async()=>{
-      const names=nightHerbs.flatMap((h:any)=>[h.grimyName,h.cleanName,h.unfinishedName])
+      const names=nightFetchNames
       const ids=Array.from(new Set(names.map((n:string)=>getItem(n)?.id).filter((x:any)=>x!=null)))
       const out:Record<string,NightSample[]>={}
       for(let i=0;i<ids.length;i+=5){
@@ -2744,33 +2771,36 @@ export default function App() {
       if(!cancelled){setNightHist(out);setNightHistTime(Date.now());setNightLoading(false)}
     })()
     return ()=>{cancelled=true;setNightLoading(false)}
-  },[activeTab,mapping,prices,nightHerbs,nightHistTime])
+  },[activeTab,mapping,prices,nightFetchNames,nightHistTime])
+
+  // shared price ladder (Patient / Balanced / Fast) used by the Herblore list and the other-methods list
+  const pct=(arr:number[],p:number)=>{const a=[...arr].sort((x,y)=>x-y);const i=(a.length-1)*p;const lo=Math.floor(i),hi=Math.ceil(i);return a[lo]+(a[hi]-a[lo])*(i-lo)}
+  const nightLive=(name:string)=>{const it=getItem(name);if(!it)return null;const d=prices[it.id];if(!d||d.high==null||d.low==null)return null;const v=volumes[it.id];return {id:String(it.id),high:Number(d.high),low:Number(d.low),vol:v?Number(v.highPriceVolume||0)+Number(v.lowPriceVolume||0):0,limit:Number(it.limit||0),a24l:v&&Number(v.avgLowPrice)>0?Number(v.avgLowPrice):null,a24h:v&&Number(v.avgHighPrice)>0?Number(v.avgHighPrice):null}}
+  const nightLadder=(name:string)=>{
+    const l=nightLive(name);if(!l)return null
+    const hist=nightHist[l.id]||[]
+    const lows=hist.map(x=>x.low).filter((x):x is number=>x!=null&&x>0)
+    const highs=hist.map(x=>x.high).filter((x):x is number=>x!=null&&x>0)
+    const ok=lows.length>=6&&highs.length>=6
+    const refLow=(p:number)=>ok?pct(lows,p):(l.a24l??l.low)
+    const refHigh=(p:number)=>ok?pct(highs,p):(l.a24h??l.high)
+    // buy side: live high = instant buy; history percentiles of what sellers accepted
+    const bF=l.high
+    const bB=Math.min(bF,refLow(.5))
+    const bP=Math.min(bB,Math.max(refLow(.2),l.low*0.97))
+    // sell side: live low = instant sell; history percentiles of what buyers paid (capped near live high)
+    const sF=l.low
+    const sB=Math.max(sF,Math.min(refHigh(.5),l.high))
+    const sP=Math.max(sB,Math.min(refHigh(.8),l.high*1.03))
+    const buy:NightS3={PATIENT:Math.max(1,Math.round(bP)),BALANCED:Math.max(1,Math.round(bB)),FAST:Math.max(1,Math.round(bF))}
+    const sell:NightS3={PATIENT:Math.max(1,Math.round(sP)),BALANCED:Math.max(1,Math.round(sB)),FAST:Math.max(1,Math.round(sF))}
+    return {l,ok,pts:Math.min(lows.length,highs.length),buy,sell}
+  }
 
   const nightPlan=useMemo(()=>{
     type S3={PATIENT:number;BALANCED:number;FAST:number}
     const keys=['PATIENT','BALANCED','FAST'] as const
-    const pct=(arr:number[],p:number)=>{const a=[...arr].sort((x,y)=>x-y);const i=(a.length-1)*p;const lo=Math.floor(i),hi=Math.ceil(i);return a[lo]+(a[hi]-a[lo])*(i-lo)}
-    const live=(name:string)=>{const it=getItem(name);if(!it)return null;const d=prices[it.id];if(!d||d.high==null||d.low==null)return null;const v=volumes[it.id];return {id:String(it.id),high:Number(d.high),low:Number(d.low),vol:v?Number(v.highPriceVolume||0)+Number(v.lowPriceVolume||0):0,limit:Number(it.limit||0),a24l:v&&Number(v.avgLowPrice)>0?Number(v.avgLowPrice):null,a24h:v&&Number(v.avgHighPrice)>0?Number(v.avgHighPrice):null}}
-    const ladder=(name:string)=>{
-      const l=live(name);if(!l)return null
-      const hist=nightHist[l.id]||[]
-      const lows=hist.map(x=>x.low).filter((x):x is number=>x!=null&&x>0)
-      const highs=hist.map(x=>x.high).filter((x):x is number=>x!=null&&x>0)
-      const ok=lows.length>=6&&highs.length>=6
-      const refLow=(p:number)=>ok?pct(lows,p):(l.a24l??l.low)
-      const refHigh=(p:number)=>ok?pct(highs,p):(l.a24h??l.high)
-      // buy side: live high = instant buy; history percentiles of what sellers accepted
-      const bF=l.high
-      const bB=Math.min(bF,refLow(.5))
-      const bP=Math.min(bB,Math.max(refLow(.2),l.low*0.97))
-      // sell side: live low = instant sell; history percentiles of what buyers paid (capped near live high)
-      const sF=l.low
-      const sB=Math.max(sF,Math.min(refHigh(.5),l.high))
-      const sP=Math.max(sB,Math.min(refHigh(.8),l.high*1.03))
-      const buy:S3={PATIENT:Math.max(1,Math.round(bP)),BALANCED:Math.max(1,Math.round(bB)),FAST:Math.max(1,Math.round(bF))}
-      const sell:S3={PATIENT:Math.max(1,Math.round(sP)),BALANCED:Math.max(1,Math.round(sB)),FAST:Math.max(1,Math.round(sF))}
-      return {l,ok,pts:Math.min(lows.length,highs.length),buy,sell}
-    }
+    const live=nightLive,ladder=nightLadder
     const sel=portfolioProfile
     const vialWater=live('Vial of water')
     const rows:any[]=[]
@@ -2789,7 +2819,7 @@ export default function App() {
       const bottleneck=Math.min(a.l.vol,b.l.vol)
       const limits=[a.l.limit,vial.limit].filter(x=>x>0)
       const qtyCap=Math.max(0,Math.min(limits.length?Math.min(...limits):Infinity,Math.floor(bottleneck*0.05)))
-      rows.push({key:h.key,herb:h.herb,vialName:h.vialName,level:h.level,locked,inName,outName:h.unfinishedName,a,b,cost,net,rate,gpHour:net[sel]*rate,bottleneck,qtyCap})
+      rows.push({key:h.key,herb:h.herb,vialName:h.vialName,vialCost,level:h.level,locked,inName,outName:h.unfinishedName,a,b,cost,net,rate,gpHour:net[sel]*rate,bottleneck,qtyCap})
     })
     const eligible=rows.filter(r=>r.net[sel]>0&&r.qtyCap>=1&&Number.isFinite(r.qtyCap)&&(!nightOnly600||r.gpHour>=600000))
     const plan=new Map<string,{qty:number;capital:number;profit:number}>()
@@ -2806,6 +2836,71 @@ export default function App() {
     const profit=[...plan.values()].reduce((n,x)=>n+x.profit,0)
     return {rows:out,used,reserve:Math.max(0,portfolioCapital-used),profit,count:plan.size,skipped:rows.length-eligible.length,noData,vialCost:vialWater?{P:vialWater.low,B:Math.round((vialWater.low+vialWater.high)/2),F:vialWater.high}:null}
   },[nightHerbs,prices,volumes,nightHist,nightRoute,nightOnly600,nightLevelFilter,portfolioProfile,portfolioCapital,levels,mapping])
+
+  const nightMethods=useMemo(()=>{
+    type S3={PATIENT:number;BALANCED:number;FAST:number}
+    const keys=['PATIENT','BALANCED','FAST'] as const
+    const sel=portfolioProfile
+    const rows:any[]=[]
+    nightV5.forEach((m:any)=>{
+      const ins=m.inputs.map((x:any)=>({x,ld:nightLadder(x.name)}))
+      const outL=nightLadder(m.output)
+      if(!outL||ins.some((i:any)=>!i.ld))return
+      const limits=ins.map((i:any)=>i.ld.l.limit>0?Math.floor(i.ld.l.limit/i.x.qty):0)
+      if(limits.some((x:number)=>x<=0))return
+      const cost:S3={PATIENT:0,BALANCED:0,FAST:0},net:S3={PATIENT:0,BALANCED:0,FAST:0}
+      keys.forEach(k=>{
+        const c=ins.reduce((n:number,i:any)=>n+i.ld.buy[k]*i.x.qty,0)+m.coinFee
+        const sell=outL.sell[k]
+        cost[k]=c;net[k]=sell*m.outputQty-geTax(sell)*m.outputQty-c
+      })
+      const bottleneck=Math.min(...ins.map((i:any)=>i.ld.l.vol/i.x.qty),outL.l.vol/m.outputQty)
+      const qtyCap=Math.max(0,Math.min(...limits,Math.floor(bottleneck*0.05)))
+      rows.push({...m,ins,outL,cost,net,bottleneck,qtyCap,gpHour:net[sel]*m.rate})
+    })
+    const eligible=rows.filter(r=>r.net[sel]>0&&r.cost[sel]>0&&r.qtyCap>=1&&Number.isFinite(r.qtyCap)&&(!nightOnly600||r.gpHour>=600000))
+    const plan=new Map<string,{qty:number;capital:number;profit:number}>()
+    let remaining=Math.max(0,nightPlan.reserve)
+    ;[...eligible].sort((x,y)=>y.net[sel]/y.cost[sel]-x.net[sel]/x.cost[sel]).forEach(r=>{
+      const c=r.cost[sel]
+      const qty=Math.min(r.qtyCap,Math.floor(portfolioCapital*0.5/c),Math.floor(remaining/c))
+      if(qty<1)return
+      plan.set(r.key,{qty,capital:qty*c,profit:qty*r.net[sel]});remaining-=qty*c
+    })
+    const reasonOf=(r:any)=>r.net[sel]<=0?'zararda':r.qtyCap<1?'hacim/limit yetersiz':(nightOnly600&&r.gpHour<600000)?'600K GP/h altı':!plan.has(r.key)?'sermaye yetmedi':''
+    const out=rows.map(r=>({...r,plan:plan.get(r.key)||null,reason:reasonOf(r)})).sort((x,y)=>(y.plan?1:0)-(x.plan?1:0)||y.gpHour-x.gpHour)
+    const used=[...plan.values()].reduce((n,x)=>n+x.capital,0)
+    const profit=[...plan.values()].reduce((n,x)=>n+x.profit,0)
+    return {rows:out,used,profit,count:plan.size,reserve:Math.max(0,nightPlan.reserve-used)}
+  },[nightV5,prices,volumes,nightHist,nightOnly600,portfolioProfile,portfolioCapital,nightPlan.reserve])
+
+  const saveNightLedger=()=>{
+    const sel=portfolioProfile
+    const rows:NightLedgerRow[]=[]
+    nightPlan.rows.filter((r:any)=>r.plan).forEach((r:any)=>{
+      rows.push({item:r.inName,side:'BUY',qty:r.plan.qty,price:r.a.buy[sel],filled:null,hours:null,avg:null})
+      rows.push({item:r.vialName,side:'BUY',qty:r.plan.qty,price:Math.round(r.vialCost[sel]),filled:null,hours:null,avg:null})
+      rows.push({item:r.outName,side:'SELL',qty:r.plan.qty,price:r.b.sell[sel],filled:null,hours:null,avg:null})
+    })
+    nightMethods.rows.filter((r:any)=>r.plan).forEach((r:any)=>{
+      r.ins.forEach((i:any)=>rows.push({item:i.x.name,side:'BUY',qty:r.plan.qty*i.x.qty,price:i.ld.buy[sel],filled:null,hours:null,avg:null}))
+      rows.push({item:r.output,side:'SELL',qty:r.plan.qty*r.outputQty,price:r.outL.sell[sel],filled:null,hours:null,avg:null})
+    })
+    if(!rows.length)return
+    setNightLedger(old=>[{id:`night-${Date.now()}`,date:new Date().toISOString(),strategy:sel,rows},...old].slice(0,30))
+  }
+  const updateLedgerRow=(batchId:string,idx:number,field:'filled'|'hours'|'avg',raw:string)=>{
+    const v=raw===''?null:Number(raw)
+    if(v!==null&&!Number.isFinite(v))return
+    setNightLedger(old=>old.map(b=>b.id!==batchId?b:{...b,rows:b.rows.map((r,i)=>i!==idx?r:{...r,[field]:v})}))
+  }
+  const transferLedger=(batch:NightLedgerBatch)=>{
+    const done=batch.rows.map((r,i)=>({r,i})).filter(x=>x.r.filled!==null)
+    if(!done.length)return
+    const rowsOut:OrderHistoryRow[]=done.map(({r,i})=>({id:`${batch.id}-${i}`,date:batch.date,item:r.item,side:r.side,quantity:r.qty,orderPrice:r.price,filledQuantity:Math.max(0,r.filled as number),fillHours:r.hours,status:(r.filled as number)>=r.qty?'FILLED':(r.filled as number)>0?'PARTIAL':'CANCELLED',averageFillPrice:r.avg}))
+    const ids=new Set(rowsOut.map(x=>x.id))
+    setOrderHistory(old=>[...rowsOut,...old.filter(x=>!ids.has(x.id))])
+  }
 
   const copyNightPlan=async()=>{
     const lines=nightPlan.rows.filter((r:any)=>r.plan).flatMap((r:any)=>[`${r.inName}: ${r.plan.qty} adet — alış emri ${r.a.buy[portfolioProfile]} GP`])
@@ -3375,6 +3470,47 @@ export default function App() {
           <button onClick={copyNightPlan} disabled={!nightPlan.count} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #30363d',background:'transparent',color:'inherit',cursor:'pointer'}}>{nightCopied?'Kopyalandı':'Emir listesini kopyala'}</button>
         </div>
         <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Listelenen herb: {nightPlan.rows.length} • plana girmeyen (soluk satırlar): {nightPlan.skipped}{nightPlan.noData>0?` • fiyat verisi olmayan: ${nightPlan.noData}`:''}. Adet; GE alış limiti, 24 saatlik hacmin %5'i ve ürün başına sermayenin %50'si ile sınırlıdır; sermaye en yüksek getiri/sermaye oranına göre dağıtılır. Net kâr; %2 GE satış vergisi ve Vial of water{nightPlan.vialCost?` (P ${nightPlan.vialCost.P} / B ${nightPlan.vialCost.B} / F ${nightPlan.vialCost.F} GP)`:''} dahil. GP/saat tahmini işlem hızıdır (Grimy→Unf ~1.475, Clean→Unf ~3.200 adet/saat). Tüm fiyatlar geçmiş verilerden türetilmiş tahmindir, dolum veya kâr garantisi yoktur. High Alchemy dahil değildir.</p>
+
+        <h3 style={{marginBottom:4}}>Diğer işleme metodları <span style={{fontSize:11,fontWeight:400,color:'#8b949e'}}>(uygulamadaki doğrulanmış V5 metodları • canlı fiyatta en kârlı ilk 30 • Herblore planından kalan {fmt(nightPlan.reserve)} GP ile)</span></h3>
+        {nightMethods.rows.length>0?<div className="tableBox"><table><thead><tr><th>Metod</th><th>Alış emirleri</th><th>Satış emri</th><th>Net kâr / işlem</th><th>~GP/saat</th><th>Gece adedi (işlem)</th><th>Sermaye</th><th>Beklenen net kâr</th><th>Likidite</th></tr></thead><tbody>
+          {nightMethods.rows.map((r:any)=><tr key={r.key} style={{opacity:r.plan?1:.55}}>
+            <td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.skill} Lv {r.level}</div></td>
+            <td>{r.ins.map((i:any)=><div key={i.x.name} style={{marginBottom:3}}>{i.x.name}{r.plan?` ×${fmt(r.plan.qty*i.x.qty)}`:''}{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontSize:11,fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(i.ld.buy[k])}{i.ld.ok?'':'*'}</div>)}</div>)}</td>
+            <td>{r.output}{r.plan?` ×${fmt(r.plan.qty*r.outputQty)}`:''}{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontSize:11,fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.outL.sell[k])}{r.outL.ok?'':'*'}</div>)}</td>
+            <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400,color:r.net[k]>0?'#3fb950':'#f85149'}}>{k[0]} {fmt(r.net[k])}</div>)}</td>
+            <td>{fmt(r.gpHour)}<div style={{fontSize:10,color:'#8b949e'}}>{fmt(r.rate)}/saat • {r.rateSource}</div></td>
+            <td><b>{r.plan?fmt(r.plan.qty):'—'}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.plan?`üst sınır ${fmt(r.qtyCap)}`:r.reason}</div></td>
+            <td>{r.plan?`${fmt(r.plan.capital)} GP`:'—'}</td>
+            <td style={{color:'#3fb950'}}><b>{r.plan?`${fmt(r.plan.profit)} GP`:'—'}</b></td>
+            <td>24h {fmt(Math.round(r.bottleneck))}{r.plan?<div style={{fontSize:10,color:'#8b949e'}}>pay %{(r.plan.qty/Math.max(1,r.bottleneck)*100).toFixed(1)}</div>:null}</td>
+          </tr>)}
+        </tbody></table></div>:<div style={{padding:10,border:'1px solid #30363d',borderRadius:6,fontSize:12}}>Fiyat ve hacim verisi eşleşen doğrulanmış işleme metodu bulunamadı (veri yüklenmemiş ya da seviye/üyelik filtresi).</div>}
+        <div style={{display:'flex',gap:16,flexWrap:'wrap',fontSize:12,marginTop:8,padding:10,border:'1px solid #30363d',borderRadius:8}}>
+          <span>Bu bölümde emir verilen: <b>{nightMethods.count}</b></span>
+          <span>Kullanılan sermaye: <b>{fmt(nightMethods.used)} GP</b></span>
+          <span>Beklenen net kâr: <b style={{color:nightMethods.profit>0?'#3fb950':'inherit'}}>{fmt(nightMethods.profit)} GP</b></span>
+          <b>Genel toplam: {fmt(nightPlan.used+nightMethods.used)} GP bağlı • {fmt(nightPlan.profit+nightMethods.profit)} GP beklenen net kâr • {fmt(nightMethods.reserve)} GP boşta</b>
+        </div>
+
+        <h3 style={{marginBottom:4}}>Emir defteri</h3>
+        <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',fontSize:12}}>
+          <button onClick={saveNightLedger} disabled={!nightPlan.count&&!nightMethods.count} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #30363d',background:'transparent',color:'inherit',cursor:'pointer'}}>Bu planı deftere kaydet ({portfolioProfile})</button>
+          <span style={{color:'#8b949e'}}>Sabah ne kadarının dolduğunu gir, sonra “Geçmişe aktar” ile Smart Order geçmişine gerçek veri olarak ekle. Aktarılmayan kayıtlar mevcut kalibrasyonu etkilemez.</span>
+        </div>
+        {nightLedger.map(b=><div key={b.id} style={{marginTop:8,padding:8,border:'1px solid #30363d',borderRadius:8}}>
+          <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',fontSize:12,marginBottom:6}}>
+            <b>{new Date(b.date).toLocaleString('tr-TR')}</b><span>strateji: {b.strategy}</span>
+            <button onClick={()=>transferLedger(b)} disabled={!b.rows.some(r=>r.filled!==null)}>Geçmişe aktar</button>
+            <button onClick={()=>setNightLedger(old=>old.filter(x=>x.id!==b.id))}>Sil</button>
+          </div>
+          <div className="tableBox"><table><thead><tr><th>Yön</th><th>Ürün</th><th>Adet</th><th>Emir fiyatı</th><th>Dolan adet</th><th>Süre (saat)</th><th>Ort. fiyat</th><th>Dolum</th></tr></thead><tbody>
+            {b.rows.map((r,i)=><tr key={i}><td>{r.side==='BUY'?'ALIŞ':'SATIŞ'}</td><td>{r.item}</td><td>{fmt(r.qty)}</td><td>{fmt(r.price)}</td>
+              <td><input type="number" value={r.filled??''} onChange={e=>updateLedgerRow(b.id,i,'filled',e.target.value)} style={{width:80}}/></td>
+              <td><input type="number" value={r.hours??''} onChange={e=>updateLedgerRow(b.id,i,'hours',e.target.value)} style={{width:60}}/></td>
+              <td><input type="number" value={r.avg??''} onChange={e=>updateLedgerRow(b.id,i,'avg',e.target.value)} style={{width:80}}/></td>
+              <td>{r.filled===null?'—':`%${Math.round(Math.max(0,r.filled)/Math.max(1,r.qty)*100)}`}</td></tr>)}
+          </tbody></table></div>
+        </div>)}
       </section>}
 
       {activeTab==='market'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
