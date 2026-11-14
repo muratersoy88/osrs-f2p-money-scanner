@@ -16,6 +16,7 @@ type ActivityType = 'Processing' | 'Gathering' | 'Cooking' | 'Combat'
 type CompetitionRisk = 'LOW' | 'MEDIUM' | 'HIGH'
 type PlayerMode = 'ACTIVE' | 'NORMAL' | 'CHILL'
 type BondScenario = 'EXPECTED' | 'CONSERVATIVE'
+type NightSample = { t:number; high:number|null; low:number|null }
 type ProgressionPriority = 'PROFIT' | 'BALANCED' | 'PROGRESSION'
 type Measurement = { date:string; skillLevel:number; quantity:number; minutes:number; itemsPerHour:number; buyPrice?:number; sellPrice?:number; profit?:number; xp?:number; successful?:number; failed?:number; burnt?:number; outputs?:Record<string,number> }
 
@@ -1217,7 +1218,7 @@ export default function App() {
   const [v4ViewAll, setV4ViewAll] = useState(false)
   const [v4KindFilter, setV4KindFilter] = useState('ALL')
   const [v4PlannerItem, setV4PlannerItem] = useState('')
-  const [activeTab, setActiveTab] = useState<'dashboard'|'smart'|'skills'|'herblore'|'alchemy'|'alchemyGoal'|'portfolio'|'market'|'money'|'planner'|'database'|'coverage'|'bulk'>('dashboard')
+  const [activeTab, setActiveTab] = useState<'dashboard'|'smart'|'skills'|'herblore'|'alchemy'|'alchemyGoal'|'portfolio'|'night'|'market'|'money'|'planner'|'database'|'coverage'|'bulk'>('dashboard')
   const [v5Page,setV5Page]=useState<V5PageId>('melee')
   const [v5Search,setV5Search]=useState('')
   const [v5ShowLocked,setV5ShowLocked]=useState(true)
@@ -1287,6 +1288,13 @@ export default function App() {
   const [portfolioCapital,setPortfolioCapital]=useState(()=>Math.max(1,Number(localStorage.getItem('osrs-portfolio-capital-v645')||10000000)))
   const [portfolioRisk] = useState<'LOW' | 'MEDIUM' | 'HIGH'>('LOW')
   const [portfolioProfile,setPortfolioProfile]=useState<'FAST'|'BALANCED'|'PATIENT'>('BALANCED')
+  const [nightHist,setNightHist]=useState<Record<string,NightSample[]>>({})
+  const [nightHistTime,setNightHistTime]=useState(0)
+  const [nightLoading,setNightLoading]=useState(false)
+  const [nightRoute,setNightRoute]=useState<'GRIMY'|'CLEAN'>('GRIMY')
+  const [nightOnly600,setNightOnly600]=useState(false)
+  const [nightLevelFilter,setNightLevelFilter]=useState(false)
+  const [nightCopied,setNightCopied]=useState(false)
   const [orderHistory,setOrderHistory]=useState<OrderHistoryRow[]>(()=>{try{return JSON.parse(localStorage.getItem('osrs-order-history-v56')||'[]')}catch{return[]}})
   const [historyDraft,setHistoryDraft]=useState({item:'',side:'BUY' as OrderSide,quantity:500,orderPrice:0,filledQuantity:0,fillHours:'',status:'FILLED' as OrderStatus,averageFillPrice:''})
 
@@ -2701,6 +2709,96 @@ export default function App() {
     return {rows:selected,used:selected.reduce((n,x)=>n+x.capitalUsed,0),reserve:Math.max(0,portfolioCapital-selected.reduce((n,x)=>n+x.capitalUsed,0)),profit:selected.reduce((n,x)=>n+x.expectedProfit,0),gpHour:selected.reduce((n,x)=>n+x.expectedGpHour,0),candidateCount:prepared.length}
   },[v5Rows,herbloreRows,alchemyRows,mapping,prices,volumes,mode,portfolioCapital,portfolioProfile,portfolioRisk,dailyMaxHours,degrimeEarthStaff])
 
+
+  // ---- Gece Emir Listesi: hourly history (last 24h) for herb items, fetched only while the tab is open ----
+  useEffect(()=>{
+    if(activeTab!=='night'||!mapping.length||!Object.keys(prices).length)return
+    if(Date.now()-nightHistTime<30*60_000)return
+    let cancelled=false
+    setNightLoading(true)
+    ;(async()=>{
+      const names=herbloreRows.flatMap((h:any)=>[h.grimyName,h.cleanName,h.unfinishedName])
+      const ids=Array.from(new Set(names.map((n:string)=>getItem(n)?.id).filter((x:any)=>x!=null)))
+      const out:Record<string,NightSample[]>={}
+      for(let i=0;i<ids.length;i+=5){
+        await Promise.all(ids.slice(i,i+5).map(async(id:any)=>{
+          try{
+            const res=await fetch(`${API}/timeseries?timestep=1h&id=${id}`);if(!res.ok)return
+            const json=await res.json();const cutoff=Math.floor(Date.now()/1000)-24*60*60
+            out[String(id)]=(json.data||[]).filter((x:any)=>Number(x.timestamp)>=cutoff).map((x:any)=>({t:Number(x.timestamp)*1000,high:x.avgHighPrice==null?null:Number(x.avgHighPrice),low:x.avgLowPrice==null?null:Number(x.avgLowPrice)}))
+          }catch{/* one failed item only reduces that item's history */}
+        }))
+        if(cancelled)return
+      }
+      if(!cancelled){setNightHist(out);setNightHistTime(Date.now());setNightLoading(false)}
+    })()
+    return ()=>{cancelled=true;setNightLoading(false)}
+  },[activeTab,mapping,prices,herbloreRows,nightHistTime])
+
+  const nightPlan=useMemo(()=>{
+    type S3={PATIENT:number;BALANCED:number;FAST:number}
+    const keys=['PATIENT','BALANCED','FAST'] as const
+    const pct=(arr:number[],p:number)=>{const a=[...arr].sort((x,y)=>x-y);const i=(a.length-1)*p;const lo=Math.floor(i),hi=Math.ceil(i);return a[lo]+(a[hi]-a[lo])*(i-lo)}
+    const live=(name:string)=>{const it=getItem(name);if(!it)return null;const d=prices[it.id];if(!d||d.high==null||d.low==null)return null;const v=volumes[it.id];return {id:String(it.id),high:Number(d.high),low:Number(d.low),vol:v?Number(v.highPriceVolume||0)+Number(v.lowPriceVolume||0):0,limit:Number(it.limit||0),a24l:v&&Number(v.avgLowPrice)>0?Number(v.avgLowPrice):null,a24h:v&&Number(v.avgHighPrice)>0?Number(v.avgHighPrice):null}}
+    const ladder=(name:string)=>{
+      const l=live(name);if(!l)return null
+      const hist=nightHist[l.id]||[]
+      const lows=hist.map(x=>x.low).filter((x):x is number=>x!=null&&x>0)
+      const highs=hist.map(x=>x.high).filter((x):x is number=>x!=null&&x>0)
+      const ok=lows.length>=6&&highs.length>=6
+      const refLow=(p:number)=>ok?pct(lows,p):(l.a24l??l.low)
+      const refHigh=(p:number)=>ok?pct(highs,p):(l.a24h??l.high)
+      // buy side: live high = instant buy; history percentiles of what sellers accepted
+      const bF=l.high
+      const bB=Math.min(bF,refLow(.5))
+      const bP=Math.min(bB,Math.max(refLow(.2),l.low*0.97))
+      // sell side: live low = instant sell; history percentiles of what buyers paid (capped near live high)
+      const sF=l.low
+      const sB=Math.max(sF,Math.min(refHigh(.5),l.high))
+      const sP=Math.max(sB,Math.min(refHigh(.8),l.high*1.03))
+      const buy:S3={PATIENT:Math.max(1,Math.round(bP)),BALANCED:Math.max(1,Math.round(bB)),FAST:Math.max(1,Math.round(bF))}
+      const sell:S3={PATIENT:Math.max(1,Math.round(sP)),BALANCED:Math.max(1,Math.round(sB)),FAST:Math.max(1,Math.round(sF))}
+      return {l,ok,pts:Math.min(lows.length,highs.length),buy,sell}
+    }
+    const sel=portfolioProfile
+    const vial=live('Vial of water')
+    const rows:any[]=[]
+    herbloreRows.forEach((h:any)=>{
+      const inName=nightRoute==='GRIMY'?h.grimyName:h.cleanName
+      const a=ladder(inName),b=ladder(h.unfinishedName)
+      if(!a||!b||!vial)return
+      const locked=(levels.Herblore||1)<h.level
+      if(nightLevelFilter&&locked)return
+      const vialCost:S3={PATIENT:vial.low,BALANCED:Math.round((vial.low+vial.high)/2),FAST:vial.high}
+      const cost:S3={PATIENT:0,BALANCED:0,FAST:0},net:S3={PATIENT:0,BALANCED:0,FAST:0}
+      keys.forEach(k=>{cost[k]=a.buy[k]+vialCost[k];net[k]=b.sell[k]-geTax(b.sell[k])-cost[k]})
+      const rate=nightRoute==='GRIMY'?1475:3200
+      const bottleneck=Math.min(a.l.vol,b.l.vol)
+      const limits=[a.l.limit,vial.limit].filter(x=>x>0)
+      const qtyCap=Math.max(0,Math.min(limits.length?Math.min(...limits):Infinity,Math.floor(bottleneck*0.05)))
+      rows.push({key:h.key,herb:h.herb,level:h.level,locked,inName,outName:h.unfinishedName,a,b,cost,net,rate,gpHour:net[sel]*rate,bottleneck,qtyCap})
+    })
+    const eligible=rows.filter(r=>r.net[sel]>0&&r.qtyCap>=1&&Number.isFinite(r.qtyCap)&&(!nightOnly600||r.gpHour>=600000))
+    const plan=new Map<string,{qty:number;capital:number;profit:number}>()
+    let remaining=Math.max(0,portfolioCapital)
+    ;[...eligible].sort((x,y)=>y.net[sel]/y.cost[sel]-x.net[sel]/x.cost[sel]).forEach(r=>{
+      const c=r.cost[sel]
+      const qty=Math.min(r.qtyCap,Math.floor(portfolioCapital*0.5/c),Math.floor(remaining/c))
+      if(qty<1)return
+      plan.set(r.key,{qty,capital:qty*c,profit:qty*r.net[sel]});remaining-=qty*c
+    })
+    const out=eligible.map(r=>({...r,plan:plan.get(r.key)||null})).sort((x,y)=>y.gpHour-x.gpHour)
+    const used=[...plan.values()].reduce((n,x)=>n+x.capital,0)
+    const profit=[...plan.values()].reduce((n,x)=>n+x.profit,0)
+    return {rows:out,used,reserve:Math.max(0,portfolioCapital-used),profit,count:plan.size,skipped:rows.length-eligible.length,vialCost:vial?{P:vial.low,B:Math.round((vial.low+vial.high)/2),F:vial.high}:null}
+  },[herbloreRows,prices,volumes,nightHist,nightRoute,nightOnly600,nightLevelFilter,portfolioProfile,portfolioCapital,levels,mapping])
+
+  const copyNightPlan=async()=>{
+    const lines=nightPlan.rows.filter((r:any)=>r.plan).flatMap((r:any)=>[`${r.inName}: ${r.plan.qty} adet — alış emri ${r.a.buy[portfolioProfile]} GP`])
+    const sells=nightPlan.rows.filter((r:any)=>r.plan).map((r:any)=>`${r.outName}: ${r.plan.qty} adet — satış emri ${r.b.sell[portfolioProfile]} GP`)
+    try{await navigator.clipboard.writeText(`ALIŞ (${portfolioProfile})\n${lines.join('\n')}\n\nSATIŞ (${portfolioProfile})\n${sells.join('\n')}`);setNightCopied(true);setTimeout(()=>setNightCopied(false),1500)}catch{/* clipboard unavailable */}
+  }
+
   const marketRadarRows=useMemo(()=>{
     const profile=portfolioProfile
     // Always show live-priced products, even when 7-day history is unavailable.
@@ -3181,7 +3279,7 @@ export default function App() {
 
       <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:8,flexWrap:'wrap',padding:'10px 0',background:'#0d1117',borderBottom:'1px solid #30363d'}}>
         {([
-          ['dashboard','Dashboard'],['smart','Smart Order'],['skills','21 Skill Views'],['herblore','Herblore'],['alchemy','Alchemy & Skill-Free'],['alchemyGoal','Alchemy Profit Goal'],['portfolio','Capital Portfolio'],['market','GE Fırsat Radarı'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],['coverage','Database Coverage'],['bulk','Bulk Data Entry'],
+          ['dashboard','Dashboard'],['smart','Smart Order'],['skills','21 Skill Views'],['herblore','Herblore'],['alchemy','Alchemy & Skill-Free'],['alchemyGoal','Alchemy Profit Goal'],['portfolio','Capital Portfolio'],['night','Gece Emir Listesi'],['market','GE Fırsat Radarı'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],['coverage','Database Coverage'],['bulk','Bulk Data Entry'],
         ] as const).map(([id,label])=><button key={id} type="button" onClick={()=>setActiveTab(id)}
           style={{fontWeight:activeTab===id?800:500,outline:activeTab===id?'2px solid #58a6ff':'none'}}>{label}</button>)}
       </nav>
@@ -3227,6 +3325,42 @@ export default function App() {
           <span>Beklenen toplam net kâr: <b style={{color:portfolioCandidates.profit>0?'#3fb950':'inherit'}}>{fmt(portfolioCandidates.profit)} GP</b></span>
         </div>
         <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Fiyatlar anlık/24h ortalama verilerden türetilmiş tahmindir, gerçekleşmiş fiyat değildir; dolum garantisi yoktur. Kâr, GE satış vergisi, Vial of water ve diğer girdileri içerir. Miktar; alış limiti, 24h hacmin %5'i ve ürün başına sermayenin %50'si ile sınırlıdır. High Alchemy bu plana dahil değildir.</p>
+      </section>}
+
+      {activeTab==='night'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+        <h2 style={{marginTop:0}}>Gece Emir Listesi — Herblore</h2>
+        <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'end',padding:10,border:'1px solid #30363d',borderRadius:8}}>
+          <label style={{display:'grid',gap:4}}>Mevcut GP bakiyesi<input type="number" min="1" step="100000" value={portfolioCapital} onChange={e=>setPortfolioCapital(Math.max(1,Number(e.target.value)||1))} style={{width:180}}/></label>
+          <div style={{display:'grid',gap:4}}>Plan stratejisi<div style={{display:'flex',gap:6}}>{(['PATIENT','BALANCED','FAST'] as const).map(k=><button key={k} onClick={()=>setPortfolioProfile(k)} style={{padding:'6px 12px',borderRadius:6,border:'1px solid #30363d',background:portfolioProfile===k?'#238636':'transparent',color:'inherit',cursor:'pointer',fontWeight:portfolioProfile===k?700:400}}>{k==='PATIENT'?'Patient':k==='BALANCED'?'Balanced':'Fast'}</button>)}</div></div>
+          <div style={{display:'grid',gap:4}}>Rota<div style={{display:'flex',gap:6}}>{([['GRIMY','Grimy → Unf'],['CLEAN','Clean → Unf']] as const).map(([k,label])=><button key={k} onClick={()=>setNightRoute(k)} style={{padding:'6px 12px',borderRadius:6,border:'1px solid #30363d',background:nightRoute===k?'#1f6feb':'transparent',color:'inherit',cursor:'pointer',fontWeight:nightRoute===k?700:400}}>{label}</button>)}</div></div>
+          <label style={{display:'flex',gap:6,alignItems:'center',fontSize:12}}><input type="checkbox" checked={nightOnly600} onChange={e=>setNightOnly600(e.target.checked)}/>Sadece 600K+ GP/saat</label>
+          <label style={{display:'flex',gap:6,alignItems:'center',fontSize:12}}><input type="checkbox" checked={nightLevelFilter} onChange={e=>setNightLevelFilter(e.target.checked)}/>Herblore seviyeme göre ({levels.Herblore||1})</label>
+        </div>
+        <div style={{fontSize:11,color:'#8b949e',margin:'8px 0'}}>
+          Anlık fiyat: <b>{updated?updated.toLocaleString('tr-TR'):'yüklenmedi'}</b> (OSRS Wiki /latest, /24h) • Saatlik geçmiş (son 24 saat): <b>{nightLoading?'çekiliyor…':nightHistTime?new Date(nightHistTime).toLocaleString('tr-TR'):'henüz alınmadı'}</b><br/>
+          <b>P</b>=Patient, <b>B</b>=Balanced, <b>F</b>=Fast. Alış emri: Fast anlık yüksek fiyat; Balanced son 24 saatteki saatlik düşük fiyatların ortancası; Patient aynı serinin alt %20'lik dilimi (anlık düşük fiyatın %3 altına inmez). Satış emri: Fast anlık düşük fiyat; Balanced saatlik yüksek fiyatların ortancası; Patient üst %80'lik dilim (anlık yüksek fiyatın %3 üstüne çıkmaz). Seçili strateji kalın yazılır. * = saatlik geçmiş yetersiz, 24h ortalama kullanıldı.
+        </div>
+        {nightPlan.rows.length>0?<div className="tableBox"><table><thead><tr><th>Herb</th><th>{nightRoute==='GRIMY'?'Grimy':'Clean'} alış emri</th><th>Unf satış emri</th><th>Net kâr / adet</th><th>~GP/saat</th><th>Gece adedi</th><th>Sermaye</th><th>Beklenen net kâr</th><th>Likidite</th></tr></thead><tbody>
+          {nightPlan.rows.map((r:any)=><tr key={r.key} style={{opacity:r.plan?1:.55}}>
+            <td><b>{r.herb}</b><div style={{fontSize:10,color:'#8b949e'}}>Lv {r.level}{r.locked?' • seviye yetmiyor':''}</div></td>
+            <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.a.buy[k])}{r.a.ok?'':'*'}</div>)}</td>
+            <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.b.sell[k])}{r.b.ok?'':'*'}</div>)}</td>
+            <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400,color:r.net[k]>0?'#3fb950':'#f85149'}}>{k[0]} {fmt(r.net[k])}</div>)}</td>
+            <td>{fmt(r.gpHour)}<div style={{fontSize:10,color:'#8b949e'}}>{fmt(r.rate)}/saat hızla</div></td>
+            <td><b>{r.plan?fmt(r.plan.qty):'—'}</b><div style={{fontSize:10,color:'#8b949e'}}>üst sınır {fmt(r.qtyCap)}</div></td>
+            <td>{r.plan?`${fmt(r.plan.capital)} GP`:'—'}</td>
+            <td style={{color:'#3fb950'}}><b>{r.plan?`${fmt(r.plan.profit)} GP`:'—'}</b></td>
+            <td>24h {fmt(r.bottleneck)}{r.plan?<div style={{fontSize:10,color:'#8b949e'}}>pay %{(r.plan.qty/Math.max(1,r.bottleneck)*100).toFixed(1)}</div>:null}</td>
+          </tr>)}
+        </tbody></table></div>:<div style={{padding:10,border:'1px solid #d29922',borderRadius:6}}>Seçili strateji ve rotada, hacim ve limit koşullarını geçen kârlı fırsat yok.</div>}
+        <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'center',fontSize:12,marginTop:10,padding:10,border:'1px solid #30363d',borderRadius:8}}>
+          <span>Emir verilen ürün: <b>{nightPlan.count}</b></span>
+          <span>Toplam kullanılan sermaye: <b>{fmt(nightPlan.used)} GP</b></span>
+          <span>Kullanılabilir bakiye: <b>{fmt(nightPlan.reserve)} GP</b></span>
+          <span>Beklenen toplam net kâr: <b style={{color:nightPlan.profit>0?'#3fb950':'inherit'}}>{fmt(nightPlan.profit)} GP</b></span>
+          <button onClick={copyNightPlan} disabled={!nightPlan.count} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #30363d',background:'transparent',color:'inherit',cursor:'pointer'}}>{nightCopied?'Kopyalandı':'Emir listesini kopyala'}</button>
+        </div>
+        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Elenen (zararda/düşük hacim/limit): {nightPlan.skipped}. Adet; GE alış limiti, 24 saatlik hacmin %5'i ve ürün başına sermayenin %50'si ile sınırlıdır; sermaye en yüksek getiri/sermaye oranına göre dağıtılır. Net kâr; %2 GE satış vergisi ve Vial of water{nightPlan.vialCost?` (P ${nightPlan.vialCost.P} / B ${nightPlan.vialCost.B} / F ${nightPlan.vialCost.F} GP)`:''} dahil. GP/saat tahmini işlem hızıdır (Grimy→Unf ~1.475, Clean→Unf ~3.200 adet/saat). Tüm fiyatlar geçmiş verilerden türetilmiş tahmindir, dolum veya kâr garantisi yoktur. High Alchemy dahil değildir.</p>
       </section>}
 
       {activeTab==='market'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
