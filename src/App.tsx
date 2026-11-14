@@ -1,3 +1,4227 @@
+import { useEffect, useMemo, useState } from 'react'
+import './App.css'
+import { V4_ACTIVITY_DATABASE } from './v4/database'
+import { evaluateActivity } from './v4/requirements'
+import { rankCombat, nextUnlocks as v4NextUnlocks, questUnlockValue, itemChains, readyAfterSimpleRequirements } from './v4/planner'
+import { V5_CATALOGUE, V5_PAGES, V5_CANONICAL_MANIFEST, V5_BULK_SEED_EDITS } from './v5'
+import type { V5Edit, V5PageId } from './v5'
+
+const API = 'https://prices.runescape.wiki/api/v1/osrs'
+
+type AccountMode = 'F2P' | 'MEMBER'
+type RecipeKind = 'normal' | 'alchemy'
+type MethodPurpose = 'MONEY' | 'SKILL + PROFIT' | 'XP'
+type AttentionLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'AFK'
+type ActivityType = 'Processing' | 'Gathering' | 'Cooking' | 'Combat'
+type CompetitionRisk = 'LOW' | 'MEDIUM' | 'HIGH'
+type PlayerMode = 'ACTIVE' | 'NORMAL' | 'CHILL'
+type BondScenario = 'EXPECTED' | 'CONSERVATIVE'
+type ProgressionPriority = 'PROFIT' | 'BALANCED' | 'PROGRESSION'
+type Measurement = { date:string; skillLevel:number; quantity:number; minutes:number; itemsPerHour:number; buyPrice?:number; sellPrice?:number; profit?:number; xp?:number; successful?:number; failed?:number; burnt?:number; outputs?:Record<string,number> }
+
+type MethodUserData = {
+  actualItemsPerHour?: number
+  measuredQuantity?: number
+  measuredMinutes?: number
+  actualBuyCost?: number
+  actualSellPrice?: number
+  purpose?: MethodPurpose
+  itemsPerRun?: number
+  attentionLevel?: AttentionLevel
+  actualSuccessByLevel?: Record<string, { total: number; successful: number; burnt: number; rate: number }>
+  targetBuyPrice?: number
+  averageSecondsBetweenInteractions?: number
+}
+
+type Ingredient = {
+  name: string
+  qty: number
+}
+
+type Recipe = {
+  name: string
+  category: string
+  skill: string
+  level: number
+  xp: number
+  inputs: Ingredient[]
+  output?: string
+  outputQty?: number
+  fee?: number
+  f2p: boolean
+  itemsPerHour: number
+  kind?: RecipeKind
+  alchItem?: string
+  alchType?: 'high' | 'low'
+  success?: (levels: Record<string, number>) => number
+  note?: string
+  verifiedF2P?: boolean
+  activityType?: ActivityType
+  attentionLevel?: AttentionLevel
+  questRequirement?: string
+  accessRequirement?: string
+  equipment?: string
+  regionRequirement?: string
+  diaryRequirement?: string
+  minigameRequirement?: string
+  verifiedP2P?: boolean
+  cooking?: { noBurnLevel: number; burntItem?: string; afkSecondsPerRun?: number }
+}
+
+const DEFAULT_LEVELS: Record<string, number> = {
+  Attack: 20,
+  Strength: 27,
+  Defence: 20,
+  Hitpoints: 24,
+  Prayer: 11,
+  Magic: 25,
+  Runecraft: 1,
+  Crafting: 35,
+  Mining: 31,
+  Smithing: 30,
+  Fishing: 50,
+  Cooking: 28,
+  Firemaking: 13,
+  Woodcutting: 11,
+  Ranged: 1,
+  Agility: 1,
+  Herblore: 1,
+  Thieving: 1,
+  Fletching: 1,
+  Slayer: 1,
+  Farming: 1,
+  Construction: 1,
+  Hunter: 1,
+  Sailing: 1,
+}
+
+const clamp = (n: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, n))
+
+const xpForLevel = (level:number) => { let points=0; for(let l=1;l<level;l++) points += Math.floor(l + 300*Math.pow(2,l/7)); return Math.floor(points/4) }
+const weightedSpeed = (list:Measurement[]) => { const q=list.reduce((a,m)=>a+(m.quantity||0),0); const mins=list.reduce((a,m)=>a+(m.minutes||0),0); return q>0&&mins>0?q/mins*60:null }
+const weightedSpeedAtLevel = (list:Measurement[], level:number) => { const same=list.filter(m=>m.skillLevel===level); return weightedSpeed(same.length?same:list.filter(m=>!m.skillLevel)) }
+
+const wineSuccess = (levels: Record<string, number>) => {
+  const level = levels.Cooking || 1
+  if (level < 35) return 0.6
+  if (level >= 68) return 1
+  return clamp(0.6 + ((level - 35) / 33) * 0.4, 0.6, 1)
+}
+
+/*
+  Plain pizza burn chance is level-dependent.
+  We deliberately use a conservative linear estimate between unlock and
+  no-burn level rather than pretending to have an exact tick-perfect formula.
+*/
+const pizzaSuccess = (levels: Record<string, number>) => {
+  const level = levels.Cooking || 1
+  if (level >= 68) return 1
+  if (level <= 35) return 0.65
+  return clamp(0.65 + ((level - 35) / 33) * 0.35, 0.65, 1)
+}
+
+
+const cookingSuccessEstimate = (level: number, required: number, noBurn: number) => {
+  if (level >= noBurn) return 1
+  if (level <= required) return 0.55
+  const progress = (level - required) / Math.max(1, noBurn - required)
+  return clamp(0.55 + progress * 0.45, 0.55, 1)
+}
+
+const RECIPES: Recipe[] = [
+  // ---------------- TANNING ----------------
+  {
+    name: 'Cowhide → Leather',
+    category: 'Tanning',
+    skill: 'Crafting',
+    level: 1,
+    xp: 0,
+    inputs: [{ name: 'Cowhide', qty: 1 }],
+    output: 'Leather',
+    fee: 1,
+    f2p: true,
+    itemsPerHour: 2000,
+    note: 'Al Kharid Tanner — 1 gp fee',
+  },
+  {
+    name: 'Cowhide → Hard leather',
+    category: 'Tanning',
+    skill: 'Crafting',
+    level: 1,
+    xp: 0,
+    inputs: [{ name: 'Cowhide', qty: 1 }],
+    output: 'Hard leather',
+    fee: 3,
+    f2p: true,
+    itemsPerHour: 2000,
+    note: 'Al Kharid Tanner — 3 gp fee',
+  },
+
+  // ---------------- GOLD ----------------
+  {
+    name: 'Gold ring',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 5,
+    xp: 15,
+    inputs: [{ name: 'Gold bar', qty: 1 }],
+    output: 'Gold ring',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Gold necklace',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 6,
+    xp: 20,
+    inputs: [{ name: 'Gold bar', qty: 1 }],
+    output: 'Gold necklace',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Gold amulet (u)',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 8,
+    xp: 30,
+    inputs: [{ name: 'Gold bar', qty: 1 }],
+    output: 'Gold amulet (u)',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'String gold amulet',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 1,
+    xp: 4,
+    inputs: [
+      { name: 'Gold amulet (u)', qty: 1 },
+      { name: 'Ball of wool', qty: 1 },
+    ],
+    output: 'Gold amulet',
+    f2p: true,
+    itemsPerHour: 1600,
+  },
+
+  // ---------------- SAPPHIRE ----------------
+  {
+    name: 'Cut sapphire',
+    category: 'Gem Cutting',
+    skill: 'Crafting',
+    level: 20,
+    xp: 50,
+    inputs: [{ name: 'Uncut sapphire', qty: 1 }],
+    output: 'Sapphire',
+    f2p: true,
+    itemsPerHour: 2500,
+  },
+  {
+    name: 'Sapphire ring',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 20,
+    xp: 40,
+    inputs: [
+      { name: 'Gold bar', qty: 1 },
+      { name: 'Sapphire', qty: 1 },
+    ],
+    output: 'Sapphire ring',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Sapphire necklace',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 22,
+    xp: 55,
+    inputs: [
+      { name: 'Gold bar', qty: 1 },
+      { name: 'Sapphire', qty: 1 },
+    ],
+    output: 'Sapphire necklace',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Sapphire amulet (u)',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 24,
+    xp: 65,
+    inputs: [
+      { name: 'Gold bar', qty: 1 },
+      { name: 'Sapphire', qty: 1 },
+    ],
+    output: 'Sapphire amulet (u)',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+
+  // ---------------- EMERALD ----------------
+  {
+    name: 'Cut emerald',
+    category: 'Gem Cutting',
+    skill: 'Crafting',
+    level: 27,
+    xp: 67.5,
+    inputs: [{ name: 'Uncut emerald', qty: 1 }],
+    output: 'Emerald',
+    f2p: true,
+    itemsPerHour: 2500,
+  },
+  {
+    name: 'Emerald ring',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 27,
+    xp: 55,
+    inputs: [
+      { name: 'Gold bar', qty: 1 },
+      { name: 'Emerald', qty: 1 },
+    ],
+    output: 'Emerald ring',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Emerald necklace',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 29,
+    xp: 60,
+    inputs: [
+      { name: 'Gold bar', qty: 1 },
+      { name: 'Emerald', qty: 1 },
+    ],
+    output: 'Emerald necklace',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Emerald amulet (u)',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 31,
+    xp: 70,
+    inputs: [
+      { name: 'Gold bar', qty: 1 },
+      { name: 'Emerald', qty: 1 },
+    ],
+    output: 'Emerald amulet (u)',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+
+  // ---------------- RUBY ----------------
+  {
+    name: 'Cut ruby',
+    category: 'Gem Cutting',
+    skill: 'Crafting',
+    level: 34,
+    xp: 85,
+    inputs: [{ name: 'Uncut ruby', qty: 1 }],
+    output: 'Ruby',
+    f2p: true,
+    itemsPerHour: 2500,
+  },
+  {
+    name: 'Ruby ring',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 34,
+    xp: 70,
+    inputs: [
+      { name: 'Gold bar', qty: 1 },
+      { name: 'Ruby', qty: 1 },
+    ],
+    output: 'Ruby ring',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Ruby necklace',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 40,
+    xp: 75,
+    inputs: [
+      { name: 'Gold bar', qty: 1 },
+      { name: 'Ruby', qty: 1 },
+    ],
+    output: 'Ruby necklace',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Ruby amulet (u)',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 50,
+    xp: 85,
+    inputs: [
+      { name: 'Gold bar', qty: 1 },
+      { name: 'Ruby', qty: 1 },
+    ],
+    output: 'Ruby amulet (u)',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+
+  // ---------------- DIAMOND ----------------
+  {
+    name: 'Cut diamond',
+    category: 'Gem Cutting',
+    skill: 'Crafting',
+    level: 43,
+    xp: 107.5,
+    inputs: [{ name: 'Uncut diamond', qty: 1 }],
+    output: 'Diamond',
+    f2p: true,
+    itemsPerHour: 2500,
+  },
+  {
+    name: 'Diamond ring',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 43,
+    xp: 85,
+    inputs: [
+      { name: 'Gold bar', qty: 1 },
+      { name: 'Diamond', qty: 1 },
+    ],
+    output: 'Diamond ring',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Diamond necklace',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 56,
+    xp: 90,
+    inputs: [
+      { name: 'Gold bar', qty: 1 },
+      { name: 'Diamond', qty: 1 },
+    ],
+    output: 'Diamond necklace',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Diamond amulet (u)',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 70,
+    xp: 100,
+    inputs: [
+      { name: 'Gold bar', qty: 1 },
+      { name: 'Diamond', qty: 1 },
+    ],
+    output: 'Diamond amulet (u)',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+
+  // ---------------- SILVER ----------------
+  {
+    name: 'Silver bar → Unstrung symbol',
+    category: 'Silver',
+    skill: 'Crafting',
+    level: 16,
+    xp: 50,
+    inputs: [{ name: 'Silver bar', qty: 1 }],
+    output: 'Unstrung symbol',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Unstrung symbol → Unblessed symbol',
+    category: 'Silver',
+    skill: 'Crafting',
+    level: 16,
+    xp: 4,
+    inputs: [
+      { name: 'Unstrung symbol', qty: 1 },
+      { name: 'Ball of wool', qty: 1 },
+    ],
+    output: 'Unblessed symbol',
+    f2p: true,
+    itemsPerHour: 1600,
+  },
+  {
+    name: 'Unblessed symbol → Holy symbol',
+    category: 'Silver',
+    skill: 'Prayer',
+    level: 31,
+    xp: 0,
+    inputs: [{ name: 'Unblessed symbol', qty: 1 }],
+    output: 'Holy symbol',
+    f2p: true,
+    itemsPerHour: 1000,
+    note: 'Brother Jered blessing',
+  },
+  {
+    name: 'Silver bar → Tiara',
+    category: 'Silver',
+    skill: 'Crafting',
+    level: 23,
+    xp: 52.5,
+    inputs: [{ name: 'Silver bar', qty: 1 }],
+    output: 'Tiara',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+
+  // ---------------- WOOL / LEATHER ----------------
+  {
+    name: 'Wool → Ball of wool',
+    category: 'Crafting',
+    skill: 'Crafting',
+    level: 1,
+    xp: 2.5,
+    inputs: [{ name: 'Wool', qty: 1 }],
+    output: 'Ball of wool',
+    f2p: true,
+    itemsPerHour: 900,
+  },
+  {
+    name: 'Leather → Leather gloves',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 1,
+    xp: 13.8,
+    inputs: [{ name: 'Leather', qty: 1 }],
+    output: 'Leather gloves',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+  {
+    name: 'Leather → Leather boots',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 7,
+    xp: 16.3,
+    inputs: [{ name: 'Leather', qty: 1 }],
+    output: 'Leather boots',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+  {
+    name: 'Leather → Leather cowl',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 9,
+    xp: 18.5,
+    inputs: [{ name: 'Leather', qty: 1 }],
+    output: 'Leather cowl',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+  {
+    name: 'Leather → Leather vambraces',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 11,
+    xp: 22,
+    inputs: [{ name: 'Leather', qty: 1 }],
+    output: 'Leather vambraces',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+  {
+    name: 'Leather → Leather body',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 14,
+    xp: 25,
+    inputs: [{ name: 'Leather', qty: 1 }],
+    output: 'Leather body',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+  {
+    name: 'Leather → Leather chaps',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 18,
+    xp: 27,
+    inputs: [{ name: 'Leather', qty: 1 }],
+    output: 'Leather chaps',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+  {
+    name: 'Hard leather → Hardleather body',
+    category: 'Leather',
+    skill: 'Crafting',
+    level: 28,
+    xp: 35,
+    inputs: [{ name: 'Hard leather', qty: 1 }],
+    output: 'Hardleather body',
+    f2p: true,
+    itemsPerHour: 1700,
+  },
+
+  // ---------------- FOOD PROCESSING ----------------
+  {
+    name: 'Pot of flour + water → Pastry dough',
+    category: 'Food',
+    skill: 'Cooking',
+    level: 1,
+    xp: 0,
+    inputs: [
+      { name: 'Pot of flour', qty: 1 },
+      { name: 'Jug of water', qty: 1 },
+    ],
+    output: 'Pastry dough',
+    f2p: true,
+    itemsPerHour: 1800,
+  },
+  {
+    name: 'Pastry dough + dish → Pie shell',
+    category: 'Food',
+    skill: 'Cooking',
+    level: 1,
+    xp: 0,
+    inputs: [
+      { name: 'Pastry dough', qty: 1 },
+      { name: 'Pie dish', qty: 1 },
+    ],
+    output: 'Pie shell',
+    f2p: true,
+    itemsPerHour: 1800,
+  },
+  {
+    name: 'Chocolate bar → Chocolate dust',
+    category: 'Food',
+    skill: 'Cooking',
+    level: 1,
+    xp: 0,
+    inputs: [{ name: 'Chocolate bar', qty: 1 }],
+    output: 'Chocolate dust',
+    f2p: true,
+    itemsPerHour: 2700,
+  },
+  {
+    name: 'Plain pizza → Anchovy pizza',
+    category: 'Food',
+    skill: 'Cooking',
+    level: 55,
+    xp: 39,
+    inputs: [
+      { name: 'Plain pizza', qty: 1 },
+      { name: 'Anchovies', qty: 1 },
+    ],
+    output: 'Anchovy pizza',
+    f2p: true,
+    itemsPerHour: 2500,
+  },
+  {
+    name: 'Grapes + Jug of water → Jug of wine',
+    category: 'Food',
+    skill: 'Cooking',
+    level: 35,
+    xp: 200,
+    inputs: [
+      { name: 'Grapes', qty: 1 },
+      { name: 'Jug of water', qty: 1 },
+    ],
+    output: 'Jug of wine',
+    f2p: true,
+    itemsPerHour: 2400,
+    success: wineSuccess,
+    note: '35 Cooking ≈60% success; 68 = 100%',
+  },
+  {
+    name: 'Uncooked pizza → Plain pizza',
+    category: 'Food',
+    skill: 'Cooking',
+    level: 35,
+    xp: 143,
+    inputs: [{ name: 'Uncooked pizza', qty: 1 }],
+    output: 'Plain pizza',
+    f2p: true,
+    itemsPerHour: 1200,
+    success: pizzaSuccess,
+    note: 'Range cooking; 68 Cooking = no burn',
+  },
+  {
+    name: 'Plain pizza → Meat pizza',
+    category: 'Food',
+    skill: 'Cooking',
+    level: 45,
+    xp: 26,
+    inputs: [
+      { name: 'Plain pizza', qty: 1 },
+      { name: 'Cooked meat', qty: 1 },
+    ],
+    output: 'Meat pizza',
+    f2p: true,
+    itemsPerHour: 2500,
+  },
+  {
+    name: 'Uncooked berry pie → Redberry pie',
+    category: 'Food',
+    skill: 'Cooking',
+    level: 10,
+    xp: 78,
+    inputs: [{ name: 'Uncooked berry pie', qty: 1 }],
+    output: 'Redberry pie',
+    f2p: true,
+    itemsPerHour: 1200,
+    success: (levels) => {
+      const l = levels.Cooking || 1
+      if (l >= 45) return 1
+      return clamp(0.65 + ((l - 10) / 35) * 0.35, 0.65, 1)
+    },
+    note: 'Range cooking; burn chance included',
+  },
+
+  // ---------------- RAW FISH COOKING (F2P) ----------------
+  ...[
+    ['Raw shrimps → Shrimps', 1, 30, 'Raw shrimps', 'Shrimps', 34],
+    ['Raw sardine → Sardine', 1, 40, 'Raw sardine', 'Sardine', 35],
+    ['Raw herring → Herring', 5, 50, 'Raw herring', 'Herring', 41],
+    ['Raw anchovies → Anchovies', 1, 30, 'Raw anchovies', 'Anchovies', 34],
+    ['Raw trout → Trout', 15, 70, 'Raw trout', 'Trout', 50],
+    ['Raw pike → Pike', 20, 80, 'Raw pike', 'Pike', 64],
+    ['Raw salmon → Salmon', 25, 90, 'Raw salmon', 'Salmon', 58],
+    ['Raw tuna → Tuna', 30, 100, 'Raw tuna', 'Tuna', 63],
+    ['Raw lobster → Lobster', 40, 120, 'Raw lobster', 'Lobster', 74],
+    ['Raw swordfish → Swordfish', 45, 140, 'Raw swordfish', 'Swordfish', 80],
+  ].map(([name, level, xp, raw, cooked, noBurn]) => ({
+    name: name as string,
+    category: 'Cooking',
+    skill: 'Cooking',
+    level: level as number,
+    xp: xp as number,
+    inputs: [{ name: raw as string, qty: 1 }],
+    output: cooked as string,
+    f2p: true,
+    verifiedF2P: true,
+    activityType: 'Cooking' as ActivityType,
+    attentionLevel: 'LOW' as AttentionLevel,
+    itemsPerHour: 1100,
+    cooking: { noBurnLevel: noBurn as number, burntItem: `Burnt ${(cooked as string).toLowerCase()}`, afkSecondsPerRun: 65 },
+    equipment: 'Range (F2P)',
+    accessRequirement: 'F2P range; bank proximity affects real speed',
+    note: `Burn estimate scales with Cooking level; no-burn target ~${noBurn} on standard range. Actual success measurement overrides estimate at the measured level.`,
+  })),
+
+  // ---------------- SMELTING ----------------
+  {
+    name: 'Iron ore → Iron bar',
+    category: 'Smelting',
+    skill: 'Smithing',
+    level: 15,
+    xp: 12.5,
+    inputs: [{ name: 'Iron ore', qty: 1 }],
+    output: 'Iron bar',
+    f2p: true,
+    itemsPerHour: 900,
+    success: () => 0.5,
+    note: 'F2P normal furnace: 50% success',
+  },
+  {
+    name: 'Iron + 2 Coal → Steel bar',
+    category: 'Smelting',
+    skill: 'Smithing',
+    level: 30,
+    xp: 17.5,
+    inputs: [
+      { name: 'Iron ore', qty: 1 },
+      { name: 'Coal', qty: 2 },
+    ],
+    output: 'Steel bar',
+    f2p: true,
+    itemsPerHour: 750,
+  },
+  {
+    name: 'Mithril + 4 Coal → Mithril bar',
+    category: 'Smelting',
+    skill: 'Smithing',
+    level: 50,
+    xp: 30,
+    inputs: [
+      { name: 'Mithril ore', qty: 1 },
+      { name: 'Coal', qty: 4 },
+    ],
+    output: 'Mithril bar',
+    f2p: true,
+    itemsPerHour: 600,
+  },
+  {
+    name: 'Adamantite + 6 Coal → Adamantite bar',
+    category: 'Smelting',
+    skill: 'Smithing',
+    level: 70,
+    xp: 37.5,
+    inputs: [
+      { name: 'Adamantite ore', qty: 1 },
+      { name: 'Coal', qty: 6 },
+    ],
+    output: 'Adamantite bar',
+    f2p: true,
+    itemsPerHour: 500,
+  },
+  {
+    name: 'Runite + 8 Coal → Runite bar',
+    category: 'Smelting',
+    skill: 'Smithing',
+    level: 85,
+    xp: 50,
+    inputs: [
+      { name: 'Runite ore', qty: 1 },
+      { name: 'Coal', qty: 8 },
+    ],
+    output: 'Runite bar',
+    f2p: true,
+    itemsPerHour: 450,
+  },
+
+  // ---------------- BAR → EQUIPMENT ----------------
+  {
+    name: 'Steel bars → Steel platebody',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 48,
+    xp: 187.5,
+    inputs: [{ name: 'Steel bar', qty: 5 }],
+    output: 'Steel platebody',
+    f2p: true,
+    itemsPerHour: 900,
+  },
+  {
+    name: 'Mithril bars → Mithril platebody',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 68,
+    xp: 250,
+    inputs: [{ name: 'Mithril bar', qty: 5 }],
+    output: 'Mithril platebody',
+    f2p: true,
+    itemsPerHour: 900,
+  },
+  {
+    name: 'Adamantite bars → Adamant platebody',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 88,
+    xp: 312.5,
+    inputs: [{ name: 'Adamantite bar', qty: 5 }],
+    output: 'Adamant platebody',
+    f2p: true,
+    itemsPerHour: 900,
+  },
+  {
+    name: 'Runite bars → Rune platebody',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 99,
+    xp: 375,
+    inputs: [{ name: 'Runite bar', qty: 5 }],
+    output: 'Rune platebody',
+    f2p: true,
+    itemsPerHour: 900,
+  },
+  {
+    name: 'Steel bars → Steel 2h sword',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 35,
+    xp: 75,
+    inputs: [{ name: 'Steel bar', qty: 2 }],
+    output: 'Steel 2h sword',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Mithril bars → Mithril 2h sword',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 64,
+    xp: 100,
+    inputs: [{ name: 'Mithril bar', qty: 2 }],
+    output: 'Mithril 2h sword',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Adamantite bars → Adamant 2h sword',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 84,
+    xp: 125,
+    inputs: [{ name: 'Adamantite bar', qty: 2 }],
+    output: 'Adamant 2h sword',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+  {
+    name: 'Runite bars → Rune 2h sword',
+    category: 'Smithing',
+    skill: 'Smithing',
+    level: 99,
+    xp: 150,
+    inputs: [{ name: 'Runite bar', qty: 2 }],
+    output: 'Rune 2h sword',
+    f2p: true,
+    itemsPerHour: 1100,
+  },
+
+  // ---------------- F2P HIGH ALCH ----------------
+  {
+    name: 'High Alch — Rune platebody',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 55,
+    xp: 65,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Rune platebody',
+    alchType: 'high',
+    note: 'Fire staff assumed; Nature rune included',
+  },
+  {
+    name: 'High Alch — Rune platelegs',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 55,
+    xp: 65,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Rune platelegs',
+    alchType: 'high',
+    note: 'Fire staff assumed; Nature rune included',
+  },
+  {
+    name: 'High Alch — Rune 2h sword',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 55,
+    xp: 65,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Rune 2h sword',
+    alchType: 'high',
+    note: 'Fire staff assumed; Nature rune included',
+  },
+  {
+    name: 'High Alch — Adamant platebody',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 55,
+    xp: 65,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Adamant platebody',
+    alchType: 'high',
+    note: 'Fire staff assumed; Nature rune included',
+  },
+  {
+    name: 'High Alch — Adamant platelegs',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 55,
+    xp: 65,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Adamant platelegs',
+    alchType: 'high',
+    note: 'Fire staff assumed; Nature rune included',
+  },
+  {
+    name: 'High Alch — Green d’hide body',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 55,
+    xp: 65,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Green d\'hide body',
+    alchType: 'high',
+    note: 'Fire staff assumed; Nature rune included',
+  },
+
+  // ---------------- LOW ALCH ----------------
+  {
+    name: 'Low Alch — Rune 2h sword',
+    category: 'Alchemy',
+    skill: 'Magic',
+    level: 21,
+    xp: 31,
+    inputs: [],
+    f2p: true,
+    itemsPerHour: 1200,
+    kind: 'alchemy',
+    alchItem: 'Rune 2h sword',
+    alchType: 'low',
+    note: 'Usually poor economics; shown for comparison',
+  },
+
+  // ---------------- VERIFIED MEMBER METHODS ----------------
+  {
+    name: 'Enchant sapphire ring → Ring of recoil', category: 'Members', skill: 'Magic', level: 7, xp: 17.5,
+    inputs: [{ name: 'Sapphire ring', qty: 1 }, { name: 'Cosmic rune', qty: 1 }], output: 'Ring of recoil',
+    f2p: false, verifiedP2P: true, itemsPerHour: 1200, activityType: 'Processing', attentionLevel: 'HIGH', equipment: 'Staff of water recommended', note: 'Members-only jewellery enchant.'
+  },
+  {
+    name: 'Steel bar → Cannonballs', category: 'Members', skill: 'Smithing', level: 35, xp: 25.6,
+    inputs: [{ name: 'Steel bar', qty: 1 }], output: 'Cannonball', outputQty: 4,
+    f2p: false, verifiedP2P: true, itemsPerHour: 600, activityType: 'Processing', attentionLevel: 'AFK', questRequirement: 'Dwarf Cannon', equipment: 'Ammo mould', note: 'Long low-attention smithing cycle; 4 cannonballs per steel bar.'
+  },
+  {
+    name: 'Logs → Arrow shafts', category: 'Members', skill: 'Fletching', level: 1, xp: 5,
+    inputs: [{ name: 'Logs', qty: 1 }], output: 'Arrow shaft', outputQty: 15,
+    f2p: false, verifiedP2P: true, itemsPerHour: 1100, activityType: 'Processing', attentionLevel: 'LOW', equipment: 'Knife', note: 'Members Fletching processing.'
+  },
+  {
+    name: 'Oak logs → Oak shortbow (u)', category: 'Members', skill: 'Fletching', level: 20, xp: 33.3,
+    inputs: [{ name: 'Oak logs', qty: 1 }], output: 'Oak shortbow (u)',
+    f2p: false, verifiedP2P: true, itemsPerHour: 1500, activityType: 'Processing', attentionLevel: 'LOW', equipment: 'Knife'
+  },
+  {
+    name: 'Willow logs → Willow longbow (u)', category: 'Members', skill: 'Fletching', level: 40, xp: 83.3,
+    inputs: [{ name: 'Willow logs', qty: 1 }], output: 'Willow longbow (u)',
+    f2p: false, verifiedP2P: true, itemsPerHour: 1500, activityType: 'Processing', attentionLevel: 'LOW', equipment: 'Knife'
+  },
+
+]
+
+type GatheringActivity = {
+  name: string
+  skill: 'Fishing' | 'Mining' | 'Woodcutting'
+  requiredLevel: number
+  f2p: boolean
+  verifiedF2P: boolean
+  item: string
+  secondaryItem?: string
+  primaryShare?: number
+  secondaryXpPerSuccess?: number
+  xpPerSuccess: number
+  theoreticalItemsPerHour: number
+  attentionLevel: AttentionLevel
+  bankingMethod: string
+  questRequirement?: string
+  accessRequirement?: string
+  competitionRisk: CompetitionRisk
+  notes?: string
+  verifiedP2P?: boolean
+  regionRequirement?: string
+  equipment?: string
+  afkWindow?: number
+  consumableItem?: string
+  consumableQty?: number
+}
+
+const GATHERING: GatheringActivity[] = [
+  { name: 'Mine Copper ore', skill: 'Mining', requiredLevel: 1, f2p: true, verifiedF2P: true, item: 'Copper ore', xpPerSuccess: 17.5, theoreticalItemsPerHour: 700, attentionLevel: 'MEDIUM', bankingMethod: 'Bank', competitionRisk: 'MEDIUM', notes: 'Single-resource ore; route and competition strongly affect speed.' },
+  { name: 'Mine Tin ore', skill: 'Mining', requiredLevel: 1, f2p: true, verifiedF2P: true, item: 'Tin ore', xpPerSuccess: 17.5, theoreticalItemsPerHour: 700, attentionLevel: 'MEDIUM', bankingMethod: 'Bank', competitionRisk: 'MEDIUM' },
+  { name: 'Mine Iron ore', skill: 'Mining', requiredLevel: 15, f2p: true, verifiedF2P: true, item: 'Iron ore', xpPerSuccess: 35, theoreticalItemsPerHour: 900, attentionLevel: 'HIGH', bankingMethod: 'Bank', competitionRisk: 'HIGH', notes: 'F2P iron spots can be heavily contested.' },
+  { name: 'Mine Coal', skill: 'Mining', requiredLevel: 30, f2p: true, verifiedF2P: true, item: 'Coal', xpPerSuccess: 50, theoreticalItemsPerHour: 350, attentionLevel: 'MEDIUM', bankingMethod: 'Bank', competitionRisk: 'HIGH' },
+  { name: 'Mine Mithril ore', skill: 'Mining', requiredLevel: 55, f2p: true, verifiedF2P: true, item: 'Mithril ore', xpPerSuccess: 80, theoreticalItemsPerHour: 180, attentionLevel: 'MEDIUM', bankingMethod: 'Bank', competitionRisk: 'HIGH' },
+  { name: 'Mine Adamantite ore', skill: 'Mining', requiredLevel: 70, f2p: true, verifiedF2P: true, item: 'Adamantite ore', xpPerSuccess: 95, theoreticalItemsPerHour: 100, attentionLevel: 'MEDIUM', bankingMethod: 'Bank', competitionRisk: 'HIGH' },
+  { name: 'Net fish Shrimps / Anchovies', skill: 'Fishing', requiredLevel: 15, f2p: true, verifiedF2P: true, item: 'Raw shrimps', secondaryItem: 'Raw anchovies', primaryShare: 0.5, xpPerSuccess: 10, secondaryXpPerSuccess: 40, theoreticalItemsPerHour: 420, attentionLevel: 'LOW', bankingMethod: 'Bank', competitionRisk: 'LOW', notes: 'Mixed catch; 50/50 planning mix until a personal measured mix is added.' },
+  { name: 'Bait fish Sardine / Herring', skill: 'Fishing', requiredLevel: 10, f2p: true, verifiedF2P: true, item: 'Raw sardine', secondaryItem: 'Raw herring', primaryShare: 0.5, xpPerSuccess: 20, secondaryXpPerSuccess: 30, theoreticalItemsPerHour: 380, attentionLevel: 'LOW', bankingMethod: 'Bank', competitionRisk: 'LOW', consumableItem:'Fishing bait', consumableQty:1, notes: 'Mixed catch; Fishing bait is deducted at current GE opportunity cost.' },
+  { name: 'Fly fish Trout / Salmon', skill: 'Fishing', requiredLevel: 30, f2p: true, verifiedF2P: true, item: 'Raw trout', secondaryItem: 'Raw salmon', primaryShare: 0.5, xpPerSuccess: 50, secondaryXpPerSuccess: 70, theoreticalItemsPerHour: 520, attentionLevel: 'LOW', bankingMethod: 'Bank or drop', accessRequirement: 'Fly fishing rod + feathers', competitionRisk: 'LOW', consumableItem:'Feather', consumableQty:1, notes: 'Mixed catch; Feather is deducted at current GE opportunity cost.' },
+  { name: 'Harpoon Tuna / Swordfish', skill: 'Fishing', requiredLevel: 50, f2p: true, verifiedF2P: true, item: 'Raw tuna', secondaryItem: 'Raw swordfish', primaryShare: 0.5, xpPerSuccess: 80, secondaryXpPerSuccess: 100, theoreticalItemsPerHour: 240, attentionLevel: 'LOW', bankingMethod: 'Karamja → deposit/bank route', accessRequirement: 'Harpoon; Karamja F2P fishing spot', competitionRisk: 'LOW', notes: 'Mixed catch; 50/50 planning mix.' },
+  { name: 'Fish Lobster (Karamja)', skill: 'Fishing', requiredLevel: 40, f2p: true, verifiedF2P: true, item: 'Raw lobster', xpPerSuccess: 90, theoreticalItemsPerHour: 220, attentionLevel: 'LOW', bankingMethod: 'Karamja → deposit/bank route', accessRequirement: 'Lobster pot; Karamja F2P fishing spot', competitionRisk: 'LOW', notes: 'Low-attention pure catch; travel/banking reduces realised GP/h.' },
+  { name: 'Chop Normal logs', skill: 'Woodcutting', requiredLevel: 1, f2p: true, verifiedF2P: true, item: 'Logs', xpPerSuccess: 25, theoreticalItemsPerHour: 650, attentionLevel: 'LOW', bankingMethod: 'Bank', competitionRisk: 'LOW' },
+  { name: 'Chop Oak logs', skill: 'Woodcutting', requiredLevel: 15, f2p: true, verifiedF2P: true, item: 'Oak logs', xpPerSuccess: 37.5, theoreticalItemsPerHour: 500, attentionLevel: 'LOW', bankingMethod: 'Bank', competitionRisk: 'LOW' },
+  { name: 'Chop Willow logs', skill: 'Woodcutting', requiredLevel: 30, f2p: true, verifiedF2P: true, item: 'Willow logs', xpPerSuccess: 67.5, theoreticalItemsPerHour: 420, attentionLevel: 'LOW', bankingMethod: 'Bank', competitionRisk: 'LOW' },
+  { name: 'Chop Yew logs', skill: 'Woodcutting', requiredLevel: 60, f2p: true, verifiedF2P: true, item: 'Yew logs', xpPerSuccess: 175, theoreticalItemsPerHour: 160, attentionLevel: 'AFK', bankingMethod: 'Bank', competitionRisk: 'MEDIUM' },
+  { name: 'Chop Magic logs', skill: 'Woodcutting', requiredLevel: 75, f2p: false, verifiedF2P: false, verifiedP2P: true, item: 'Magic logs', xpPerSuccess: 250, theoreticalItemsPerHour: 110, attentionLevel: 'AFK', bankingMethod: 'Bank', competitionRisk: 'LOW', regionRequirement: 'Members world', equipment: 'Axe', afkWindow: 75, notes: 'Members gathering; slow catches but long idle windows.' },
+  { name: 'Fish Sharks', skill: 'Fishing', requiredLevel: 76, f2p: false, verifiedF2P: false, verifiedP2P: true, item: 'Raw shark', xpPerSuccess: 110, theoreticalItemsPerHour: 140, attentionLevel: 'AFK', bankingMethod: 'Bank', competitionRisk: 'LOW', regionRequirement: 'Members fishing area', equipment: 'Harpoon', afkWindow: 70 },
+  { name: 'Mine Amethyst', skill: 'Mining', requiredLevel: 92, f2p: false, verifiedF2P: false, verifiedP2P: true, item: 'Amethyst', xpPerSuccess: 240, theoreticalItemsPerHour: 90, attentionLevel: 'AFK', bankingMethod: 'Bank', competitionRisk: 'LOW', regionRequirement: 'Mining Guild members area', equipment: 'Pickaxe', afkWindow: 60 },
+
+]
+
+const recipeId = (name: string) =>
+  name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+
+const defaultItemsPerRun = (r: Recipe) => {
+  // Common F2P inventory loops. User can override every value from the UI.
+  if (r.name === 'Iron + 2 Coal → Steel bar') return 9
+  if (
+    r.category === 'Crafting' &&
+    (r.name.includes('ring') || r.name.includes('necklace') || r.name.includes('amulet'))
+  ) return 13
+
+  if (r.kind === 'alchemy') return 27
+
+  const slotsPerProcess = Math.max(
+    1,
+    r.inputs.reduce((sum, i) => sum + i.qty, 0)
+  )
+  return Math.max(1, Math.floor(28 / slotsPerProcess))
+}
+
+const loadMethodData = (): Record<string, MethodUserData> => {
+  try {
+    const saved = localStorage.getItem('osrs-method-data-v22')
+    const parsed = saved ? JSON.parse(saved) : {}
+    const steelId = recipeId('Iron + 2 Coal → Steel bar')
+    if (!parsed[steelId] || parsed[steelId].actualItemsPerHour === 491) {
+      parsed[steelId] = { ...(parsed[steelId] || {}), actualItemsPerHour: 453, measuredQuantity: 800, measuredMinutes: 106 }
+    }
+    const sapphireId = recipeId('Sapphire amulet (u)')
+    if (!parsed[sapphireId] || !(parsed[sapphireId].actualItemsPerHour > 0)) parsed[sapphireId] = { ...(parsed[sapphireId] || {}), actualItemsPerHour: 880 }
+    const anchovyId = recipeId('Raw anchovies → Anchovies')
+    if (!parsed[anchovyId]) parsed[anchovyId] = { actualItemsPerHour: 1080, measuredQuantity: 504, measuredMinutes: 28, actualSuccessByLevel: { '28': { total:504, successful:495, burnt:9, rate:495/504 } } }
+    return parsed
+  } catch {
+    return {
+      [recipeId('Iron + 2 Coal → Steel bar')]: { actualItemsPerHour: 453, measuredQuantity: 800, measuredMinutes: 106 },
+      [recipeId('Sapphire amulet (u)')]: { actualItemsPerHour: 880 },
+      [recipeId('Raw anchovies → Anchovies')]: { actualItemsPerHour: 1080, measuredQuantity: 504, measuredMinutes: 28, actualSuccessByLevel: { '28': { total:504, successful:495, burnt:9, rate:495/504 } } },
+    }
+  }
+}
+
+const fmt = (n: number | null | undefined, digits = 0) => {
+  if (n === null || n === undefined || !Number.isFinite(n)) return '—'
+  return n.toLocaleString('en-US', {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: digits,
+  })
+}
+
+const geTax = (price: number) =>
+  Math.min(5_000_000, Math.floor(price * 0.02))
+
+
+type V4TheoryEstimate = { id:string; gpHour:number; note:string }
+const V4_THEORY_ESTIMATES: V4TheoryEstimate[] = [
+  {id:'p2p-clean-ranarr',gpHour:650000,note:'Herb cleaning — margin/volume sensitive'},
+  {id:'p2p-clean-toadflax',gpHour:520000,note:'Herb cleaning — margin/volume sensitive'},
+  {id:'p2p-clean-snapdragon',gpHour:480000,note:'Herb cleaning — margin/volume sensitive'},
+  {id:'p2p-string-yew-long',gpHour:360000,note:'Bow stringing planning estimate'},
+  {id:'p2p-string-magic-long',gpHour:330000,note:'Bow stringing planning estimate'},
+  {id:'p2p-fletch-yew-long',gpHour:240000,note:'Unstrung bow planning estimate'},
+  {id:'p2p-fletch-magic-long',gpHour:220000,note:'Unstrung bow planning estimate'},
+  {id:'p2p-mine-gem-rocks',gpHour:420000,note:'Mixed gem output; route dependent'},
+  {id:'p2p-amethyst',gpHour:310000,note:'AFK high-level Mining estimate'},
+  {id:'p2p-motherlode',gpHour:120000,note:'Pay-dirt mix varies by level'},
+  {id:'p2p-mine-pure-essence',gpHour:45000,note:'Low-level member Mining estimate'},
+  {id:'p2p-fish-karambwan',gpHour:260000,note:'AFK Fishing estimate'},
+  {id:'p2p-fish-anglerfish',gpHour:210000,note:'AFK Fishing estimate'},
+  {id:'p2p-fish-monkfish',gpHour:150000,note:'Fishing estimate'},
+  {id:'p2p-fish-shark',gpHour:130000,note:'Fishing estimate'},
+  {id:'p2p-wc-magic',gpHour:170000,note:'Woodcutting estimate'},
+  {id:'p2p-wc-redwood',gpHour:140000,note:'AFK Woodcutting estimate'},
+  {id:'combat-gargoyles',gpHour:550000,note:'Slayer loot less routine supplies'},
+  {id:'combat-abyssal-demons',gpHour:500000,note:'Slayer loot planning estimate'},
+  {id:'combat-skeletal-wyverns',gpHour:650000,note:'Loot less routine supplies'},
+  {id:'combat-kraken',gpHour:850000,note:'Task-only boss planning estimate'},
+]
+
+export default function App() {
+  const [mapping, setMapping] = useState<any[]>([])
+  const [prices, setPrices] = useState<Record<string, any>>({})
+  const [volumes, setVolumes] = useState<Record<string, any>>({})
+  const [market6h, setMarket6h] = useState<Record<string, any>>({})
+  type MarketWeeklySample={t:number;high:number|null;low:number|null;highVolume:number;lowVolume:number}
+  type MarketWeeklyRow={avgHigh:number|null;avgLow:number|null;highVolume:number;lowVolume:number;points:number;weekdayVolume:number;weekendVolume:number;busiestHour:number;fetchedAt:number;samples?:MarketWeeklySample[]}
+  type MarketHistoryPoint={t:number;high:number|null;low:number|null;volume:number}
+  const [marketWeekly,setMarketWeekly]=useState<Record<string,MarketWeeklyRow>>(()=>{try{return JSON.parse(localStorage.getItem('osrs-market-weekly-v1')||'{}')}catch{return {}}})
+  const [marketHistory,setMarketHistory]=useState<Record<string,MarketHistoryPoint[]>>(()=>{try{return JSON.parse(localStorage.getItem('osrs-market-history-v1')||'{}')}catch{return {}}})
+  const [marketSoundEnabled,setMarketSoundEnabled]=useState(()=>localStorage.getItem('osrs-market-sound-v1')==='true')
+  const [marketWeeklyLoading,setMarketWeeklyLoading]=useState(false)
+  const [marketScanTime,setMarketScanTime]=useState(()=>Number(localStorage.getItem('osrs-market-weekly-time-v2')||0))
+  const [marketAlertLog,setMarketAlertLog]=useState<Record<string,number>>(()=>{try{return JSON.parse(localStorage.getItem('osrs-market-alert-log-v1')||'{}')}catch{return {}}})
+  const [loading, setLoading] = useState(false)
+  const [updated, setUpdated] = useState<Date | null>(null)
+  const [error, setError] = useState('')
+
+  const [mode, setMode] = useState<AccountMode>(
+    (localStorage.getItem('osrs-mode') as AccountMode) || 'F2P'
+  )
+
+  const [gp, setGp] = useState(
+    Number(localStorage.getItem('osrs-current-gp') || 200000)
+  )
+
+  const [quantity, setQuantity] = useState(
+    Number(localStorage.getItem('osrs-quantity') || 500)
+  )
+
+  const [levels, setLevels] = useState<Record<string, number>>(() => {
+    try {
+      const saved = localStorage.getItem('osrs-levels-v2')
+      return saved
+        ? { ...DEFAULT_LEVELS, ...JSON.parse(saved) }
+        : DEFAULT_LEVELS
+    } catch {
+      return DEFAULT_LEVELS
+    }
+  })
+
+  const [availableOnly, setAvailableOnly] = useState(false)
+  const [showMembers, setShowMembers] = useState(true)
+  const [profitFilter, setProfitFilter] = useState('All')
+  const [skillFilter, setSkillFilter] = useState('All')
+  const [categoryFilter, setCategoryFilter] = useState('All')
+  const [sort, setSort] = useState('profit')
+  const [targetHours, setTargetHours] = useState(1)
+  const [methodData, setMethodData] = useState<Record<string, MethodUserData>>(loadMethodData)
+  const [editingMethodId, setEditingMethodId] = useState<string | null>(null)
+  const [activityTypeFilter, setActivityTypeFilter] = useState('All')
+  const [attentionFilter, setAttentionFilter] = useState('All')
+  const [purposeFilter, setPurposeFilter] = useState('All')
+  const [noLossOnly, setNoLossOnly] = useState(false)
+  const [planningFactor, setPlanningFactor] = useState(() => Number(localStorage.getItem('osrs-planning-factor-v24') || 50))
+  const [gatheringData, setGatheringData] = useState<Record<string, MethodUserData>>(() => {
+    try {
+      const parsed=JSON.parse(localStorage.getItem('osrs-gathering-data-v24') || '{}')
+      const baitId=`gather-${recipeId('Bait fish Sardine / Herring')}`
+      if(!parsed[baitId]) parsed[baitId]={actualItemsPerHour:557,measuredQuantity:130,measuredMinutes:14}
+      return parsed
+    } catch { return {[`gather-${recipeId('Bait fish Sardine / Herring')}`]:{actualItemsPerHour:557,measuredQuantity:130,measuredMinutes:14}} }
+  })
+  const [editingGatheringId, setEditingGatheringId] = useState<string | null>(null)
+  const [membershipDaysRemaining] = useState(() => Number(localStorage.getItem('osrs-member-days-v25') || 14))
+  const [bondReserve, setBondReserve] = useState(() => Number(localStorage.getItem('osrs-bond-reserve-v25') || 2000000))
+  const [emergencyBuffer, setEmergencyBuffer] = useState(() => Number(localStorage.getItem('osrs-emergency-buffer-v44') || 500000))
+  const [bondHoursBudget, setBondHoursBudget] = useState(() => Number(localStorage.getItem('osrs-bond-hours-budget-v44') || 40))
+  const [bondActiveDays, setBondActiveDays] = useState(() => Number(localStorage.getItem('osrs-bond-active-days-v44') || 10))
+  const [dailyMaxHours, setDailyMaxHours] = useState(() => Number(localStorage.getItem('osrs-daily-max-hours-v44') || 4))
+  const [bondScenario, setBondScenario] = useState<BondScenario>(() => (localStorage.getItem('osrs-bond-scenario-v44') as BondScenario) || 'CONSERVATIVE')
+  const [progressionPriority, setProgressionPriority] = useState<ProgressionPriority>(() => (localStorage.getItem('osrs-progression-priority-v44') as ProgressionPriority) || 'BALANCED')
+  const [playerMode, setPlayerMode] = useState<PlayerMode>(() => (localStorage.getItem('osrs-player-mode-v25') as PlayerMode) || 'NORMAL')
+  const [geSlots] = useState(() => Number(localStorage.getItem('osrs-ge-slots-v25') || 3))
+  const [requirements, setRequirements] = useState<Record<string,boolean>>(() => { try{return JSON.parse(localStorage.getItem('osrs-requirements-v25')||'{}')}catch{return{}} })
+  const [v4Search, setV4Search] = useState('')
+  const [v4ShowLocked, setV4ShowLocked] = useState(true)
+  const [v4ViewAll, setV4ViewAll] = useState(false)
+  const [v4KindFilter, setV4KindFilter] = useState('ALL')
+  const [v4PlannerItem, setV4PlannerItem] = useState('')
+  const [activeTab, setActiveTab] = useState<'dashboard'|'smart'|'skills'|'herblore'|'alchemy'|'alchemyGoal'|'portfolio'|'market'|'money'|'planner'|'database'|'coverage'|'bulk'>('dashboard')
+  const [v5Page,setV5Page]=useState<V5PageId>('melee')
+  const [v5Search,setV5Search]=useState('')
+  const [v5ShowLocked,setV5ShowLocked]=useState(true)
+  const [v5Edits,setV5Edits]=useState<Record<string,V5Edit>>(()=>{
+    try{
+      const saved=JSON.parse(localStorage.getItem('osrs-v5-edits')||'{}') as Record<string,V5Edit>
+      const merged:Record<string,V5Edit>={}
+      Object.entries(V5_BULK_SEED_EDITS).forEach(([id,seed])=>{merged[id]={...seed}})
+      Object.entries(saved).forEach(([id,user])=>{merged[id]={...(merged[id]||{}),...user}})
+      return merged
+    }catch{return {...V5_BULK_SEED_EDITS}}
+  })
+  const [v5Editing,setV5Editing]=useState<string|null>(null)
+  const [v5BuyTargets,setV5BuyTargets]=useState<Record<string,number>>(()=>{
+    try {
+      const globalSaved=JSON.parse(localStorage.getItem('osrs-v5-global-buy-targets')||'{}')
+      if(Object.keys(globalSaved).length) return globalSaved
+      const legacy=JSON.parse(localStorage.getItem('osrs-v5-buy-targets')||'{}') as Record<string,Record<string,number>>
+      const migrated:Record<string,number>={}
+      Object.values(legacy).forEach(activity=>Object.entries(activity||{}).forEach(([item,price])=>{if(migrated[item]===undefined&&Number(price)>0)migrated[item]=Number(price)}))
+      return migrated
+    } catch { return {} }
+  })
+
+  type SmartProfile='FAST'|'BALANCED'|'PATIENT'
+  type OrderSide='BUY'|'SELL'
+  type OrderStatus='OPEN'|'PARTIAL'|'FILLED'|'CANCELLED'
+  type OrderHistoryRow={id:string;date:string;item:string;side:OrderSide;quantity:number;orderPrice:number;filledQuantity:number;fillHours:number|null;status:OrderStatus;averageFillPrice:number|null}
+  type TsPoint={timestamp:number;avgHighPrice:number|null;avgLowPrice:number|null;highPriceVolume:number;lowPriceVolume:number}
+  const [smartProfile,setSmartProfile]=useState<SmartProfile>(()=>(localStorage.getItem('osrs-smart-profile-v56') as SmartProfile)||'PATIENT')
+  const [smartQty,setSmartQty]=useState(()=>Number(localStorage.getItem('osrs-smart-qty-v56')||500))
+  const [smartQtyPreset,setSmartQtyPreset]=useState('500')
+  const [smartItem,setSmartItem]=useState('')
+  const [smartSearch,setSmartSearch]=useState('')
+  const [smartSeries,setSmartSeries]=useState<Record<string,TsPoint[]>>({})
+  const [smartLoading,setSmartLoading]=useState<Record<string,boolean>>({})
+  const [smartError,setSmartError]=useState('')
+  const [smartRecipeId,setSmartRecipeId]=useState('')
+  const [smartRecipeSearch,setSmartRecipeSearch]=useState('')
+  const [alchemyGoalTarget,setAlchemyGoalTarget]=useState(()=>Math.max(1,Number(localStorage.getItem('osrs-alchemy-goal-target-v62')||750000)))
+  // Per-item 4-hour GE buy-limit countdowns for the daily High Alchemy plan.
+  // Persist start timestamps so countdowns survive refreshes and browser restarts.
+  const [alchemyGoalTimers,setAlchemyGoalTimers]=useState<Record<string,number>>(()=>{try{return JSON.parse(localStorage.getItem('osrs-alchemy-goal-timers-v631')||'{}')}catch{return {}}})
+  const [alchemyGoalClock,setAlchemyGoalClock]=useState(()=>Date.now())
+  useEffect(()=>{const timer=window.setInterval(()=>setAlchemyGoalClock(Date.now()),1000);return()=>window.clearInterval(timer)},[])
+  useEffect(()=>{try{localStorage.setItem('osrs-alchemy-goal-timers-v631',JSON.stringify(alchemyGoalTimers))}catch{}},[alchemyGoalTimers])
+  const [alchemySearch,setAlchemySearch]=useState('')
+  const [alchemyShowUnpriced,setAlchemyShowUnpriced]=useState(true)
+  const [alchemyAccessFilter,setAlchemyAccessFilter]=useState('ALL')
+  const [alchemyProfitFilter,setAlchemyProfitFilter]=useState('ALL')
+  const [alchemyDataFilter,setAlchemyDataFilter]=useState('ALL')
+  const [alchemySort,setAlchemySort]=useState('GP_DESC')
+  const [alchemyShowLocked,setAlchemyShowLocked]=useState(true)
+  const [alchemyEditId,setAlchemyEditId]=useState<string|null>(null)
+  const [conversionEditId,setConversionEditId]=useState<string|null>(null)
+  const [alchemyDefaults,setAlchemyDefaults]=useState<{castsPerHour:number;fireStaff:boolean}>(()=>{try{return {...{castsPerHour:1200,fireStaff:true},...JSON.parse(localStorage.getItem('osrs-alchemy-defaults-v61')||'{}')}}catch{return {castsPerHour:1200,fireStaff:true}}})
+  const [alchemyEdits,setAlchemyEdits]=useState<Record<string,{rate?:number}>>(()=>{try{return JSON.parse(localStorage.getItem('osrs-alchemy-edits-v61')||'{}')}catch{return {}}})
+  const [conversionEdits,setConversionEdits]=useState<Record<string,{rate?:number}>>(()=>{try{return JSON.parse(localStorage.getItem('osrs-skillless-edits-v61')||'{}')}catch{return {}}})
+  const [herbloreSubTab,setHerbloreSubTab]=useState<'grimyClean'|'cleanPotion'|'grimyPotion'|'degrime'>('grimyClean')
+  const [degrimeEarthStaff,setDegrimeEarthStaff]=useState(true)
+  const [herbloreSearch,setHerbloreSearch]=useState('')
+  const [herbloreSort,setHerbloreSort]=useState('GP_DESC')
+  const [herbloreProfitFilter,setHerbloreProfitFilter]=useState('ALL')
+  const [herbloreShowLocked,setHerbloreShowLocked]=useState(true)
+  const [herbloreShowUnpriced,setHerbloreShowUnpriced]=useState(true)
+  const [herbloreMinVolume,setHerbloreMinVolume]=useState('0')
+  const [portfolioCapital,setPortfolioCapital]=useState(()=>Math.max(1,Number(localStorage.getItem('osrs-portfolio-capital-v645')||10000000)))
+  const [portfolioRisk] = useState<'LOW' | 'MEDIUM' | 'HIGH'>('LOW')
+  const [portfolioProfile,setPortfolioProfile]=useState<'FAST'|'BALANCED'|'PATIENT'>('BALANCED')
+  const [orderHistory,setOrderHistory]=useState<OrderHistoryRow[]>(()=>{try{return JSON.parse(localStorage.getItem('osrs-order-history-v56')||'[]')}catch{return[]}})
+  const [historyDraft,setHistoryDraft]=useState({item:'',side:'BUY' as OrderSide,quantity:500,orderPrice:0,filledQuantity:0,fillHours:'',status:'FILLED' as OrderStatus,averageFillPrice:''})
+
+  const [v5AccessFilter,setV5AccessFilter]=useState('ALL')
+  const [v5KindFilter,setV5KindFilter]=useState('ALL')
+  const [v5AttentionFilter,setV5AttentionFilter]=useState('ALL')
+  const [v5DataFilter,setV5DataFilter]=useState('ALL')
+  const [v5ProfitFilter,setV5ProfitFilter]=useState('ALL')
+  const [v5Sort,setV5Sort]=useState('CAPACITY_DESC')
+  const [v5MoneySkill,setV5MoneySkill]=useState('ALL')
+  const [v5MoneyKind,setV5MoneyKind]=useState('ALL')
+  const [v5MoneyAttention,setV5MoneyAttention]=useState('ALL')
+  const [v5MoneyData,setV5MoneyData]=useState('ALL')
+  const [v5MoneySearch,setV5MoneySearch]=useState('')
+  const [v5IncludeUnverified,setV5IncludeUnverified]=useState(false)
+  type BulkPreviewStatus='MATCHED'|'NOT FOUND'|'AMBIGUOUS'|'WOULD UPDATE'|'NO CHANGE'
+  type BulkPreviewRow={raw:string;key:string;activityId?:string;activityName?:string;status:BulkPreviewStatus;patch?:Partial<V5Edit>;message?:string}
+  const [bulkMode,setBulkMode]=useState('ALL')
+  const [bulkSkill,setBulkSkill]=useState('ALL')
+  const [bulkAccess,setBulkAccess]=useState('ALL')
+  const [bulkQuality,setBulkQuality]=useState('ALL')
+  const [bulkMissingOnly,setBulkMissingOnly]=useState(false)
+  const [bulkSearch,setBulkSearch]=useState('')
+  const [bulkPaste,setBulkPaste]=useState('')
+  const [bulkPreview,setBulkPreview]=useState<BulkPreviewRow[]>([])
+  const [bulkSelected,setBulkSelected]=useState<Record<string,boolean>>({})
+  const [bulkCommonAttention,setBulkCommonAttention]=useState('')
+  const [bulkCommonQuality,setBulkCommonQuality]=useState('')
+  const [bulkCommonSource,setBulkCommonSource]=useState('')
+  const [bulkCommonNote,setBulkCommonNote]=useState('')
+  const [bulkAllowMeasuredOverwrite,setBulkAllowMeasuredOverwrite]=useState(false)
+  const [bulkUndo,setBulkUndo]=useState<Record<string,V5Edit>|null>(()=>{try{return JSON.parse(localStorage.getItem('osrs-v5-last-bulk-snapshot')||'null')}catch{return null}})
+  const [bulkValidationErrors,setBulkValidationErrors]=useState<string[]>([])
+  const [bulkReport,setBulkReport]=useState<{restored:number;updated:number;estimates:number;measuredPreserved:number;ignored:string[];errors:number;preview:string[]} | null>(null)
+  const [v4Page, setV4Page] = useState(1)
+  const V4_PAGE_SIZE = 30
+  const [measurementHistory, setMeasurementHistory] = useState<Record<string,Measurement[]>>(() => {
+    try {
+      const saved=JSON.parse(localStorage.getItem('osrs-measurement-history-v25')||'{}')
+      if(Object.keys(saved).length) return saved
+      return {
+        [recipeId('Iron + 2 Coal → Steel bar')]: [{date:new Date().toISOString(),skillLevel:30,quantity:800,minutes:106,itemsPerHour:453}],
+        [recipeId('Raw anchovies → Anchovies')]: [{date:new Date().toISOString(),skillLevel:28,quantity:504,minutes:28,itemsPerHour:1080,successful:495,burnt:9}],
+        [`gather-${recipeId('Bait fish Sardine / Herring')}`]: [{date:new Date().toISOString(),skillLevel:50,quantity:130,minutes:14,itemsPerHour:557,outputs:{'Raw herring':478,'Raw sardine':522}}]
+      }
+    } catch { return {} }
+  })
+  const [mixedSamples, setMixedSamples] = useState<Record<string,Record<string,number>>>(() => { try{return JSON.parse(localStorage.getItem('osrs-mixed-samples-v25')||JSON.stringify({[`gather-${recipeId('Bait fish Sardine / Herring')}`]:{'Raw herring':478,'Raw sardine':522}}))}catch{return{}} })
+  const [selectedBondMethod, setSelectedBondMethod] = useState('')
+
+
+  useEffect(()=>{localStorage.setItem('osrs-smart-profile-v56',smartProfile)},[smartProfile])
+  useEffect(()=>{localStorage.setItem('osrs-smart-qty-v56',String(smartQty))},[smartQty])
+  useEffect(()=>{localStorage.setItem('osrs-order-history-v56',JSON.stringify(orderHistory))},[orderHistory])
+
+  const updateMethodData = (id: string, patch: Partial<MethodUserData>) => {
+    setMethodData((old) => ({
+      ...old,
+      [id]: { ...(old[id] || {}), ...patch },
+    }))
+  }
+
+  const addMeasurement = (id:string, m:Measurement) => setMeasurementHistory(old=>({...old,[id]:[...(old[id]||[]),m]}))
+  const historySummary = (id:string) => { const list=measurementHistory[id]||[]; return {count:list.length,last:list[list.length-1],weighted:weightedSpeed(list)} }
+
+  const clearActualSpeed = (id: string) => {
+    setMethodData((old) => {
+      const next = { ...old }
+      const current = { ...(next[id] || {}) }
+      delete current.actualItemsPerHour
+      delete current.measuredQuantity
+      delete current.measuredMinutes
+      next[id] = current
+      return next
+    })
+  }
+
+  const clearActualPrices = (id: string) => {
+    setMethodData((old) => {
+      const next = { ...old }
+      const current = { ...(next[id] || {}) }
+      delete current.actualBuyCost
+      delete current.actualSellPrice
+      next[id] = current
+      return next
+    })
+  }
+
+
+  const downloadFullBackup = () => {
+    const data:Record<string,string> = {}
+    for (let i=0;i<localStorage.length;i++) {
+      const key=localStorage.key(i)
+      if (key && key.startsWith('osrs-')) data[key]=localStorage.getItem(key) ?? ''
+    }
+    const payload={backupVersion:1,appVersion:'V6.0-RC',createdAt:new Date().toISOString(),data}
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'})
+    const url=URL.createObjectURL(blob)
+    const link=document.createElement('a')
+    link.href=url
+    link.download=`osrs-economy-backup-${new Date().toISOString().slice(0,10)}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const restoreFullBackup = async (file:File) => {
+    try {
+      const parsed=JSON.parse(await file.text())
+      if (!parsed || parsed.backupVersion!==1 || typeof parsed.data!=='object') throw new Error('invalid')
+      const entries=Object.entries(parsed.data as Record<string,string>).filter(([k])=>k.startsWith('osrs-'))
+      if (!entries.length) throw new Error('empty')
+      if (!window.confirm(`${entries.length} OSRS ayarı/verisi geri yüklenecek. Devam?`)) return
+      entries.forEach(([k,v])=>localStorage.setItem(k,String(v)))
+      window.alert('Yedek geri yüklendi. Sayfa yeniden açılacak.')
+      window.location.reload()
+    } catch {
+      window.alert('Geçersiz veya desteklenmeyen OSRS yedek dosyası.')
+    }
+  }
+
+  const refresh = async () => {
+    setLoading(true)
+    setError('')
+
+    try {
+      const [m, p, v] = await Promise.all([
+        fetch(`${API}/mapping`),
+        fetch(`${API}/latest`),
+        fetch(`${API}/24h`),
+      ])
+
+      if (!m.ok || !p.ok || !v.ok) throw new Error()
+
+      const md = await m.json()
+      const pd = await p.json()
+      const vd = await v.json()
+
+      setMapping(md)
+      setPrices(pd.data || {})
+      setVolumes(vd.data || {})
+      setUpdated(new Date())
+    } catch {
+      setError('OSRS Wiki fiyatları alınamadı.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(()=>{
+    if(!mapping.length)return
+    let cancelled=false
+    const outputs=Array.from(new Set(V5_CATALOGUE.filter(x=>x.quality==='VERIFIED'&&(x.economyReady??true)&&x.output).map(x=>x.output!).filter(Boolean)))
+    const targets=outputs.map(name=>mapping.find((m:any)=>m.name.toLowerCase()===name.toLowerCase())).filter(Boolean).slice(0,60)
+    const run=async()=>{
+      const next:Record<string,any>={}
+      await Promise.all(targets.map(async(item:any)=>{
+        try{
+          const res=await fetch(`${API}/timeseries?timestep=5m&id=${item.id}`)
+          if(!res.ok)return
+          const json=await res.json(); const cutoff=Math.floor(Date.now()/1000)-6*3600
+          const pts=(json.data||[]).filter((p:any)=>Number(p.timestamp)>=cutoff)
+          const hv=pts.reduce((n:number,p:any)=>n+Number(p.highPriceVolume||0),0)
+          const lv=pts.reduce((n:number,p:any)=>n+Number(p.lowPriceVolume||0),0)
+          const high=hv>0?pts.reduce((n:number,p:any)=>n+Number(p.avgHighPrice||0)*Number(p.highPriceVolume||0),0)/hv:null
+          const low=lv>0?pts.reduce((n:number,p:any)=>n+Number(p.avgLowPrice||0)*Number(p.lowPriceVolume||0),0)/lv:null
+          if(high!==null||low!==null)next[item.id]={avgHighPrice:high,avgLowPrice:low,highPriceVolume:hv,lowPriceVolume:lv}
+        }catch{}
+      }))
+      if(!cancelled)setMarket6h(next)
+    }
+    run()
+    return()=>{cancelled=true}
+  },[mapping,updated])
+
+  useEffect(()=>{localStorage.setItem('osrs-v5-edits',JSON.stringify(v5Edits))},[v5Edits])
+  useEffect(()=>{localStorage.setItem('osrs-portfolio-capital-v645',String(portfolioCapital))},[portfolioCapital])
+  useEffect(()=>{localStorage.setItem('osrs-alchemy-goal-target-v62',String(alchemyGoalTarget))},[alchemyGoalTarget])
+  useEffect(()=>{localStorage.setItem('osrs-alchemy-defaults-v61',JSON.stringify(alchemyDefaults))},[alchemyDefaults])
+  useEffect(()=>{localStorage.setItem('osrs-alchemy-edits-v61',JSON.stringify(alchemyEdits))},[alchemyEdits])
+  useEffect(()=>{localStorage.setItem('osrs-skillless-edits-v61',JSON.stringify(conversionEdits))},[conversionEdits])
+  useEffect(()=>{
+    // Backward-compatible measurement migration: preserve legacy stores and mirror known measurements to canonical IDs.
+    setV5Edits(old=>{
+      const next={...old}; let changed=false
+      const mirror=(id:string,rate:number,note:string)=>{
+        const cur=next[id]||{}
+        if(!(cur.measuredRate&&cur.measuredRate>0)){next[id]={...cur,measuredRate:rate,note:cur.note||note};changed=true}
+      }
+      const sapphireLegacy=methodData[recipeId('Sapphire amulet (u)')]?.actualItemsPerHour
+      const steelLegacy=methodData[recipeId('Iron + 2 Coal → Steel bar')]?.actualItemsPerHour
+      mirror('econ-f2p-sapphire-amulet-u',sapphireLegacy&&sapphireLegacy>0?sapphireLegacy:880,'Gerçek kullanıcı ölçümü: 880/h')
+      mirror('econ-f2p-emerald-necklace',898,'Gerçek kullanıcı ölçümü: 898/h')
+      mirror('econ-f2p-steel-bar',steelLegacy&&steelLegacy>0?steelLegacy:453,'800 adet gerçek test ≈453/h')
+      mirror('econ-f2p-uncooked-apple-pie',2278,'486 adet / 12:48 gerçek ölçüm')
+      return changed?next:old
+    })
+    setMeasurementHistory(old=>{
+      const next={...old};let changed=false
+      const add=(id:string,m:Measurement)=>{if(!(next[id]?.length)){next[id]=[m];changed=true}}
+      add('econ-f2p-steel-bar',{date:new Date().toISOString(),skillLevel:30,quantity:800,minutes:106,itemsPerHour:453})
+      add('econ-f2p-uncooked-apple-pie',{date:new Date().toISOString(),skillLevel:30,quantity:486,minutes:12.8,itemsPerHour:2278})
+      return changed?next:old
+    })
+  // Run once: never delete or reset legacy measurements.
+  },[])
+  useEffect(()=>{localStorage.setItem('osrs-v5-global-buy-targets',JSON.stringify(v5BuyTargets))},[v5BuyTargets])
+
+  useEffect(() => {
+    refresh()
+  }, [])
+  // Refresh live GE prices once per minute while the app is open.
+  useEffect(()=>{
+    const timer=window.setInterval(()=>{if(!document.hidden)refresh()},60_000)
+    return()=>window.clearInterval(timer)
+  },[])
+
+  useEffect(()=>{try{localStorage.setItem('osrs-market-weekly-v1',JSON.stringify(marketWeekly))}catch{}},[marketWeekly])
+  useEffect(()=>{try{localStorage.setItem('osrs-market-history-v1',JSON.stringify(marketHistory))}catch{}},[marketHistory])
+  useEffect(()=>{localStorage.setItem('osrs-market-sound-v1',String(marketSoundEnabled))},[marketSoundEnabled])
+  useEffect(()=>{localStorage.setItem('osrs-market-alert-log-v1',JSON.stringify(marketAlertLog))},[marketAlertLog])
+
+  // Store a compact 10-minute local snapshot. This builds weekday/weekend and time-of-day context without a server.
+  useEffect(()=>{
+    if(!updated||!mapping.length)return
+    const now=Date.now();const last=Number(localStorage.getItem('osrs-market-history-last-v1')||0)
+    if(now-last<10*60_000)return
+    const top=mapping.map((item:any)=>({item,vol:Number(volumes[item.id]?.highPriceVolume||0)+Number(volumes[item.id]?.lowPriceVolume||0)})).filter(x=>x.vol>0).sort((a,b)=>b.vol-a.vol).slice(0,30)
+    if(!top.length)return
+    setMarketHistory(old=>{
+      const next={...old};top.forEach(({item,vol})=>{
+        const id=String(item.id);const arr=[...(next[id]||[])];arr.push({t:now,high:prices[id]?.high==null?null:Number(prices[id].high),low:prices[id]?.low==null?null:Number(prices[id].low),volume:vol})
+        next[id]=arr.filter(x=>x.t>=now-7*24*60*60_000).slice(-1008)
+      });return next
+    })
+    localStorage.setItem('osrs-market-history-last-v1',String(now))
+  },[updated,mapping,volumes,prices])
+
+  // Weekly weighted prices for the 30 most liquid GE items. Calls are throttled to once per 30 minutes.
+  useEffect(()=>{
+    if(!updated||!mapping.length||marketWeeklyLoading)return
+    let cancelled=false
+    const top=mapping.map((item:any)=>({item,vol:Number(volumes[item.id]?.highPriceVolume||0)+Number(volumes[item.id]?.lowPriceVolume||0)})).filter(x=>x.vol>=1000).sort((a,b)=>b.vol-a.vol).slice(0,30)
+    if(Date.now()-Number(localStorage.getItem('osrs-market-weekly-time-v2')||0)<30*60_000)return
+    if(!top.length)return
+    setMarketWeeklyLoading(true)
+    ;(async()=>{
+      const results:Array<readonly [string,MarketWeeklyRow]|null>=[]
+      // Keep requests in small batches: firing 30 timeseries calls simultaneously can be throttled.
+      for(let i=0;i<top.length;i+=5){
+        const batch=await Promise.all(top.slice(i,i+5).map(async({item})=>{
+          try{
+            const res=await fetch(`${API}/timeseries?timestep=1h&id=${item.id}`);if(!res.ok)return null
+            const json=await res.json();const cutoff=Math.floor(Date.now()/1000)-7*24*60*60
+            const pts=(json.data||[]).filter((x:any)=>Number(x.timestamp)>=cutoff)
+            if(!pts.length)return null
+            const hv=pts.reduce((n:number,x:any)=>n+Number(x.highPriceVolume||0),0),lv=pts.reduce((n:number,x:any)=>n+Number(x.lowPriceVolume||0),0)
+            const hp=hv?pts.reduce((n:number,x:any)=>n+Number(x.avgHighPrice||0)*Number(x.highPriceVolume||0),0)/hv:null
+            const lp=lv?pts.reduce((n:number,x:any)=>n+Number(x.avgLowPrice||0)*Number(x.lowPriceVolume||0),0)/lv:null
+            const weekdayVolume=pts.filter((x:any)=>new Date(Number(x.timestamp)*1000).getDay()!==0&&new Date(Number(x.timestamp)*1000).getDay()!==6).reduce((n:number,x:any)=>n+Number(x.highPriceVolume||0)+Number(x.lowPriceVolume||0),0)
+            const weekendVolume=pts.filter((x:any)=>[0,6].includes(new Date(Number(x.timestamp)*1000).getDay())).reduce((n:number,x:any)=>n+Number(x.highPriceVolume||0)+Number(x.lowPriceVolume||0),0)
+            const hourTotals:Record<number,number>={};pts.forEach((x:any)=>{const h=new Date(Number(x.timestamp)*1000).getHours();hourTotals[h]=(hourTotals[h]||0)+Number(x.highPriceVolume||0)+Number(x.lowPriceVolume||0)})
+            const busiestHour=Number(Object.entries(hourTotals).sort((a:any,b:any)=>b[1]-a[1])[0]?.[0]||0)
+            const samples=pts.map((x:any)=>({t:Number(x.timestamp)*1000,high:x.avgHighPrice==null?null:Number(x.avgHighPrice),low:x.avgLowPrice==null?null:Number(x.avgLowPrice),highVolume:Number(x.highPriceVolume||0),lowVolume:Number(x.lowPriceVolume||0)}))
+            return [String(item.id),{avgHigh:hp,avgLow:lp,highVolume:hv,lowVolume:lv,points:pts.length,weekdayVolume,weekendVolume,busiestHour,fetchedAt:Date.now(),samples}] as const
+          }catch{return null}
+        }))
+        results.push(...batch)
+      }
+      if(!cancelled){
+        const rows=results.filter(Boolean) as Array<readonly [string,MarketWeeklyRow]>
+        if(rows.length){setMarketWeekly(old=>({...old,...Object.fromEntries(rows)}));const completed=Date.now();setMarketScanTime(completed);localStorage.setItem('osrs-market-weekly-time-v2',String(completed))}
+        else {setMarketScanTime(0);localStorage.setItem('osrs-market-weekly-time-v2','0')}
+        setMarketWeeklyLoading(false)
+      }
+    })().catch(()=>{if(!cancelled){setMarketScanTime(0);localStorage.setItem('osrs-market-weekly-time-v2','0');setMarketWeeklyLoading(false)}})
+  },[updated,mapping,volumes])
+
+  useEffect(() => {
+    localStorage.setItem('osrs-current-gp', String(gp))
+    localStorage.setItem('osrs-quantity', String(quantity))
+    localStorage.setItem('osrs-levels-v2', JSON.stringify(levels))
+    localStorage.setItem('osrs-mode', mode)
+    localStorage.setItem('osrs-method-data-v22', JSON.stringify(methodData))
+    localStorage.setItem('osrs-target-hours-v22', String(targetHours))
+    localStorage.setItem('osrs-planning-factor-v24', String(planningFactor))
+    localStorage.setItem('osrs-gathering-data-v24', JSON.stringify(gatheringData))
+    localStorage.setItem('osrs-member-days-v25', String(membershipDaysRemaining))
+    localStorage.setItem('osrs-bond-reserve-v25', String(bondReserve))
+    localStorage.setItem('osrs-emergency-buffer-v44', String(emergencyBuffer))
+    localStorage.setItem('osrs-bond-hours-budget-v44', String(bondHoursBudget))
+    localStorage.setItem('osrs-bond-active-days-v44', String(bondActiveDays))
+    localStorage.setItem('osrs-daily-max-hours-v44', String(dailyMaxHours))
+    localStorage.setItem('osrs-bond-scenario-v44', bondScenario)
+    localStorage.setItem('osrs-progression-priority-v44', progressionPriority)
+    localStorage.setItem('osrs-player-mode-v25', playerMode)
+    localStorage.setItem('osrs-ge-slots-v25', String(geSlots))
+    localStorage.setItem('osrs-requirements-v25', JSON.stringify(requirements))
+    localStorage.setItem('osrs-measurement-history-v25', JSON.stringify(measurementHistory))
+    localStorage.setItem('osrs-mixed-samples-v25', JSON.stringify(mixedSamples))
+  }, [gp, quantity, levels, mode, methodData, targetHours, planningFactor, gatheringData, membershipDaysRemaining, bondReserve, emergencyBuffer, bondHoursBudget, bondActiveDays, dailyMaxHours, bondScenario, progressionPriority, playerMode, geSlots, requirements, measurementHistory, mixedSamples])
+
+  useEffect(() => {
+    const savedHours = Number(localStorage.getItem('osrs-target-hours-v22'))
+    if ([0.5, 1, 2, 3].includes(savedHours)) setTargetHours(savedHours)
+  }, [])
+
+  const items = useMemo(() => {
+    const result: Record<string, any> = {}
+    mapping.forEach((i) => {
+      const itemName=typeof i?.name==='string'?i.name.trim():''
+      if(itemName) result[itemName.toLowerCase()] = i
+    })
+    return result
+  }, [mapping])
+
+  const getItem = (name: string) => typeof name==='string'&&name.trim()?items[name.trim().toLowerCase()]:undefined
+
+  const buy = (name: string): number | null => {
+    const i = getItem(name)
+    return i ? prices[i.id]?.high ?? null : null
+  }
+
+  const sell = (name: string): number | null => {
+    const i = getItem(name)
+    return i ? prices[i.id]?.low ?? null : null
+  }
+
+  const volume = (name: string): number | null => {
+    const i = getItem(name)
+    if (!i) return null
+    const d = volumes[i.id]
+    if (!d) return null
+    return (d.highPriceVolume || 0) + (d.lowPriceVolume || 0)
+  }
+
+  // Live GE prices are authoritative for every cost; only processing speed is editable.
+  const alchemyRows = useMemo(() => {
+    const nature = mapping.find((i:any)=>i.name?.toLowerCase()==='nature rune')
+    const fire = mapping.find((i:any)=>i.name?.toLowerCase()==='fire rune')
+    const liveNatureCost = nature && prices[nature.id]?.high != null ? Number(prices[nature.id].high) : null
+    const liveFireCost = fire && prices[fire.id]?.high != null ? Number(prices[fire.id].high)*5 : null
+    return mapping
+      .filter((i:any)=>i.highalch!==null && i.highalch!==undefined && Number.isFinite(Number(i.highalch)) && Number(i.highalch)>0)
+      .map((i:any)=>{
+        const edit=alchemyEdits[String(i.id)]||{}
+        const itemBuy=prices[i.id]?.high == null ? null : Number(prices[i.id].high)
+        const itemSell=prices[i.id]?.low == null ? null : Number(prices[i.id].low)
+        const alchValue=Number(i.highalch)
+        const buyLimit=Number(i.limit)>0?Number(i.limit):null
+        const natureCost=liveNatureCost
+        const fireCost=alchemyDefaults.fireStaff?0:liveFireCost
+        const rate=edit.rate??alchemyDefaults.castsPerHour
+        const totalRuneCost=natureCost===null?null:natureCost+(fireCost??0)
+        const profit=itemBuy===null||totalRuneCost===null||(!alchemyDefaults.fireStaff&&fireCost===null)?null:alchValue-itemBuy-totalRuneCost
+        const volData=volumes[i.id]
+        const volume24h=volData?(Number(volData.highPriceVolume||0)+Number(volData.lowPriceVolume||0)):null
+        const natureVolume= nature ? ((Number(volumes[nature.id]?.highPriceVolume||0)+Number(volumes[nature.id]?.lowPriceVolume||0))||null) : null
+        const fireVolume= fire ? ((Number(volumes[fire.id]?.highPriceVolume||0)+Number(volumes[fire.id]?.lowPriceVolume||0))||null) : null
+        const dailyCaps=[volume24h,natureVolume,...(!alchemyDefaults.fireStaff?[fireVolume]:[])].filter((v:any)=>v!==null&&v>0).map((v:any)=>v*0.05)
+        const marketCapacityPerDay=dailyCaps.length===(!alchemyDefaults.fireStaff?3:2)?Math.min(...(dailyCaps as number[])):null
+        const capacityRate=marketCapacityPerDay===null?null:Math.min(rate,marketCapacityPerDay/Math.max(1,dailyMaxHours))
+        const capacityGpHour=profit===null||capacityRate===null?null:profit*capacityRate
+        const directSellNet=itemSell===null?null:itemSell-geTax(itemSell)
+        const directSellProfit=directSellNet===null||itemBuy===null?null:directSellNet-itemBuy
+        const alternativeDelta=profit===null||directSellProfit===null?null:profit-directSellProfit
+        const volumeRatio=capacityRate===null||rate<=0?null:capacityRate/rate
+        const liquidityLabel=volumeRatio===null?'DATA REQUIRED':volumeRatio>=0.8?'HIGH':volumeRatio>=0.4?'MEDIUM':'LOW'
+        return {id:String(i.id),name:i.name,member:Boolean(i.members),locked:mode==='F2P'&&Boolean(i.members),buyLimit,alchValue,itemBuy,itemSell,directSellNet,directSellProfit,alternativeDelta,natureCost,fireCost,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,marketCapacityPerDay,liquidityLabel,volume:volume24h,liveAlchValue:Number(i.highalch),liveItemBuy:itemBuy,liveNatureCost:natureCost,liveFireCost}
+      })
+      .sort((a:any,b:any)=>(b.gpHour??-Infinity)-(a.gpHour??-Infinity)||b.alchValue-a.alchValue)
+  },[mapping,prices,volumes,alchemyDefaults,alchemyEdits,mode,dailyMaxHours])
+
+  // Goal planner: greedily uses the most profitable known items first, never exceeding each item's GE buy limit per 4-hour window.
+  const alchemyGoalPlan = useMemo(()=>{
+    let remaining=Math.max(1,Number(alchemyGoalTarget)||1)
+    const eligible=alchemyRows
+      // Daily goal planner intentionally excludes hard-to-buy niche items:
+      // require GE buy limit >=70 and conservative 5% market capacity >=70 units/day.
+      // marketCapacityPerDay is null when any required item's volume data is missing.
+      .filter((r:any)=>r.profit!==null&&r.profit>0&&r.itemBuy!==null&&r.natureCost!==null&&r.buyLimit!==null&&r.buyLimit>=70&&r.marketCapacityPerDay!==null&&r.marketCapacityPerDay>=70&&r.capacityRate!==null&&r.capacityRate>0&&!r.locked&&(!r.member||mode==='MEMBER'))
+      .sort((a:any,b:any)=>(b.profit??0)-(a.profit??0)||(b.capacityGpHour??0)-(a.capacityGpHour??0))
+    const plan:any[]=[]
+    for(const r of eligible){
+      if(remaining<=0)break
+      // Defensively narrow live market fields: the Wiki API may omit prices or
+      // limits for some items, so those rows must never enter arithmetic.
+      if(typeof r.profit!=='number'||!Number.isFinite(r.profit)||r.profit<=0)continue
+      if(typeof r.itemBuy!=='number'||!Number.isFinite(r.itemBuy)||r.itemBuy<0)continue
+      if(typeof r.natureCost!=='number'||!Number.isFinite(r.natureCost)||r.natureCost<0)continue
+      if(typeof r.buyLimit!=='number'||!Number.isFinite(r.buyLimit)||r.buyLimit<=0)continue
+      const profit:number=r.profit
+      const itemBuy:number=r.itemBuy
+      const natureCost:number=r.natureCost
+      const buyLimit:number=r.buyLimit
+      const fireCost:number=typeof r.fireCost==='number'&&Number.isFinite(r.fireCost)?r.fireCost:0
+      const qty=Math.min(buyLimit,Math.max(1,Math.ceil(remaining/profit)))
+      if(!Number.isFinite(qty)||qty<=0)continue
+      const costPer=itemBuy+natureCost+fireCost
+      const totalItemCost=itemBuy*qty
+      const totalRuneCost=(natureCost+fireCost)*qty
+      const totalCost=totalItemCost+totalRuneCost
+      const totalProfit=profit*qty
+      plan.push({...r,qty,costPer,totalItemCost,totalRuneCost,totalCost,totalProfit,remainingAfter:Math.max(0,remaining-totalProfit)})
+      remaining-=totalProfit
+    }
+    return {rows:plan,target:Math.max(1,Number(alchemyGoalTarget)||1),remaining:Math.max(0,remaining),totalProfit:plan.reduce((s,r)=>s+r.totalProfit,0),totalCost:plan.reduce((s,r)=>s+r.totalCost,0),totalItems:plan.reduce((s,r)=>s+r.qty,0),complete:remaining<=0}
+  },[alchemyRows,alchemyGoalTarget,mode])
+
+  // Skill-free tanning conversions. Fees and processing speed are estimates for planning,
+  // not guaranteed route-cycle rates; current GE prices are refreshed from the Wiki API.
+  const noSkillConversions = useMemo(()=>[
+    {name:'Cowhide → Leather',input:'Cowhide',output:'Leather',fee:1,member:false,rate:2000,location:'Al Kharid tanner'},
+    {name:'Cowhide → Hard leather',input:'Cowhide',output:'Hard leather',fee:3,member:false,rate:2000,location:'Al Kharid tanner'},
+    {name:'Snake hide → Snake skin',input:'Snake hide',output:'Snake skin',fee:15,member:true,rate:1800,location:'Tanner'},
+    {name:'Green d’hide → Green dragon leather',input:'Green dragonhide',output:'Green dragon leather',fee:20,member:true,rate:1800,location:'Tanner'},
+    {name:'Blue d’hide → Blue dragon leather',input:'Blue dragonhide',output:'Blue dragon leather',fee:20,member:true,rate:1800,location:'Tanner'},
+    {name:'Red d’hide → Red dragon leather',input:'Red dragonhide',output:'Red dragon leather',fee:20,member:true,rate:1800,location:'Tanner'},
+    {name:'Black d’hide → Black dragon leather',input:'Black dragonhide',output:'Black dragon leather',fee:20,member:true,rate:1800,location:'Tanner'},
+  ].map((base:any)=>{
+    const edit=conversionEdits[base.name]||{}
+    const r={...base,rate:edit.rate??base.rate}
+    const inputBuy=buy(r.input), outputSell=sell(r.output)
+    const tax=outputSell===null?null:geTax(outputSell)
+    const net=outputSell===null||tax===null?null:outputSell-tax
+    const cost=inputBuy===null?null:inputBuy+r.fee
+    const profit=cost===null||net===null?null:net-cost
+    const inputVolume=volume(r.input),outputVolume=volume(r.output)
+    const natureCapacity=inputVolume&&inputVolume>0?inputVolume*0.05:null
+    const outputCapacity=outputVolume&&outputVolume>0?outputVolume*0.05:null
+    const marketCapacityPerDay=natureCapacity!==null&&outputCapacity!==null?Math.min(natureCapacity,outputCapacity):null
+    const capacityRate=marketCapacityPerDay===null?null:Math.min(r.rate,marketCapacityPerDay/Math.max(1,dailyMaxHours))
+    const capacityGpHour=profit===null||capacityRate===null?null:profit*capacityRate
+    const volumeRatio=capacityRate===null||r.rate<=0?null:capacityRate/r.rate
+    const liquidityLabel=volumeRatio===null?'DATA REQUIRED':volumeRatio>=0.8?'HIGH':volumeRatio>=0.4?'MEDIUM':'LOW'
+    return {...r,inputBuy,outputSell,tax,cost,profit,gpHour:profit===null?null:profit*r.rate,capacityRate,capacityGpHour,marketCapacityPerDay,liquidityLabel,locked:mode==='F2P'&&r.member,liveInput:inputBuy,liveOutput:outputSell}
+  }),[mapping,prices,volumes,mode,conversionEdits])
+
+  // Herblore live-profit views: every price is read from current Wiki GE data.
+  // Rates are planning estimates, not editable prices or guaranteed production rates.
+  const herbloreRows = useMemo(()=>{
+    // Canonical 15 grimy herbs. Explicit Wiki item IDs prevent name-matching gaps.
+    const herbDefs=[
+      {key:'guam',herb:'Guam leaf',grimyId:199,level:3},
+      {key:'marrentill',herb:'Marrentill',grimyId:201,level:5},
+      {key:'tarromin',herb:'Tarromin',grimyId:203,level:11},
+      {key:'harralander',herb:'Harralander',grimyId:205,level:20},
+      {key:'ranarr',herb:'Ranarr weed',grimyId:207,level:25},
+      {key:'irit',herb:'Irit leaf',grimyId:209,level:40},
+      {key:'avantoe',herb:'Avantoe',grimyId:211,level:48},
+      {key:'kwuarm',herb:'Kwuarm',grimyId:213,level:54},
+      {key:'cadantine',herb:'Cadantine',grimyId:215,level:65},
+      {key:'dwarfweed',herb:'Dwarf weed',grimyId:217,level:70},
+      {key:'torstol',herb:'Torstol',grimyId:219,level:75},
+      {key:'lantadyme',herb:'Lantadyme',grimyId:2485,level:67},
+      {key:'snapdragon',herb:'Snapdragon',grimyId:3051,level:59},
+      {key:'toadflax',herb:'Toadflax',grimyId:3049,level:30},
+      {key:'huasca',herb:'Huasca',grimyId:30094,level:58},
+    ]
+    const vialBuy=buy('Vial of water')
+    const vialItem=getItem('Vial of water')
+    const natureBuy=buy('Nature rune'), earthBuy=buy('Earth rune')
+    const natureItem=getItem('Nature rune'), earthItem=getItem('Earth rune')
+    const natureVol=natureItem&&volumes[natureItem.id]?(Number(volumes[natureItem.id].highPriceVolume||0)+Number(volumes[natureItem.id].lowPriceVolume||0)):null
+    const earthVol=earthItem&&volumes[earthItem.id]?(Number(volumes[earthItem.id].highPriceVolume||0)+Number(volumes[earthItem.id].lowPriceVolume||0)):null
+    const vialVol=vialItem&&volumes[vialItem.id]?Number(volumes[vialItem.id].highPriceVolume||0)+Number(volumes[vialItem.id].lowPriceVolume||0):null
+    return herbDefs.map((h:any)=>{
+      const grimyName=`Grimy ${h.herb.toLowerCase()}`
+      const cleanName=h.herb
+      const unfinishedName=`${h.herb} potion (unf)`
+      const grimyItem=mapping.find((item:any)=>Number(item.id)===h.grimyId)||getItem(grimyName), cleanItem=getItem(cleanName), unfinishedItem=getItem(unfinishedName)
+      const grimyBuy=grimyItem&&prices[grimyItem.id]?.high!=null?Number(prices[grimyItem.id].high):null
+      const cleanBuy=cleanItem&&prices[cleanItem.id]?.high!=null?Number(prices[cleanItem.id].high):null
+      const cleanSell=cleanItem&&prices[cleanItem.id]?.low!=null?Number(prices[cleanItem.id].low):null
+      const unfinishedSell=unfinishedItem&&prices[unfinishedItem.id]?.low!=null?Number(prices[unfinishedItem.id].low):null
+      const grimyVol=grimyItem&&volumes[grimyItem.id]?Number(volumes[grimyItem.id].highPriceVolume||0)+Number(volumes[grimyItem.id].lowPriceVolume||0):null
+      const cleanVol=cleanItem&&volumes[cleanItem.id]?Number(volumes[cleanItem.id].highPriceVolume||0)+Number(volumes[cleanItem.id].lowPriceVolume||0):null
+      const unfinishedVol=unfinishedItem&&volumes[unfinishedItem.id]?Number(volumes[unfinishedItem.id].highPriceVolume||0)+Number(volumes[unfinishedItem.id].lowPriceVolume||0):null
+      const taxClean=cleanSell===null?null:geTax(cleanSell)
+      const taxUnf=unfinishedSell===null?null:geTax(unfinishedSell)
+      const cleanNet=cleanSell===null||taxClean===null?null:cleanSell-taxClean
+      const unfinishedNet=unfinishedSell===null||taxUnf===null?null:unfinishedSell-taxUnf
+      const cleanRate=5000, potionRate=2500
+      const cleanProfit=grimyBuy===null||cleanNet===null?null:cleanNet-grimyBuy
+      const potionProfit=cleanBuy===null||vialBuy===null||unfinishedNet===null?null:unfinishedNet-cleanBuy-vialBuy
+      const chainProfit=grimyBuy===null||vialBuy===null||unfinishedNet===null?null:unfinishedNet-grimyBuy-vialBuy
+      const buyLimit=Number(grimyItem?.limit||cleanItem?.limit||unfinishedItem?.limit||0)||null
+      const currentLevel=Number(levels.Herblore||1)
+      const base={...h,grimyName,cleanName,unfinishedName,member:true,levelLocked:currentLevel<h.level,accountLocked:mode!=='MEMBER',buyLimit,grimyBuy,cleanBuy,cleanSell,unfinishedSell,vialBuy,cleanVol,grimyVol,unfinishedVol,volume:null as number|null}
+      const make=(tab:string,inputCost:number|null,outputPrice:number|null,profit:number|null,rate:number,inputs:string[],output:string,volumesNeeded:(number|null)[])=>{
+        const tax=outputPrice===null?null:geTax(outputPrice)
+        const limitItems=tab==='clean-potion'?[cleanItem,vialItem]:tab==='grimy-potion'?[grimyItem,vialItem]:[grimyItem]
+        const availableLimits=limitItems.map((item:any)=>Number(item?.limit||0)).filter((v:number)=>v>0)
+        const rowBuyLimit=availableLimits.length===limitItems.length?Math.min(...availableLimits):null
+        const netSell=outputPrice===null||tax===null?null:outputPrice-tax
+        const dailyCaps=volumesNeeded.filter((v:any)=>v!==null&&v>0).map((v:any)=>v*0.05)
+        const capPerDay=dailyCaps.length===volumesNeeded.length&&dailyCaps.length>0?Math.min(...dailyCaps):null
+        const capacityRate=capPerDay===null?null:Math.min(rate,capPerDay/Math.max(1,dailyMaxHours))
+        const capacityGpHour=profit===null||capacityRate===null?null:profit*capacityRate
+        const positiveVolumes: number[] = volumesNeeded.filter((v: number | null | undefined): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0)
+        const volumeValue=positiveVolumes.length===volumesNeeded.length&&positiveVolumes.length>0?Math.min(...positiveVolumes):null
+        const inputVolumes=tab==='clean-potion'?[cleanVol,vialVol]:tab==='grimy-potion'?[grimyVol,vialVol]:[grimyVol]
+        const normalizedInputVolume=inputVolumes.every((v:any)=>typeof v==='number'&&Number.isFinite(v))?Math.min(...inputVolumes as number[]):null
+        const outputVolume=tab==='clean-potion'||tab==='grimy-potion'?unfinishedVol:cleanVol
+        return {...base,id:`${tab}-${h.key}`,tab,buyLimit:rowBuyLimit,inputCost,outputPrice,tax,netSell,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,volume:volumeValue,inputVolume:normalizedInputVolume,outputVolume,inputs,output,hasPrices:inputCost!==null&&outputPrice!==null&&profit!==null}
+      }
+      return {
+        grimyClean:make('grimy-clean',grimyBuy,cleanSell,cleanProfit,cleanRate,[`${grimyName} ×1: ${grimyBuy===null?'fiyat yok':fmt(grimyBuy)} GP`],cleanName,[grimyVol,cleanVol]),
+        cleanPotion:make('clean-potion',cleanBuy===null||vialBuy===null?null:cleanBuy+vialBuy,unfinishedSell,potionProfit,potionRate,[`${cleanName} ×1: ${cleanBuy===null?'fiyat yok':fmt(cleanBuy)} GP`,`Vial of water ×1: ${vialBuy===null?'fiyat yok':fmt(vialBuy)} GP`],unfinishedName,[cleanVol,vialVol,unfinishedVol]),
+        grimyPotion:make('grimy-potion',grimyBuy===null||vialBuy===null?null:grimyBuy+vialBuy,unfinishedSell,chainProfit,Math.min(cleanRate,potionRate),[`${grimyName} ×1: ${grimyBuy===null?'fiyat yok':fmt(grimyBuy)} GP`,`Vial of water ×1: ${vialBuy===null?'fiyat yok':fmt(vialBuy)} GP`],unfinishedName,[grimyVol,vialVol,unfinishedVol]),
+        degrime:(()=>{
+          const runeCost=natureBuy===null?null:(2*natureBuy+(degrimeEarthStaff?0:(earthBuy===null?NaN:4*earthBuy)))/27
+          const inputCost=grimyBuy===null||runeCost===null||!Number.isFinite(runeCost)?null:grimyBuy+runeCost
+          const profit=inputCost===null||cleanNet===null?null:cleanNet-inputCost
+          const rate=16200 // 600 casts/hour × 27 herbs per inventory
+          const herbLimit=Number(grimyItem?.limit||0)||null
+          const natureLimit=Number(natureItem?.limit||0)>0?Math.floor(Number(natureItem.limit)*27/2):null
+          const earthLimit=degrimeEarthStaff?null:(Number(earthItem?.limit||0)>0?Math.floor(Number(earthItem.limit)*27/4):null)
+          const limits=[herbLimit,natureLimit,...(!degrimeEarthStaff?[earthLimit]:[])].filter((v): v is number=>typeof v==='number'&&Number.isFinite(v)&&v>0)
+          const buyLimit=limits.length===(degrimeEarthStaff?2:3)?Math.min(...limits):null
+          const caps=[grimyVol,cleanVol,natureVol===null?null:natureVol*27/2,...(!degrimeEarthStaff?[earthVol===null?null:earthVol*27/4]:[])].filter((v): v is number=>typeof v==='number'&&Number.isFinite(v)&&v>0).map(v=>v*0.05)
+          const capPerDay=caps.length===(degrimeEarthStaff?3:4)?Math.min(...caps):null
+          const capacityRate=capPerDay===null?null:Math.min(rate,capPerDay/Math.max(1,dailyMaxHours))
+          const capacityGpHour=profit===null||capacityRate===null?null:profit*capacityRate
+          const validVolumes=[grimyVol,cleanVol].filter((v): v is number=>typeof v==='number'&&Number.isFinite(v)&&v>0)
+          const volumeValue=validVolumes.length?Math.min(...validVolumes):null
+          const magicLocked=Number(levels.Magic||1)<70
+          return {...base,id:`degrime-${h.key}`,tab:'degrime',levelLocked:currentLevel<h.level||magicLocked,magicLocked,spell:'Degrime (Magic 70)',buyLimit,inputCost,outputPrice:cleanSell,tax:taxClean,netSell:cleanNet,profit,rate,gpHour:profit===null?null:profit*rate,capacityRate,capacityGpHour,volume:volumeValue,inputVolume:grimyVol,outputVolume:cleanVol,inputs:[`${grimyName} ×1: ${grimyBuy===null?'fiyat yok':fmt(grimyBuy)} GP`,natureBuy===null?'Nature rune ×2/cast: fiyat yok':`Nature rune: 2 / 27 herb = ${fmt(2*natureBuy/27)} GP/herb`,degrimeEarthStaff?'Earth staff: 4 Earth rune maliyeti yok':earthBuy===null?'Earth rune ×4/cast: fiyat yok':`Earth rune: 4 / 27 herb = ${fmt(4*earthBuy/27)} GP/herb`],output:cleanName,hasPrices:inputCost!==null&&cleanSell!==null&&profit!==null}
+        })(),
+      }
+    })
+  },[mapping,prices,volumes,levels,mode,dailyMaxHours,degrimeEarthStaff])
+
+  const herbloreCurrentRows = useMemo(()=>{
+    const key=herbloreSubTab
+    return herbloreRows.map((h:any)=>h[key]).filter((r:any)=>Boolean(r))
+      .filter((r:any)=>!herbloreSearch||`${r.herb} ${r.grimyName} ${r.cleanName} ${r.unfinishedName} ${r.output} ${r.spell||''}`.toLowerCase().includes(herbloreSearch.toLowerCase()))
+      .filter((r:any)=>herbloreShowLocked||(!r.levelLocked&&!r.accountLocked))
+      .filter((r:any)=>herbloreShowUnpriced||r.hasPrices)
+      .filter((r:any)=>Number(herbloreMinVolume)<=0||((r.volume??-1)>=Number(herbloreMinVolume)))
+      .filter((r:any)=>herbloreProfitFilter==='ALL'||(herbloreProfitFilter==='PROFIT'?(r.profit??-Infinity)>0:(r.profit??0)<=0))
+      .sort((a:any,b:any)=>herbloreSort==='GP_ASC'?((a.gpHour??-Infinity)-(b.gpHour??-Infinity)):herbloreSort==='PROFIT_DESC'?((b.profit??-Infinity)-(a.profit??-Infinity)):herbloreSort==='LEVEL_ASC'?a.level-b.level:herbloreSort==='VOLUME_DESC'?((b.volume??-Infinity)-(a.volume??-Infinity)):herbloreSort==='NAME_ASC'?a.herb.localeCompare(b.herb):((b.gpHour??-Infinity)-(a.gpHour??-Infinity)))
+  },[herbloreRows,herbloreSubTab,herbloreSearch,herbloreShowLocked,herbloreShowUnpriced,herbloreProfitFilter,herbloreSort,herbloreMinVolume])
+
+  const loadSmartSeries=async(itemName:string)=>{
+    const item=getItem(itemName)
+    if(!item||smartLoading[itemName]) return
+    if(smartSeries[itemName]?.length) return
+    setSmartLoading(old=>({...old,[itemName]:true}));setSmartError('')
+    try{
+      const res=await fetch(`${API}/timeseries?timestep=5m&id=${item.id}`)
+      if(!res.ok) throw new Error(`Timeseries HTTP ${res.status}`)
+      const json=await res.json()
+      const cutoff=Math.floor(Date.now()/1000)-24*3600
+      const pts=(json.data||[]).filter((x:any)=>x.timestamp>=cutoff).map((x:any)=>({
+        timestamp:Number(x.timestamp),avgHighPrice:x.avgHighPrice??null,avgLowPrice:x.avgLowPrice??null,
+        highPriceVolume:Number(x.highPriceVolume||0),lowPriceVolume:Number(x.lowPriceVolume||0)
+      })) as TsPoint[]
+      setSmartSeries(old=>({...old,[itemName]:pts}))
+    }catch(e:any){setSmartError(e?.message||'24h zaman serisi alınamadı')}
+    finally{setSmartLoading(old=>({...old,[itemName]:false}))}
+  }
+
+  const weightedQuantile=(pairs:{v:number;w:number}[],q:number)=>{
+    const a=pairs.filter(x=>Number.isFinite(x.v)&&x.v>0&&x.w>0).sort((x,y)=>x.v-y.v)
+    if(!a.length)return null
+    const total=a.reduce((s,x)=>s+x.w,0);let run=0
+    for(const x of a){run+=x.w;if(run>=total*q)return x.v}
+    return a[a.length-1].v
+  }
+  const median=(vals:number[])=>{const a=[...vals].sort((x,y)=>x-y);if(!a.length)return null;const m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2}
+  const smartAdvice=(itemName:string,profile:SmartProfile,qty:number)=>{
+    const pts=smartSeries[itemName]||[]
+    const raw=pts.flatMap(p=>[
+      ...(p.avgHighPrice? [{v:p.avgHighPrice,w:Math.max(1,p.highPriceVolume)}]:[]),
+      ...(p.avgLowPrice? [{v:p.avgLowPrice,w:Math.max(1,p.lowPriceVolume)}]:[])
+    ])
+    if(!raw.length)return null
+    const vals=raw.map(x=>x.v),med=median(vals)!
+    const deviations=vals.map(v=>Math.abs(v-med)),mad=median(deviations)||Math.max(1,med*.01)
+    const filtered=raw.filter(x=>Math.abs(x.v-med)<=Math.max(3*mad,med*.08))
+    const use=filtered.length>=Math.max(8,raw.length*.5)?filtered:raw
+    const dailyVol=pts.reduce((s,p)=>s+p.highPriceVolume+p.lowPriceVolume,0)
+    const low=Math.min(...use.map(x=>x.v)),high=Math.max(...use.map(x=>x.v))
+    const vwap=use.reduce((s,x)=>s+x.v*x.w,0)/Math.max(1,use.reduce((s,x)=>s+x.w,0))
+    // Profile semantics: FAST aims mainly <1h, BALANCED 1–6h, PATIENT exploits a real 6–24h window.
+    // PATIENT deliberately samples deeper distribution tails instead of being BALANCED ± a few GP.
+    const qBuy=profile==='FAST'?.62:profile==='BALANCED'?.38:.12
+    const qSell=profile==='FAST'?.38:profile==='BALANCED'?.62:.88
+    let recBuy=weightedQuantile(use,qBuy)!,recSell=weightedQuantile(use,qSell)!
+    const pressure=dailyVol>0?qty/dailyVol:1
+    const levelVolume=(price:number)=>use.filter(x=>Math.abs(x.v-price)/Math.max(1,price)<=.0125).reduce((s,x)=>s+x.w,0)
+    const buyLevelVol=levelVolume(recBuy),sellLevelVol=levelVolume(recSell)
+    const localPressureBuy=buyLevelVol>0?qty/buyLevelVol:1
+    const localPressureSell=sellLevelVol>0?qty/sellLevelVol:1
+    const impactBuy=Math.min(.15,Math.max(0,pressure-.0015)*.9+Math.max(0,localPressureBuy-.04)*.08)
+    const impactSell=Math.min(.15,Math.max(0,pressure-.0015)*.9+Math.max(0,localPressureSell-.04)*.08)
+    recBuy*=1+impactBuy;recSell*=1-impactSell
+    const hist=orderHistory.filter(h=>h.item===itemName&&h.quantity>0&&qty/h.quantity>=.35&&qty/h.quantity<=3)
+    const targetHours=profile==='FAST'?1:profile==='BALANCED'?6:18
+    const historySignal=(side:OrderSide)=>{
+      const hs=hist.filter(h=>h.side===side&&h.fillHours!==null)
+      if(!hs.length)return {hours:null as number|null,success:0,count:0,price:null as number|null}
+      let wSum=0,hSum=0,sSum=0
+      let priceSum=0
+      hs.forEach(h=>{
+        const qtySimilarity=Math.max(.15,1-Math.abs(Math.log(Math.max(.01,qty/h.quantity)))/1.2)
+        const fillRatio=Math.max(0,Math.min(1,h.filledQuantity/Math.max(1,h.quantity)))
+        const statusFactor=h.status==='FILLED'?1:h.status==='PARTIAL'?.55:h.status==='CANCELLED'?.25:.35
+        const executedPrice=h.averageFillPrice&&h.averageFillPrice>0?h.averageFillPrice:h.orderPrice
+        const priceSimilarity=Math.max(.2,1-Math.abs(executedPrice-med)/Math.max(1,med))
+        const w=qtySimilarity*priceSimilarity*(.35+.65*fillRatio)*statusFactor
+        wSum+=w;hSum+=(h.fillHours||0)*w;priceSum+=executedPrice*w
+        sSum+=(h.status==='FILLED'?1:h.status==='PARTIAL'?fillRatio:0)*w
+      })
+      return {hours:wSum?hSum/wSum:null,success:wSum?sSum/wSum:0,count:hs.length,price:wSum?priceSum/wSum:null as number|null}
+    }
+    const buyHist=historySignal('BUY'),sellHist=historySignal('SELL')
+    const historyWeight=(count:number)=>Math.min(.65,count/10*.65) // 1–2 orders have deliberately small influence.
+    const nudgePrice=(price:number,signal:{hours:number|null;success:number;count:number;price:number|null},side:OrderSide)=>{
+      if(signal.hours===null)return price
+      const w=historyWeight(signal.count)
+      const timeDelta=(signal.hours-targetHours)/Math.max(1,targetHours)
+      const failurePenalty=(1-signal.success)
+      const historicalPriceDelta=signal.price===null?0:(signal.price-price)/Math.max(1,price)
+      const evidencePull=Math.max(-.08,Math.min(.08,historicalPriceDelta))*w*.45
+      const nudge=Math.min(.10,Math.abs(timeDelta)*.025+failurePenalty*.035)*w
+      const timeAdjusted=side==='BUY'
+        ?((timeDelta>0||failurePenalty>.35)?price*(1+nudge):price*(1-nudge))
+        :((timeDelta>0||failurePenalty>.35)?price*(1-nudge):price*(1+nudge))
+      return timeAdjusted*(1+evidencePull)
+    }
+    recBuy=nudgePrice(recBuy,buyHist,'BUY');recSell=nudgePrice(recSell,sellHist,'SELL')
+    const avgBuyHours=buyHist.hours,avgSellHours=sellHist.hours
+    const completed=hist.filter(h=>h.status==='FILLED'&&h.fillHours!==null)
+    recBuy=Math.max(1,Math.round(recBuy));recSell=Math.max(1,Math.round(recSell))
+    const samples=pts.length
+    let score=0
+    score+=samples>=180?2:samples>=60?1:0
+    score+=dailyVol>=Math.max(10000,qty*20)?2:dailyVol>=Math.max(1000,qty*5)?1:0
+    score+=Math.min(buyLevelVol,sellLevelVol)>=qty*8?1:0
+    score+=completed.length>=5?2:completed.length>=2?1:0
+    if(pressure>.10||Math.max(localPressureBuy,localPressureSell)>.5)score-=1
+    const confidence=score>=5?'HIGH':score>=3?'MEDIUM':'LOW'
+    const fillRatio=dailyVol>0?qty/dailyVol:1
+    const base=profile==='FAST'?0:profile==='BALANCED'?1:2
+    const fillMeta=(hours:number|null,localPressure:number)=>{
+      const volPenalty=fillRatio>.1?2:fillRatio>.03?1:0
+      const levelPenalty=localPressure>.8?2:localPressure>.3?1:0
+      const histPenalty=hours===null?0:hours>24?2:hours>12&&profile!=='PATIENT'?1:hours<1&&profile==='FAST'?-1:0
+      const diff=Math.max(0,Math.min(4,base+volPenalty+levelPenalty+histPenalty))
+      const ranges=profile==='FAST'
+        ? ['<1 saat','1–6 saat','6–12 saat','12–24 saat','24 saat+']
+        :profile==='BALANCED'
+          ? ['1–6 saat','1–6 saat','6–12 saat','12–24 saat','24 saat+']
+          :['6–12 saat','12–24 saat','12–24 saat','24 saat+','24 saat+']
+      return {range:ranges[diff],difficulty:['ÇOK KOLAY','KOLAY','ORTA','ZOR','ÇOK ZOR'][diff]}
+    }
+    const buyFill=fillMeta(avgBuyHours,localPressureBuy),sellFill=fillMeta(avgSellHours,localPressureSell)
+    const currentBuy=buy(itemName),currentSell=sell(itemName)
+    return {item:itemName,profile,qty,recBuy,recSell,currentBuy,currentSell,low,high,vwap,median:weightedQuantile(use,.5),dailyVol,confidence,buyFill,sellFill,samples,filteredCount:raw.length-use.length,historyCount:hist.length,avgBuyHours,avgSellHours}
+  }
+  const selectedSmart=smartItem?smartAdvice(smartItem,smartProfile,smartQty):null
+  const selectedSmartProfiles=smartItem?(['FAST','BALANCED','PATIENT'] as SmartProfile[]).map(p=>smartAdvice(smartItem,p,smartQty)).filter(Boolean):[]
+
+
+  const addOrderHistory=()=>{
+    if(!historyDraft.item||historyDraft.quantity<=0||historyDraft.orderPrice<=0)return
+    const row:OrderHistoryRow={id:`${Date.now()}-${Math.random().toString(36).slice(2)}`,date:new Date().toISOString(),item:historyDraft.item,side:historyDraft.side,quantity:historyDraft.quantity,orderPrice:historyDraft.orderPrice,filledQuantity:historyDraft.filledQuantity,fillHours:historyDraft.fillHours===''?null:Number(historyDraft.fillHours),status:historyDraft.status,averageFillPrice:historyDraft.averageFillPrice===''?null:Number(historyDraft.averageFillPrice)}
+    setOrderHistory(old=>[row,...old])
+  }
+
+  const rows = useMemo(() => {
+    return RECIPES.map((r) => {
+      const id = recipeId(r.name)
+      const userData = methodData[id] || {}
+      const verifiedF2P = r.verifiedF2P !== false
+      const membersLocked = mode === 'F2P' ? (!r.f2p || !verifiedF2P) : (!r.f2p && !r.verifiedP2P)
+      const currentLevel = levels[r.skill] ?? 1
+      const levelLocked = currentLevel < r.level
+      const reqs = [r.questRequirement, r.accessRequirement, r.regionRequirement, r.diaryRequirement, r.minigameRequirement, r.equipment].filter(Boolean) as string[]
+      const missingRequirements = mode === 'MEMBER' ? reqs.filter(x => !requirements[x]) : []
+      const requirementLocked = missingRequirements.length > 0
+
+      let status = '✓ AÇIK'
+      if (mode === 'F2P' && !verifiedF2P) status = '🔒 F2P DOĞRULANMADI'
+      else if (mode === 'MEMBER' && !r.f2p && !r.verifiedP2P) status = '🔒 P2P DOĞRULANMADI'
+      else if (membersLocked) status = '🔒 MEMBERS'
+      else if (levelLocked) status = `🔒 ${r.skill.toUpperCase()} ${r.level}`
+      else if (requirementLocked) status = `🔒 ${missingRequirements.join(', ')}`
+
+      const unlocked = !membersLocked && !levelLocked && !requirementLocked
+
+      let inputCost = 0
+      let outputPrice: number | null = null
+      let outputNet: number | null = null
+      let successRate = r.success ? r.success(levels) : 1
+      const theoreticalSuccessRate = r.cooking ? cookingSuccessEstimate(currentLevel, r.level, r.cooking.noBurnLevel) : successRate
+      const successAtLevel = userData.actualSuccessByLevel?.[String(currentLevel)]
+      if (r.cooking) successRate = successAtLevel?.rate ?? theoreticalSuccessRate
+      let dailyVolume: number | null = null
+      let ingredientsText = ''
+      let alchValue: number | null = null
+
+      if (r.kind === 'alchemy') {
+        const itemName = r.alchItem!
+        const itemData = getItem(itemName)
+        const itemBuy = buy(itemName)
+        const nature = buy('Nature rune')
+
+        if (itemBuy !== null && nature !== null && itemData) {
+          inputCost = itemBuy + nature
+          alchValue =
+            r.alchType === 'high'
+              ? itemData.highalch ?? null
+              : itemData.lowalch ?? null
+
+          outputPrice = alchValue
+          outputNet = alchValue
+          dailyVolume = volume(itemName)
+          ingredientsText = `1× ${itemName} + 1× Nature rune`
+        }
+      } else {
+        let valid = true
+
+        const ingredientParts: string[] = []
+
+        for (const input of r.inputs) {
+          const p = buy(input.name)
+          ingredientParts.push(`${input.qty}× ${input.name}`)
+
+          if (p === null) valid = false
+          else inputCost += p * input.qty
+        }
+
+        inputCost += r.fee || 0
+        ingredientsText = ingredientParts.join(' + ')
+
+        const s = r.output ? sell(r.output) : null
+
+        if (valid && s !== null) {
+          outputPrice = s * (r.outputQty || 1)
+
+          const taxPerOutput = geTax(s)
+          outputNet =
+            (s - taxPerOutput) * (r.outputQty || 1)
+
+          dailyVolume = volume(r.output!)
+        }
+      }
+
+      const wikiInputCost = inputCost
+      const wikiOutputNet = outputNet
+
+      if (userData.actualBuyCost !== undefined && userData.actualBuyCost > 0) {
+        inputCost = userData.actualBuyCost
+      }
+
+      if (userData.actualSellPrice !== undefined && userData.actualSellPrice > 0) {
+        if (r.kind === 'alchemy') {
+          outputNet = userData.actualSellPrice
+        } else {
+          const actualTax = geTax(userData.actualSellPrice)
+          outputNet = (userData.actualSellPrice - actualTax) * (r.outputQty || 1)
+        }
+      }
+
+      const valid =
+        outputNet !== null &&
+        Number.isFinite(inputCost) &&
+        inputCost > 0
+
+      const isRawCooking = Boolean(r.cooking)
+      // Raw cooking is evaluated per RAW attempt: failures consume the raw item and earn no XP.
+      // Other legacy recipes retain the previous per-success economics.
+      const effectiveCost = isRawCooking
+        ? (valid ? inputCost : null)
+        : (valid && successRate > 0 ? inputCost / successRate : null)
+      const expectedXpPerItem = isRawCooking ? r.xp * successRate : r.xp
+      const profit = isRawCooking
+        ? (valid && outputNet !== null ? outputNet * successRate - inputCost : null)
+        : (effectiveCost !== null && outputNet !== null ? outputNet - effectiveCost : null)
+      const roi = profit !== null && effectiveCost !== null && effectiveCost > 0 ? (profit / effectiveCost) * 100 : null
+      const profitPerXp = profit !== null && expectedXpPerItem > 0 ? profit / expectedXpPerItem : null
+
+      const theoreticalItemsPerHour = isRawCooking ? r.itemsPerHour : r.itemsPerHour * successRate
+      const hasActualSpeed =
+        userData.actualItemsPerHour !== undefined &&
+        userData.actualItemsPerHour > 0
+      const effectiveItemsPerHour = hasActualSpeed
+        ? userData.actualItemsPerHour!
+        : theoreticalItemsPerHour
+      const speedSource = hasActualSpeed ? 'GERÇEK' : 'TAHMİN'
+
+      const planningItemsPerHour = hasActualSpeed ? effectiveItemsPerHour : effectiveItemsPerHour * clamp(planningFactor / 100, 0.1, 1)
+      const gpHour = profit !== null ? profit * planningItemsPerHour : null
+      const xpHour = expectedXpPerItem * planningItemsPerHour
+
+      const qty = Math.max(1, Math.floor(quantity || 1))
+
+      const attemptsForQty = isRawCooking ? qty : (successRate > 0 ? qty / successRate : qty)
+
+      const capitalForQty =
+        valid
+          ? inputCost * attemptsForQty
+          : null
+
+      const profitForQty =
+        profit !== null
+          ? profit * qty
+          : null
+
+      const xpForQty = expectedXpPerItem * qty
+
+      const maxByCapital =
+        effectiveCost !== null && effectiveCost > 0
+          ? Math.max(0, Math.floor(gp / effectiveCost))
+          : 0
+
+      const timePotentialQty = Math.max(0, Math.floor(planningItemsPerHour * targetHours))
+      const timeLimitedQty = Math.min(timePotentialQty, maxByCapital)
+      const timeCapital =
+        effectiveCost !== null ? effectiveCost * timeLimitedQty : null
+      const timeProfit = profit !== null ? profit * timeLimitedQty : null
+      const timeXp = expectedXpPerItem * timeLimitedQty
+
+      const autoPurpose: MethodPurpose =
+        profit !== null && profit > 0 && r.xp > 0
+          ? 'SKILL + PROFIT'
+          : profit !== null && profit > 0
+          ? 'MONEY'
+          : 'XP'
+      const purpose = userData.purpose || autoPurpose
+
+      const itemsPerRun = Math.max(
+        1,
+        Math.floor(userData.itemsPerRun || defaultItemsPerRun(r))
+      )
+      const profitPerRun = profit !== null ? profit * itemsPerRun : null
+      const xpPerRun = expectedXpPerItem * itemsPerRun
+      const expectedSuccessfulPerRun = itemsPerRun * successRate
+      const expectedBurntPerRun = isRawCooking ? itemsPerRun * (1 - successRate) : 0
+      const afkSecondsPerRun = r.cooking?.afkSecondsPerRun ?? null
+      const attentionLevel = userData.attentionLevel || r.attentionLevel || (r.activityType === 'Cooking' ? 'LOW' : 'MEDIUM')
+      const activityType: ActivityType = r.activityType || (r.category === 'Cooking' || r.category === 'Food' ? 'Cooking' : 'Processing')
+      const capitalPerRun = effectiveCost !== null ? effectiveCost * itemsPerRun : null
+
+      const slotsPerAttempt =
+        r.kind === 'alchemy'
+          ? 2
+          : Math.max(
+              1,
+              r.inputs.reduce((sum, i) => sum + i.qty, 0)
+            )
+
+      const inventoryProcesses =
+        Math.max(1, Math.floor(28 / slotsPerAttempt))
+
+      const inventoryProfit =
+        profit !== null
+          ? profit * inventoryProcesses
+          : null
+
+      return {
+        ...r,
+        currentLevel,
+        membersLocked,
+        levelLocked,
+        requirementLocked,
+        missingRequirements,
+        unlocked,
+        status,
+        inputCost,
+        effectiveCost,
+        outputPrice,
+        outputNet,
+        profit,
+        roi,
+        profitPerXp,
+        successRate,
+        dailyVolume,
+        id,
+        userData,
+        wikiInputCost,
+        wikiOutputNet,
+        theoreticalItemsPerHour,
+        effectiveItemsPerHour,
+        speedSource,
+        planningItemsPerHour,
+        gpHour,
+        xpHour,
+        capitalForQty,
+        profitForQty,
+        xpForQty,
+        maxByCapital,
+        timePotentialQty,
+        timeLimitedQty,
+        timeCapital,
+        timeProfit,
+        timeXp,
+        purpose,
+        itemsPerRun,
+        profitPerRun,
+        xpPerRun,
+        expectedXpPerItem,
+        expectedSuccessfulPerRun,
+        expectedBurntPerRun,
+        afkSecondsPerRun,
+        theoreticalSuccessRate,
+        successAtLevel,
+        attentionLevel,
+        activityType,
+        verifiedF2P,
+        capitalPerRun,
+        inventoryProfit,
+        ingredientsText,
+        alchValue,
+      }
+    })
+  }, [mapping, prices, volumes, levels, mode, quantity, methodData, gp, targetHours, planningFactor])
+
+  const visibleRows = useMemo(() => {
+    let result = [...rows]
+
+    if (!showMembers && mode === 'F2P') {
+      result = result.filter((r) => !r.membersLocked)
+    }
+
+    if (availableOnly) {
+      result = result.filter((r) => r.unlocked)
+    }
+
+    if (profitFilter === 'Profit') {
+      result = result.filter(
+        (r) => r.unlocked && (r.profit ?? -Infinity) > 0
+      )
+    }
+
+    if (profitFilter === 'Loss') {
+      result = result.filter(
+        (r) => r.unlocked && (r.profit ?? Infinity) < 0
+      )
+    }
+
+    if (skillFilter !== 'All') {
+      result = result.filter((r) => r.skill === skillFilter)
+    }
+
+    if (categoryFilter !== 'All') {
+      result = result.filter((r) => r.category === categoryFilter)
+    }
+
+    if (activityTypeFilter !== 'All') result = result.filter((r) => r.activityType === activityTypeFilter)
+    if (attentionFilter !== 'All') result = result.filter((r) => r.attentionLevel === attentionFilter)
+    if (purposeFilter !== 'All') result = result.filter((r) => r.purpose === purposeFilter)
+    if (noLossOnly) result = result.filter((r) => (r.profit ?? -Infinity) >= 0)
+
+    /*
+      CRITICAL:
+      F2P account + members recipe can NEVER influence economic ranking.
+      Members rows are always sent to the bottom.
+    */
+    result.sort((a, b) => {
+      if (a.membersLocked !== b.membersLocked) {
+        return a.membersLocked ? 1 : -1
+      }
+
+      if (a.unlocked !== b.unlocked) {
+        return a.unlocked ? -1 : 1
+      }
+
+      if (sort === 'roi')
+        return (b.roi ?? -Infinity) - (a.roi ?? -Infinity)
+
+      if (sort === 'gph')
+        return (b.gpHour ?? -Infinity) - (a.gpHour ?? -Infinity)
+
+      if (sort === 'runprofit')
+        return (b.profitPerRun ?? -Infinity) - (a.profitPerRun ?? -Infinity)
+
+      if (sort === 'level')
+        return a.level - b.level
+
+      if (sort === 'volume')
+        return (b.dailyVolume ?? -Infinity) - (a.dailyVolume ?? -Infinity)
+
+      return (b.profit ?? -Infinity) - (a.profit ?? -Infinity)
+    })
+
+    return result
+  }, [
+    rows,
+    showMembers,
+    availableOnly,
+    profitFilter,
+    skillFilter,
+    categoryFilter,
+    activityTypeFilter,
+    attentionFilter,
+    purposeFilter,
+    noLossOnly,
+    sort,
+    mode,
+  ])
+
+  const bondItem = mapping.find(
+    (i) => i.name.toLowerCase() === 'old school bond'
+  )
+
+  const bond = bondItem
+    ? prices[bondItem.id]?.high ??
+      prices[bondItem.id]?.low ??
+      null
+    : null
+
+  const bondProgress = bond
+    ? Math.min((gp / bond) * 100, 100)
+    : 0
+
+  const missing = bond
+    ? Math.max(bond - gp, 0)
+    : null
+
+  const categories = [
+    'All',
+    ...Array.from(new Set(RECIPES.map((r) => r.category))),
+  ]
+
+  const gatheringRows = useMemo(() => GATHERING.map(a => {
+    const id = `gather-${recipeId(a.name)}`
+    const ud = gatheringData[id] || {}
+    const level = levels[a.skill] ?? 1
+    const memberOk = mode === 'MEMBER' && (a.f2p ? a.verifiedF2P : a.verifiedP2P)
+    const f2pOk = mode === 'F2P' && a.f2p && a.verifiedF2P
+    const gatherReqs=[a.questRequirement,a.accessRequirement,a.regionRequirement,a.equipment].filter(Boolean) as string[]
+    const missingRequirements = mode==='MEMBER' ? gatherReqs.filter(x=>!requirements[x]) : []
+    const unlocked = (f2pOk || memberOk) && level >= a.requiredLevel && missingRequirements.length===0
+    const sellPrice = sell(a.item)
+    const secondarySell = a.secondaryItem ? sell(a.secondaryItem) : null
+    const primaryNet = sellPrice === null ? null : sellPrice - geTax(sellPrice)
+    const secondaryNet = secondarySell === null ? null : secondarySell - geTax(secondarySell)
+    const sample=mixedSamples[id]
+    const sampleTotal=sample?Object.values(sample).reduce((x,y)=>x+y,0):0
+    const share = a.secondaryItem && sampleTotal>0 ? ((sample[a.item]||0)/sampleTotal) : (a.primaryShare ?? 1)
+    const netSell = primaryNet === null ? null : (a.secondaryItem && secondaryNet !== null ? primaryNet * share + secondaryNet * (1-share) : primaryNet)
+    const xpPerItem = a.secondaryXpPerSuccess !== undefined ? a.xpPerSuccess * share + a.secondaryXpPerSuccess * (1-share) : a.xpPerSuccess
+    const actual = ud.actualItemsPerHour && ud.actualItemsPerHour > 0 ? ud.actualItemsPerHour : null
+    const effectiveItemsPerHour = actual ?? a.theoreticalItemsPerHour
+    const planningItemsPerHour = actual ?? a.theoreticalItemsPerHour * clamp(planningFactor/100, .1, 1)
+    const consumableCost=(a as any).consumableItem?((buy((a as any).consumableItem)??0)*Number((a as any).consumableQty||1)):0
+    const gpHour = netSell === null ? null : (netSell-consumableCost) * planningItemsPerHour
+    const xpHour = xpPerItem * planningItemsPerHour
+    return { ...a, id, userData: ud, currentLevel: level, unlocked, missingRequirements, sampleTotal, actualPrimaryShare:share, netSell, xpPerItem, effectiveItemsPerHour, planningItemsPerHour, gpHour, xpHour, speedSource: actual ? 'GERÇEK' : 'TAHMİN' }
+  }), [gatheringData, levels, prices, mapping, planningFactor, mode, requirements, mixedSamples])
+
+
+  const marketExpectedSell=(itemName:string,batchSize:number)=>{
+    const item=getItem(itemName)
+    if(!item)return {price:null as number|null,basis:'N/A' as const,liquidity:'DATA REQUIRED' as const}
+    const v24=volumes[item.id]
+    const v6=market6h[item.id]
+    const dailyVolume=(Number(v24?.highPriceVolume||0)+Number(v24?.lowPriceVolume||0))||0
+    const batchPct=dailyVolume>0?batchSize/dailyVolume*100:Infinity
+    // Use the existing volume/batch liquidity semantics: a small batch in a deep market is HIGH.
+    const liquidity=dailyVolume<=0?'DATA REQUIRED':batchPct<=1?'HIGH':batchPct<=15?'MEDIUM':'LOW'
+    // avgHighPrice is the observed average price paid by instant buyers; for a seller this is the
+    // market's executed sell-side receipt before GE tax. Large batches deliberately fall back to 24h.
+    const use6h=liquidity==='HIGH'&&batchPct<=1&&Number(v6?.avgHighPrice||0)>0
+    const price=use6h?Number(v6.avgHighPrice):(Number(v24?.avgHighPrice||0)>0?Number(v24.avgHighPrice):null)
+    return {price,basis:(use6h?'6h Avg':'24h Avg') as '6h Avg'|'24h Avg',liquidity}
+  }
+
+  const v5LiveEconomy=(a:(typeof V5_CATALOGUE)[number])=>{
+    type Leg={name:string;qty:number;price:number|null}
+    let inputs:Leg[]=[]
+    let outputName:string|undefined=a.output
+    let outputQty=1
+    let liveEligible=false
+
+    const addInputs=(parts:{name:string;qty:number}[])=>{inputs=parts.map(p=>({...p,price:buy(p.name)}));liveEligible=true}
+
+    // V5.8 structured recipes: exact quantities override legacy string parsing.
+    if(a.inputs?.length) addInputs(a.inputs)
+    if(a.outputQty&&a.outputQty>0) outputQty=a.outputQty
+
+    // Exact 1:1 / explicit V5 recipes.
+    if(a.input&&a.output){
+      const parts=a.input.split('+').map((s:string)=>s.trim()).filter(Boolean)
+      addInputs(parts.map((name:string)=>({name,qty:1})))
+    }
+
+    // Generated smithing equipment: V5 text previously omitted the real bar quantity.
+    const smith=a.name.match(/^Smith (Bronze|Iron|Steel|Mithril|Adamant|Rune) (.+)$/)
+    if(smith){
+      const barName=smith[1]==='Adamant'?'Adamantite bar':smith[1]==='Rune'?'Runite bar':`${smith[1]} bar`
+      const form=smith[2]
+      const qtyMap:Record<string,number>={dagger:1,axe:1,mace:1,'med helm':1,sword:1,'dart tips':1,nails:1,scimitar:2,arrowtips:1,limbs:1,longsword:2,'full helm':2,'throwing knives':1,'sq shield':2,warhammer:3,battleaxe:3,chainbody:3,kiteshield:3,claws:2,'2h sword':3,plateskirt:3,platelegs:3,platebody:5}
+      if(qtyMap[form]){addInputs([{name:barName,qty:qtyMap[form]}]);outputName=`${smith[1]} ${form}`}
+    }
+
+    // Standard bar smelting recipes.
+    const smelt=a.name.match(/^Smelt (Bronze|Iron|Silver|Steel|Gold|Mithril|Adamantite|Runite) bar$/)
+    if(smelt){
+      const recipes:Record<string,{name:string;qty:number}[]>={
+        Bronze:[{name:'Copper ore',qty:1},{name:'Tin ore',qty:1}],
+        Iron:[{name:'Iron ore',qty:1}],Silver:[{name:'Silver ore',qty:1}],
+        Steel:[{name:'Iron ore',qty:1},{name:'Coal',qty:2}],Gold:[{name:'Gold ore',qty:1}],
+        Mithril:[{name:'Mithril ore',qty:1},{name:'Coal',qty:4}],
+        Adamantite:[{name:'Adamantite ore',qty:1},{name:'Coal',qty:6}],
+        Runite:[{name:'Runite ore',qty:1},{name:'Coal',qty:8}]
+      }
+      addInputs(recipes[smelt[1]]||[]);outputName=`${smelt[1]} bar`
+    }
+
+    // Gathering outputs that are unambiguous item drops.
+    if(a.kind==='GATHERING'){
+      const prefixes=['Fish ','Mine ','Cut ']
+      const p=prefixes.find(p=>a.name.startsWith(p))
+      if(p){
+        let candidate=a.name.slice(p.length)
+        // Woodcutting activity names already contain "logs"; fishing/mining names are item names.
+        outputName=candidate
+        liveEligible=true
+        inputs=[]
+      }
+    }
+
+    // Firemaking is a live cost method: logs are consumed, no sell output.
+    if(a.pages.includes('firemaking')&&a.input){
+      addInputs([{name:a.input,qty:1}]);outputName=undefined
+    }
+
+    const inputCost=inputs.length&&inputs.every(x=>x.price!==null)
+      ? inputs.reduce((n,x)=>n+(x.price||0)*x.qty,0)+(a.coinFee||0)
+      : inputs.length?null:(a.coinFee||0)
+    const market=outputName?marketExpectedSell(outputName,Math.max(1,smartQty*outputQty)):null
+    const outputPrice=market?.price??null
+    const outputNet=outputPrice===null?null:outputPrice*outputQty-geTax(outputPrice)*outputQty
+    const hasPrices=liveEligible&&inputCost!==null&&(!outputName||outputNet!==null)
+    const profitEach=hasPrices?(outputNet??0)-(inputCost??0):null
+    const inputText=inputs.map(x=>`${x.qty}× ${x.name}: ${x.price===null?'?':fmt(x.price)} GP`).join(' • ')
+    const outputText=outputName?`${outputName}: ${outputPrice===null?'?':fmt(outputPrice)} GP${outputPrice!==null?` expected (${market?.basis}), net ${fmt(outputNet)} GP`:''}`:'Tüketim / satış çıktısı yok'
+    return {inputs,outputName,outputQty,inputCost,outputPrice,outputNet,profitEach,hasPrices,liveEligible,inputText,outputText,marketBasis:market?.basis??'N/A',marketLiquidity:market?.liquidity??'DATA REQUIRED'}
+  }
+
+  const resolveEffectiveRate=(a:(typeof V5_CATALOGUE)[number],edit:V5Edit)=>{
+    const history=measurementHistory[a.id]||[]
+    const currentLevel=Math.max(...a.skills.map(s=>levels[s]||1))
+    const weighted=weightedSpeedAtLevel(history,currentLevel)
+    const measured=(edit.measuredRate&&edit.measuredRate>0)?edit.measuredRate:(weighted&&weighted>0?weighted:null)
+    if(measured!==null)return {rate:measured,source:'MEASURED' as const}
+    if(edit.levelAdjustedRate&&edit.levelAdjustedRate>0)return {rate:edit.levelAdjustedRate,source:'LEVEL MODEL' as const}
+    const quality=edit.quality??a.quality
+    const theory=edit.theoryRate
+    if(theory!==undefined&&theory>0&&edit.rateSource==='VERIFIED THEORY')return {rate:theory,source:'VERIFIED THEORY' as const}
+    if(theory!==undefined&&theory>0)return {rate:theory,source:'THEORY' as const}
+    if(a.theoryRate>0&&quality==='VERIFIED')return {rate:a.theoryRate,source:'VERIFIED THEORY' as const}
+    const estimate=edit.estimatedRate
+    if(estimate!==undefined&&estimate>0)return {rate:estimate,source:'ESTIMATE' as const}
+    if(a.theoryRate>0)return {rate:a.theoryRate,source:'ESTIMATE' as const}
+    return {rate:0,source:'ESTIMATE' as const}
+  }
+
+  const v5Rows=useMemo(()=>V5_CATALOGUE.map(a=>{
+    const edit=v5Edits[a.id]||{}
+    const current=Math.max(...a.skills.map(s=>levels[s]||1))
+    const open=(!a.member||mode==='MEMBER')&&current>=a.level
+    const resolved=resolveEffectiveRate(a,edit)
+    const rate=resolved.rate
+    const rateSource=resolved.source
+    const economy=v5LiveEconomy(a)
+    const measuredRate=edit.measuredRate??(weightedSpeedAtLevel(measurementHistory[a.id]||[],current)||null)
+    const liveGp=economy.profitEach!==null&&rate>0?economy.profitEach*rate:null
+    const targets=v5BuyTargets
+    const targetInputCost=economy.inputs.length&&economy.inputs.every(x=>(targets[x.name]??x.price)!==null)
+      ? economy.inputs.reduce((n,x)=>n+((targets[x.name]??x.price) as number)*x.qty,0)+(a.coinFee||0)
+      : null
+    const hasTarget=economy.inputs.some(x=>(targets[x.name]??0)>0)
+    const targetProfitEach=hasTarget&&targetInputCost!==null&&economy.outputNet!==null?economy.outputNet-targetInputCost:null
+    const targetGpHour=targetProfitEach!==null&&rate>0?targetProfitEach*rate:null
+    const targetCapital=targetInputCost!==null?targetInputCost*Math.max(1,Math.floor(rate)):null
+    // GP/h is DERIVED from current live profit × Effective Rate whenever both are available.
+    // Only the explicit gpOverride field may intentionally replace that automatic value.
+    // Old measuredGpHour/theoryGpHour edit fields are retained in localStorage for backward compatibility,
+    // but must never freeze a live calculation after GE prices change.
+    const manualGpOverride=edit.gpOverride // debug/display only; never used by economic ranking
+    const quality=edit.quality??a.quality??'NEEDS_VERIFICATION'
+    const rankableQuality=quality==='VERIFIED'
+    const successReady=!a.successModelRequired||measuredRate!==null
+    const economyReady=(a.economyReady??true)&&!a.timeGated&&successReady&&quality!=='DUPLICATE'
+    const automaticEffectiveGpHour=economyReady?liveGp:null
+    const gp=automaticEffectiveGpHour
+    const source=rateSource
+
+    const outputVolume24h=economy.outputName?volume(economy.outputName):null
+    const batchSize=Math.max(1,smartQty)
+    const batchVolumePct=outputVolume24h&&outputVolume24h>0?batchSize/outputVolume24h*100:null
+    const inputCaps=economy.inputs.map(inp=>{
+      const vol=volume(inp.name)
+      const limit=Number(getItem(inp.name)?.limit||0)
+      if(!(vol&&vol>0))return null
+      const volumeCap=vol*.05/inp.qty
+      const limitCap=limit>0?limit*6/inp.qty:volumeCap
+      return Math.min(volumeCap,limitCap)
+    })
+    const sellHistory=economy.outputName?orderHistory.filter(h=>h.item.toLowerCase()===economy.outputName!.toLowerCase()&&h.side==='SELL'&&h.quantity>0):[]
+    const sellEvidence=sellHistory.slice(-12)
+    const histFillRatio=sellEvidence.length?sellEvidence.reduce((n,h)=>n+Math.max(0,Math.min(1,h.filledQuantity/Math.max(1,h.quantity))),0)/sellEvidence.length:null
+    const histHours=sellEvidence.filter(h=>h.fillHours!==null)
+    const avgSellFillHours=histHours.length?histHours.reduce((n,h)=>n+(h.fillHours||0),0)/histHours.length:null
+    const historyWeight=Math.min(.7,sellEvidence.length/10*.7)
+    const baseParticipation=.05
+    const calibratedParticipation=histFillRatio===null?baseParticipation:Math.max(.015,Math.min(.15,baseParticipation*(1-historyWeight)+(baseParticipation*(.4+1.8*histFillRatio))*historyWeight))
+    const outputMarketCap=outputVolume24h&&outputVolume24h>0?outputVolume24h*calibratedParticipation/Math.max(1,economy.outputQty):null
+    const marketCapacityPerDay=outputMarketCap===null||inputCaps.some(x=>x===null)?null:Math.min(outputMarketCap,...(inputCaps.length?(inputCaps as number[]):[outputMarketCap]))
+    const productionCapacityPerDay=rate>0?rate*Math.max(1,dailyMaxHours):0
+    const capacityFactor=productionCapacityPerDay>0&&marketCapacityPerDay!==null&&Number.isFinite(marketCapacityPerDay)?Math.max(0,Math.min(1,marketCapacityPerDay/productionCapacityPerDay)):null
+    const capacityBaseGpHour=automaticEffectiveGpHour
+    const capacityAdjustedGpHour=economyReady&&capacityBaseGpHour!==null&&capacityFactor!==null?Math.min(capacityBaseGpHour,capacityBaseGpHour*capacityFactor):null
+    const sustainableHoursPerDay=rate>0&&marketCapacityPerDay!==null&&Number.isFinite(marketCapacityPerDay)?marketCapacityPerDay/rate:null
+    const baseLiquidityScore=outputVolume24h===null?null:batchVolumePct!==null?(batchVolumePct<=1?100:batchVolumePct<=5?80:batchVolumePct<=15?60:batchVolumePct<=35?40:20):null
+    const liquidityScore=baseLiquidityScore===null?null:Math.max(0,Math.min(100,baseLiquidityScore+(histFillRatio===null?0:(histFillRatio-.5)*30*historyWeight)-(avgSellFillHours!==null&&avgSellFillHours>24?15*historyWeight:0)))
+    const liquidityLabel=liquidityScore===null?'DATA REQUIRED':liquidityScore>=80?'HIGH':liquidityScore>=50?'MEDIUM':'LOW'
+    return {...a,attention:edit.attention??a.attention,xpEach:edit.xpEach??a.xpEach,edit,current,open,gp,rate,rateSource,source,quality,rankableQuality,economyReady,successReady,economy,liveGp,automaticEffectiveGpHour,measuredRate,targets,hasTarget,targetInputCost,targetProfitEach,targetGpHour,targetCapital,manualGpOverride,outputVolume24h,batchSize,batchVolumePct,marketCapacityPerDay,productionCapacityPerDay,capacityFactor,capacityAdjustedGpHour,sustainableHoursPerDay,liquidityScore,liquidityLabel,calibratedParticipation,histFillRatio,avgSellFillHours}
+  }),[mode,levels,v5Edits,v5BuyTargets,prices,mapping,volumes,market6h,measurementHistory,dailyMaxHours,smartQty,orderHistory])
+  type SmartRecipeRow={
+    id:string;name:string;skill:string;level:number;member:boolean;open:boolean;status:string;requirements:string[];
+    inputs:{name:string;qty:number}[];outputName:string|null;outputQty:number;xpEach:number|null;
+    rate:number|null;rateSource:'GERÇEK ÖLÇÜM'|'TEORİK'|'DATA REQUIRED';kind:'PROCESS'|'ALCHEMY';fixedOutputNet:number|null
+  }
+  const smartRecipes=useMemo(()=>{
+    const byName=new Map<string,SmartRecipeRow>()
+    // Legacy recipe engine has the strongest requirement model and the user's real measured speeds.
+    rows.forEach(r=>{
+      const isAlchemy=r.kind==='alchemy'
+      const outputName=isAlchemy?null:(r.output||null)
+      if(!isAlchemy&&(!r.inputs?.length||!outputName))return
+      const measured=r.userData.actualItemsPerHour!==undefined&&r.userData.actualItemsPerHour>0
+      const reqs=[r.questRequirement,r.accessRequirement,r.regionRequirement,r.diaryRequirement,r.minigameRequirement,r.equipment].filter(Boolean) as string[]
+      byName.set(r.name,{
+        id:`legacy:${r.id}`,name:r.name,skill:r.skill,level:r.level,member:!r.f2p,open:r.unlocked,status:r.status,requirements:reqs,
+        inputs:isAlchemy?[{name:r.alchItem!,qty:1},{name:'Nature rune',qty:1}]:r.inputs,
+        outputName,outputQty:r.outputQty||1,xpEach:r.expectedXpPerItem??r.xp??null,
+        rate:r.planningItemsPerHour||null,rateSource:measured?'GERÇEK ÖLÇÜM':'TEORİK',
+        kind:isAlchemy?'ALCHEMY':'PROCESS',fixedOutputNet:isAlchemy?r.outputNet:null
+      })
+    })
+    // V5 broad catalogue adds verified explicit input→output activities not already covered above.
+    v5Rows.forEach(x=>{
+      if(x.quality!=='VERIFIED'||!x.economyReady||byName.has(x.name)||!x.economy.inputs.length||!x.economy.outputName)return
+      const measured=x.rateSource==='MEASURED'
+      const rate:number|null=x.rate>0?x.rate:null
+      const reqText=(x as any).requirement
+      const reqs=reqText?[String(reqText)]:[]
+      const status=x.open?'✓ AÇIK':x.member&&mode==='F2P'?'🔒 MEMBERS':x.current<x.level?`🔒 ${x.skills.join('/')} ${x.level}`:reqs.length?`🔒 ${reqs.join(', ')}`:'🔒 LOCKED'
+      byName.set(x.name,{
+        id:`v5:${x.id}`,name:x.name,skill:x.skills.join('/'),level:x.level,member:x.member,open:x.open,status,requirements:reqs,
+        inputs:x.economy.inputs.map(i=>({name:i.name,qty:i.qty})),outputName:x.economy.outputName,outputQty:x.economy.outputQty||1,
+        xpEach:typeof x.xpEach==='number'?x.xpEach:(typeof x.xpHour==='number'&&x.xpHour>0&&rate!==null&&rate>0?x.xpHour/rate:null),rate,rateSource:measured?'GERÇEK ÖLÇÜM':rate?'TEORİK':'DATA REQUIRED',kind:'PROCESS',fixedOutputNet:null
+      })
+    })
+    return [...byName.values()].sort((a,b)=>Number(b.open)-Number(a.open)||a.skill.localeCompare(b.skill)||a.level-b.level||a.name.localeCompare(b.name))
+  },[rows,v5Rows,mode])
+  const filteredSmartRecipes=useMemo(()=>{
+    const q=smartRecipeSearch.trim().toLowerCase()
+    return q?smartRecipes.filter(x=>[x.name,x.skill,x.member?'members':'f2p',String(x.level)].join(' ').toLowerCase().includes(q)):smartRecipes
+  },[smartRecipes,smartRecipeSearch])
+  const selectedSmartRecipe=smartRecipes.find(x=>x.id===smartRecipeId)||null
+  const smartRecipeCalc=selectedSmartRecipe?(()=>{
+    const inputAdv=selectedSmartRecipe.inputs.map(inp=>({inp,adv:smartAdvice(inp.name,smartProfile,smartQty)}))
+    if(inputAdv.some(x=>!x.adv))return null
+    const smartInputCost=inputAdv.reduce((s,x)=>s+(x.adv!.recBuy*x.inp.qty),0)
+    let grossSell=0,tax=0,netSell=0,outAdv:any=null
+    if(selectedSmartRecipe.kind==='ALCHEMY'){
+      if(selectedSmartRecipe.fixedOutputNet===null)return null
+      netSell=selectedSmartRecipe.fixedOutputNet;grossSell=netSell
+    }else{
+      if(!selectedSmartRecipe.outputName)return null
+      outAdv=smartAdvice(selectedSmartRecipe.outputName,smartProfile,smartQty)
+      if(!outAdv)return null
+      grossSell=outAdv.recSell*selectedSmartRecipe.outputQty
+      tax=geTax(outAdv.recSell)*selectedSmartRecipe.outputQty
+      netSell=grossSell-tax
+    }
+    const profit=netSell-smartInputCost
+    const roi=smartInputCost>0?profit/smartInputCost*100:null
+    const rate=selectedSmartRecipe.rate
+    const gpHour=rate===null?null:profit*rate
+    const batchProfit=profit*smartQty
+    const xpBatch=selectedSmartRecipe.xpEach===null?null:selectedSmartRecipe.xpEach*smartQty
+    const xpHour=selectedSmartRecipe.xpEach===null||rate===null?null:selectedSmartRecipe.xpEach*rate
+    const inputCapital=smartInputCost*smartQty
+    const expectedRevenue=netSell*smartQty
+    const productionMinutes=rate&&rate>0?smartQty/rate*60:null
+    const buyFillWindows=inputAdv.map(x=>x.adv!.buyFill.range)
+    const sellFillWindow=outAdv?.sellFill?.range||null
+    return {inputAdv,outAdv,smartInputCost,grossSell,tax,netSell,profit,roi,rate,gpHour,batchProfit,xpBatch,xpHour,inputCapital,expectedRevenue,productionMinutes,buyFillWindows,sellFillWindow}
+  })():null
+
+  const loadSmartRecipe=async()=>{
+    if(!selectedSmartRecipe)return
+    const names=[...selectedSmartRecipe.inputs.map(x=>x.name),...(selectedSmartRecipe.outputName?[selectedSmartRecipe.outputName]:[])].filter(Boolean)
+    await Promise.all(names.map(loadSmartSeries))
+  }
+
+  const legacyMeasuredRanking=useMemo(()=>{
+    const recipeRows=rows.filter(r=>r.unlocked&&(r.gpHour??0)>0).map(r=>({
+      id:`legacy-recipe-${r.id}`,name:r.name,skills:[r.skill],level:r.level,kind:'PROCESSING',
+      gp:r.gpHour??0,rate:r.planningItemsPerHour,source:r.speedSource==='GERÇEK'?'MEASURED':'LIVE/ESTIMATE',
+      attention:r.attentionLevel||'MEDIUM',member:!r.f2p,open:true,xpHour:r.xpHour||0,
+      pages:[] as V5PageId[],legacy:true
+    }))
+    const gatherLegacy=gatheringRows.filter(r=>r.unlocked&&(r.gpHour??0)>0).map(r=>({
+      id:`legacy-gather-${r.id}`,name:r.name,skills:[r.skill],level:r.requiredLevel,kind:'GATHERING',
+      gp:r.gpHour??0,rate:r.planningItemsPerHour,source:r.speedSource==='GERÇEK'?'MEASURED':'LIVE/ESTIMATE',
+      attention:r.attentionLevel||'MEDIUM',member:!r.f2p,open:true,xpHour:r.xpHour||0,
+      pages:[] as V5PageId[],legacy:true
+    }))
+    return [...recipeRows,...gatherLegacy]
+  },[rows,gatheringRows])
+  const unifiedRanking=useMemo(()=>{
+    const v5=v5Rows.filter(x=>x.open&&x.economyReady&&x.quality!=='DUPLICATE'&&(x.gp??0)>0&&x.economy.hasPrices&&(v5IncludeUnverified?x.quality!=='DEPRECATED':x.quality==='VERIFIED')).map(x=>({...x,legacy:false}))
+    const all=[...v5] // V6: legacy rows remain visible in legacy/detail screens only; future rankings never inherit historical buy/sell prices.
+    const priority=(s:string)=>s==='MEASURED'||s==='GERÇEK'||s==='LIVE GE + MEASURED RATE'?4:s.startsWith('LIVE GE')?3:s==='USER THEORY'||s==='LIVE/ESTIMATE'?2:1
+    const byName=new Map<string,any>()
+    all.forEach(x=>{
+      const key=typeof x?.name==='string'?x.name.trim().toLowerCase():''
+      if(!key)return
+      const prev=byName.get(key)
+      if(!prev||priority(x.source)>priority(prev.source)||(priority(x.source)===priority(prev.source)&&(x.gp??0)>(prev.gp??0))) byName.set(key,x)
+    })
+    return Array.from(byName.values()).sort((a,b)=>{
+      const bc=typeof b.capacityAdjustedGpHour==='number'?b.capacityAdjustedGpHour:(b.gp??0)
+      const ac=typeof a.capacityAdjustedGpHour==='number'?a.capacityAdjustedGpHour:(a.gp??0)
+      const d=bc-ac
+      return d!==0?d:((b.gp??0)-(a.gp??0))||priority(b.source)-priority(a.source)
+    })
+  },[v5Rows,v5IncludeUnverified])
+  const portfolioCandidates = useMemo(()=>{
+    type PC={id:string;group:string;name:string;kind:string;skill:string;level:number;member:boolean;rate:number;rateSource:string;inputs:{name:string;qty:number}[];output:string;outputQty:number;fixedOutput?:number;buyLimit:number;volume:number;buyUnit:number;sellUnit:number;taxed:boolean;attention:string;requirements:string[]}
+    const candidates:PC[]=[]
+    const pair=(name:string)=>{const item=getItem(name);if(!item)return null;const d=prices[item.id];if(!d||d.high==null||d.low==null)return null;return {item,high:Number(d.high),low:Number(d.low),vol:volume(name)??0,limit:Number(item.limit||0)}}
+    // Verified V5 production methods: no historical/stale prices, only current GE data.
+    v5Rows.forEach((r:any)=>{
+      if((!r.open&&!(r.member&&r.current>=r.level))||r.quality!=='VERIFIED'||!r.economyReady||!r.economy?.inputs?.length||!r.economy?.outputName||!r.rate||r.rate<=0||r.member&&mode!=='MEMBER')return
+      const ins=r.economy.inputs.filter((x:any)=>typeof x?.name==='string'&&x.name.trim()).map((x:any)=>({name:x.name.trim(),qty:Number(x.qty)||1}))
+      if(!ins.length||ins.length!==r.economy.inputs.length)return
+      const pairs=ins.map((x:any)=>pair(x.name));const out=pair(r.economy.outputName)
+      if(pairs.some((x:any)=>!x)||!out)return
+      const vols=[...pairs.map((x:any)=>x.vol),out.vol]
+      const limits=pairs.map((x:any)=>x.limit>0?x.limit:0)
+      if(vols.some((x:number)=>!Number.isFinite(x)||x<=0)||limits.some((x:number)=>x<=0))return
+      candidates.push({id:`v5-${r.id}`,group:`v5-${r.id}`,name:r.name,kind:'Üretim / işleme',skill:(r.skills||[]).join(', '),level:r.level,member:Boolean(r.member),rate:r.rate,rateSource:r.rateSource||'Tahmin',inputs:ins,output:r.economy.outputName,outputQty:Number(r.economy.outputQty)||1,buyLimit:Math.min(...limits.map((x:number,i:number)=>Math.floor(x/ins[i].qty))),volume:Math.min(...vols),buyUnit:0,sellUnit:0,taxed:true,attention:r.attention||'MEDIUM',requirements:r.requirements||[]})
+    })
+    // Herblore's 15 herbs, all four routes; one route per herb can enter a portfolio.
+    herbloreRows.forEach((h:any)=>{
+      const defs=[
+        {r:h.grimyClean,key:'grimyClean',inputs:[{name:h.grimyName,qty:1}],output:h.cleanName,rate:5000,skill:'Herblore',level:h.level,extra:0},
+        {r:h.cleanPotion,key:'cleanPotion',inputs:[{name:h.cleanName,qty:1},{name:'Vial of water',qty:1}],output:h.unfinishedName,rate:2500,skill:'Herblore',level:h.level,extra:0},
+        {r:h.grimyPotion,key:'grimyPotion',inputs:[{name:h.grimyName,qty:1},{name:'Vial of water',qty:1}],output:h.unfinishedName,rate:2500,skill:'Herblore',level:h.level,extra:0},
+        {r:h.degrime,key:'degrime',inputs:[{name:h.grimyName,qty:1},{name:'Nature rune',qty:2/27},...(!degrimeEarthStaff?[{name:'Earth rune',qty:4/27}]:[])],output:h.cleanName,rate:16200,skill:'Herblore / Magic',level:h.level,extra:0}
+      ]
+      defs.forEach((d:any)=>{
+        if(!d.r||d.r.levelLocked)return
+        const ins=d.inputs.filter((x:any)=>typeof x?.name==='string'&&x.name.trim()).map((x:any)=>({name:x.name.trim(),qty:x.qty}));if(ins.length!==d.inputs.length||typeof d.output!=='string'||!d.output.trim())return;const ip=ins.map((x:any)=>pair(x.name));const op=pair(d.output)
+        if(ip.some((x:any)=>!x)||!op)return
+        const vols=[...ip.map((x:any)=>x.vol),op.vol];if(vols.some(x=>x<=0))return
+        const lims=ins.map((x:any,i:number)=>ip[i].limit>0?Math.floor(ip[i].limit/x.qty):0);if(lims.some((x:number)=>x<=0))return
+        candidates.push({id:`herb-${h.key}-${d.key}`,group:`herb-${h.key}`,name:`${h.herb} • ${d.key==='grimyClean'?'Grimy → Clean':d.key==='cleanPotion'?'Clean → Unf':d.key==='grimyPotion'?'Grimy → Unf':'Degrime'}`,kind:'Herblore',skill:d.skill,level:d.level,member:true,rate:d.rate,rateSource:'Tahmin',inputs:ins,output:d.output,outputQty:1,buyLimit:Math.min(...lims),volume:Math.min(...vols),buyUnit:0,sellUnit:0,taxed:true,attention:'LOW',requirements:d.key==='degrime'?['A Kingdom Divided','Magic 70']:[]})
+      })
+    })
+    // High Alchemy intentionally excluded: one-by-one manual casting belongs only in its dedicated screen.
+    const profile=portfolioProfile
+    const riskCfg=portfolioRisk==='LOW'?{minVol:2500,participation:.05,maxShare:.50,minScore:0}:portfolioRisk==='MEDIUM'?{minVol:500,participation:.05,maxShare:.50,minScore:0}:{minVol:100,participation:.05,maxShare:.50,minScore:0}
+    const prepared=candidates.filter(c=>c.kind==='Herblore'&&c.id.includes('-grimyPotion')).map(c=>{
+      const ps=c.inputs.map((x:any)=>pair(x.name));const out=c.fixedOutput?null:pair(c.output)
+      if(ps.some((x:any)=>x===null)||(!c.fixedOutput&&out===null))return null
+      const validPs=ps as Array<NonNullable<(typeof ps)[number]>>
+      const validOut=out as NonNullable<typeof out>|null
+      const plannedInputs=c.inputs.map((x:any,i:number)=>({...x,orderPrice:profile==='FAST'?validPs[i].high:profile==='BALANCED'?(validPs[i].high+validPs[i].low)/2:validPs[i].low}))
+      const inputCost=plannedInputs.reduce((n:number,x:any)=>n+x.orderPrice*x.qty,0)
+      const outputPrice=c.fixedOutput??(profile==='FAST'?validOut!.low:profile==='BALANCED'?(validOut!.high+validOut!.low)/2:validOut!.high)
+      const outputNet=c.fixedOutput?c.fixedOutput:outputPrice*c.outputQty-geTax(outputPrice)*c.outputQty
+      const profit=outputNet-inputCost
+      const bottleneck=Math.min(c.volume,...validPs.map((x:any)=>x.vol),...(validOut?[validOut.vol]:[]))
+      const marketQty=Math.max(0,Math.floor(bottleneck*riskCfg.participation))
+      const qtyCap=Math.min(c.buyLimit,marketQty)
+      const unitCapital=inputCost
+      const rate=Math.min(c.rate,Math.max(0,marketQty)/Math.max(1,dailyMaxHours))
+      const capacityGpHour=profit>0?profit*rate:0
+      const liquidityRatio=bottleneck>0?Math.min(1,marketQty/Math.max(1,c.rate*dailyMaxHours)):0
+      const riskScore=portfolioRisk==='LOW'?(bottleneck>=10000?1:0.75):portfolioRisk==='MEDIUM'?(bottleneck>=2500?1:0.65):(bottleneck>=1000?1:0.55)
+      const effortFactor=c.attention==='AFK'?1.25:c.attention==='LOW'?1.15:c.attention==='MEDIUM'?0.90:0.65
+      const score=profit>0&&unitCapital>0?capacityGpHour*riskScore*effortFactor:0
+      return {...c,plannedInputs,inputCost,outputPrice,outputNet,profit,unitCapital,bottleneck,qtyCap,capacityGpHour,liquidityRatio,effortFactor,score,profile}
+    }).filter((x:any)=>x&&x.profit>0&&x.capacityGpHour>=600000&&x.qtyCap>0&&x.score>0&&x.bottleneck>=riskCfg.minVol&&x.unitCapital>0)
+    const selected:any[]=[];const usedGroups=new Set<string>();let remaining=Math.max(0,portfolioCapital)
+    while(selected.length<8){
+      const next=prepared.filter((x:any)=>!usedGroups.has(x.group)&&x.unitCapital<=remaining&&x.unitCapital<=portfolioCapital*riskCfg.maxShare).sort((a:any,b:any)=>b.score-a.score)[0]
+      if(!next)break
+      const allocation=Math.min(remaining,portfolioCapital*riskCfg.maxShare,Math.max(next.unitCapital,portfolioCapital/Math.max(3,Math.min(6,prepared.length))))
+      const qty=Math.min(next.qtyCap,Math.floor(allocation/next.unitCapital))
+      if(qty<1){usedGroups.add(next.group);continue}
+      const used=qty*next.unitCapital
+      selected.push({...next,qty,capitalUsed:used,expectedProfit:qty*next.profit,expectedHours:next.rate>0?qty/next.rate:null,expectedGpHour:next.capacityGpHour,volumeShare:next.bottleneck>0?qty/next.bottleneck:1})
+      remaining-=used;usedGroups.add(next.group)
+    }
+    return {rows:selected,used:selected.reduce((n,x)=>n+x.capitalUsed,0),reserve:Math.max(0,portfolioCapital-selected.reduce((n,x)=>n+x.capitalUsed,0)),profit:selected.reduce((n,x)=>n+x.expectedProfit,0),gpHour:selected.reduce((n,x)=>n+x.expectedGpHour,0),candidateCount:prepared.length}
+  },[v5Rows,herbloreRows,alchemyRows,mapping,prices,volumes,mode,portfolioCapital,portfolioProfile,portfolioRisk,dailyMaxHours,degrimeEarthStaff])
+
+  const marketRadarRows=useMemo(()=>{
+    const profile=portfolioProfile
+    // Always show live-priced products, even when 7-day history is unavailable.
+    // Historical samples improve limit-price estimates; they are not a prerequisite for displaying a quote.
+    const liquid=mapping.map((item:any)=>({item,vol:Number(volumes[String(item.id)]?.highPriceVolume||0)+Number(volumes[String(item.id)]?.lowPriceVolume||0)}))
+      .sort((a,b)=>b.vol-a.vol).slice(0,30)
+    return liquid.map(({item,vol})=>{
+      const id=String(item.id),p=prices[id],w=marketWeekly[id]
+      if(!p||p.high==null||p.low==null||!Number.isFinite(Number(p.high))||!Number.isFinite(Number(p.low)))return null
+      const high=Number(p.high),low=Number(p.low),spread=Math.max(0,high-low)
+      const samples=(w?.samples||[]).filter(x=>x.high&&x.high>0&&x.low&&x.low>0)
+      const buyPairs=samples.filter(x=>x.low&&x.low>0).map(x=>({v:Number(x.low),w:Math.max(1,x.lowVolume)}))
+      const sellPairs=samples.filter(x=>x.high&&x.high>0).map(x=>({v:Number(x.high),w:Math.max(1,x.highVolume)}))
+      const historical=Boolean(w&&w.points>=12&&w.avgHigh)
+      const buyOffer=profile==='FAST'?high:profile==='BALANCED'?(historical?(weightedQuantile(buyPairs,.50)??low):Math.round(low+spread*.25)):(historical?(weightedQuantile(buyPairs,.20)??low):low)
+      const sellOffer=profile==='FAST'?low:profile==='BALANCED'?(historical?(weightedQuantile(sellPairs,.50)??high):Math.round(low+spread*.75)):(historical?(weightedQuantile(sellPairs,.80)??high):high)
+      const avgHigh=Number(w?.avgHigh||high)
+      const unitProfit=sellOffer-geTax(sellOffer)-buyOffer
+      const discount=(avgHigh-buyOffer)/Math.max(1,avgHigh)
+      const buyHits=historical?samples.filter(x=>x.low!==null&&x.low<=buyOffer*1.01).length:0
+      const sellHits=historical?samples.filter(x=>x.high!==null&&x.high>=sellOffer*.99).length:0
+      const buyFillHours=profile==='FAST'?.25:historical&&buyHits>0?Math.max(.5,168/buyHits):null
+      const sellFillHours=profile==='FAST'?.25:historical&&sellHits>0?Math.max(.5,168/sellHits):null
+      const expectedHours=buyFillHours!==null&&sellFillHours!==null?buyFillHours+sellFillHours:null
+      const volumeCap=Math.floor(vol*.05)
+      const affordableQty=Math.floor((portfolioCapital*.5)/Math.max(1,buyOffer))
+      const qty=Math.max(0,Math.min(Math.floor(vol/8),volumeCap,affordableQty,Number(item.limit||Math.floor(vol/8))))
+      const capital=qty*buyOffer
+      const expectedProfit=qty*unitProfit
+      const expectedGpHour=expectedHours&&expectedHours>0?expectedProfit/expectedHours:0
+      const withinSixHours=expectedHours!==null&&expectedHours<=6
+      let reason=''
+      if(!historical)reason='7 günlük geçmiş henüz yok; fiyatlar güncel high/low aralığından türetildi'
+      else if(discount<.10)reason='%10 fiyat avantajı eşiği sağlanmıyor'
+      else if(vol<1000||qty<=0)reason='Hacim veya ayrılabilir sermaye yetersiz'
+      else if(unitProfit<=0)reason='Vergi sonrası net kâr negatif'
+      else if(expectedGpHour<600000)reason='600K GP/h altı'
+      else if(expectedHours===null||expectedHours>6)reason='6 saatlik dönüş hedefi doğrulanamıyor'
+      const qualified=historical&&discount>=.10&&vol>=1000&&qty>0&&unitProfit>0&&expectedGpHour>=600000&&expectedHours!==null&&expectedHours<=6
+      const action=qualified?(profile==='FAST'?'ŞİMDİ AL / SAT':profile==='BALANCED'?'TEKLİF KOY':'SABIRLI TEKLİF KOY'):'BEKLE'
+      return {id,name:item.name,profile,high,low,buyOffer:Math.round(buyOffer),sellOffer:Math.round(sellOffer),avgHigh,avgLow:Number(w?.avgLow||low),discount,volume:vol,qty,capital,unitProfit,expectedProfit,expectedGpHour,buyFillHours,sellFillHours,expectedHours,withinSixHours,action,reason,history:marketHistory[id]||[],points:w?.points||0,historical}
+    }).filter(Boolean).sort((a:any,b:any)=>Number(b.action!=='BEKLE')-Number(a.action!=='BEKLE')||b.expectedGpHour-a.expectedGpHour)
+  },[mapping,prices,volumes,marketWeekly,marketHistory,portfolioCapital,portfolioProfile])
+
+  useEffect(()=>{
+    if(!marketSoundEnabled||!marketRadarRows.length)return
+    const fresh=marketRadarRows.filter((x:any)=>x.action!=='BEKLE'&&Date.now()-Number(marketAlertLog[x.id]||0)>6*60*60_000)
+    if(!fresh.length)return
+    const next={...marketAlertLog};fresh.forEach((x:any)=>{next[x.id]=Date.now()});setMarketAlertLog(next)
+    if(marketSoundEnabled){try{const Ctx=(window as any).AudioContext||(window as any).webkitAudioContext;if(Ctx){const ctx=new Ctx();[0,1,2].forEach((n)=>{const osc=ctx.createOscillator(),gain=ctx.createGain();osc.type='sine';osc.frequency.value=880-n*120;gain.gain.value=.08;osc.connect(gain);gain.connect(ctx.destination);osc.start(ctx.currentTime+n*.22);osc.stop(ctx.currentTime+n*.22+.16)});window.setTimeout(()=>ctx.close(),1200)}}catch{}}
+  },[marketRadarRows,marketSoundEnabled])
+
+  const v4RequirementNames = V4_ACTIVITY_DATABASE.flatMap(a => [...(a.requirements.quests ?? []), ...(a.requirements.areas ?? []), ...(a.requirements.diary ?? []), ...(a.requirements.minigame ?? [])])
+  const requirementNames=Array.from(new Set([...RECIPES.flatMap(r=>[r.questRequirement,r.accessRequirement,r.regionRequirement,r.diaryRequirement,r.minigameRequirement,r.equipment]),...GATHERING.flatMap(a=>[a.questRequirement,a.accessRequirement,a.regionRequirement,a.equipment]),...v4RequirementNames].filter(Boolean))) as string[]
+  const requirementGroups = useMemo(() => {
+    const groups:{title:string;items:string[]}[] = [
+      {title:'Quests',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.quests??[])))},
+      {title:'Areas / Access',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.areas??[])))},
+      {title:'Diaries',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.diary??[])))},
+      {title:'Minigames',items:Array.from(new Set(V4_ACTIVITY_DATABASE.flatMap(a=>a.requirements.minigame??[])))},
+    ]
+    const grouped=new Set(groups.flatMap(g=>g.items))
+    const legacy=requirementNames.filter(x=>!grouped.has(x))
+    if(legacy.length) groups.push({title:'Legacy / Other',items:legacy})
+    return groups.filter(g=>g.items.length)
+  }, [requirementNames.join('|')])
+
+  // V6 central decision layer: Bond Sustain and Unlock Planner consume the same v5Rows economy results
+  // used by Dashboard / Skill Views / Money Methods. No legacy static GP/h is allowed here.
+  const bondTarget = (bond ?? 0) + bondReserve + emergencyBuffer
+  const remainingSafeGp = bond ? Math.max(bondTarget - gp, 0) : 0
+  const bondEligible=v5Rows.filter(x=>x.open&&x.economyReady&&x.quality==='VERIFIED'&&x.economy.hasPrices&&typeof x.capacityAdjustedGpHour==='number'&&x.capacityAdjustedGpHour>0&&x.rateSource!=='ESTIMATE'&&x.rateSource!=='THEORY')
+  const bondMeasured=bondEligible.filter(x=>x.rateSource==='MEASURED')
+  const bondBase=(bondMeasured.length?bondMeasured:bondEligible).map(x=>({
+    id:x.id,name:x.name,gpHour:x.capacityAdjustedGpHour as number,expectedGpHour:x.gp??0,source:x.rateSource,attention:x.attention,
+    outputMarket:x.economy.outputName||'',liquidity:x.liquidityLabel,confidence:x.rateSource==='MEASURED'?'HIGH':x.rateSource==='VERIFIED THEORY'?'MEDIUM':'LOW'
+  }))
+  const preferenceWeight=(m:any)=> playerMode==='ACTIVE' ? (m.gpHour*(m.attention==='HIGH'?1.08:1)) : playerMode==='CHILL' ? (m.gpHour*(m.attention==='AFK'?1.25:m.attention==='LOW'?1.12:.75)) : m.gpHour
+  const bondSustainTop3=[...bondBase].sort((a,b)=>preferenceWeight(b)-preferenceWeight(a)).slice(0,3)
+  const allOpenMethods=bondBase
+  const chosenBondMethod=allOpenMethods.find(x=>x.id===selectedBondMethod) || bondSustainTop3[0]
+  const realisticGpHour=chosenBondMethod?.gpHour || 0
+  const requiredNetGp40=remainingSafeGp/40
+  const requiredNetGp50=remainingSafeGp/50
+  const requiredNetGpBudget=remainingSafeGp/Math.max(1,bondHoursBudget)
+  const scenarioFactor=bondScenario==='CONSERVATIVE'?.80:1
+  const sustainableGpHour=realisticGpHour*scenarioFactor
+  const sustainableHours=sustainableGpHour>0?remainingSafeGp/sustainableGpHour:null
+  const sustainabilityStatus = sustainableHours===null ? 'NO DATA'
+    : sustainableHours>50 ? 'NOT SUSTAINABLE'
+    : sustainableHours>40 ? 'BARELY SUSTAINABLE'
+    : sustainableHours>20 ? 'SUSTAINABLE'
+    : sustainableHours>=10 ? 'COMFORTABLE'
+    : 'VERY COMFORTABLE'
+  const planCapacityHours=Math.max(1,bondActiveDays)*Math.max(.25,dailyMaxHours)
+  const expectedCompletionDays=sustainableGpHour>0?Math.ceil((remainingSafeGp/sustainableGpHour)/Math.max(.25,dailyMaxHours)):null
+  const bufferDays=expectedCompletionDays===null?null:Math.max(0,14-expectedCompletionDays)
+  const primaryMoneyMaker=bondSustainTop3[0]
+  const lowAttentionBackup=[...bondBase].filter(m=>['LOW','AFK'].includes(m.attention)).sort((x,y)=>y.gpHour-x.gpHour)[0]
+  const marketBackup=[...bondBase].filter(m=>m.id!==primaryMoneyMaker?.id&&m.id!==lowAttentionBackup?.id&&m.outputMarket!==primaryMoneyMaker?.outputMarket).sort((x,y)=>y.gpHour-x.gpHour)[0]
+  const measuredMethodCount=bondEligible.filter(m=>m.rateSource==='MEASURED').length
+  const measurementCount=Object.values(measurementHistory).reduce((n,list)=>n+list.length,0)
+  const measurementConfidence=measurementCount>=8?'HIGH':measurementCount>=4?'MEDIUM':'LOW'
+
+  const bondActivationTargets:Record<string,number>={Attack:40,Strength:50,Defence:40,Ranged:40,Magic:55,Prayer:31,Runecraft:20,Crafting:50,Mining:50,Smithing:50,Fishing:50,Cooking:50,Woodcutting:50,Firemaking:40}
+  const bondPrepRemaining=Object.entries(bondActivationTargets).map(([skill,target])=>({skill,target,current:levels[skill]||1,missing:Math.max(0,target-(levels[skill]||1)),xpMissing:Math.max(0,xpForLevel(target)-xpForLevel(levels[skill]||1))})).filter(x=>x.missing>0).sort((a,b)=>a.xpMissing-b.xpMissing)
+  const nextUnlocks=v5Rows.filter(x=>!x.open&&(mode==='MEMBER'||!x.member)).filter(x=>x.current<x.level&&x.quality==='VERIFIED'&&x.economyReady&&x.economy.hasPrices&&typeof x.capacityAdjustedGpHour==='number'&&x.capacityAdjustedGpHour>0).map(x=>{
+    const levelsMissing=Math.max(0,x.level-x.current)
+    const xpMissing=Math.max(0,xpForLevel(x.level)-xpForLevel(x.current))
+    const economicScore=(x.capacityAdjustedGpHour||0)/Math.max(1,Math.sqrt(xpMissing||1))
+    return {...x,levelsMissing,xpMissing,economicScore}
+  }).sort((a,b)=>b.economicScore-a.economicScore).slice(0,5)
+
+  const releaseGateIssues=useMemo(()=>{
+    const issues:string[]=[]
+    const expectedRates:Record<string,number>={'econ-f2p-emerald-necklace':898,'econ-f2p-sapphire-amulet-u':880,'econ-f2p-steel-bar':453,'econ-f2p-uncooked-apple-pie':2278}
+    Object.entries(expectedRates).forEach(([id,expected])=>{const r=v5Rows.find(x=>x.id===id);if(!r||r.rate!==expected||r.rateSource!=='MEASURED')issues.push(`${id}: measured invariant failed`)})
+    v5Rows.forEach(r=>{
+      if(r.gp!==null&&r.economy.profitEach!==null&&r.rate>0&&Math.abs(r.gp-r.economy.profitEach*r.rate)>.01)issues.push(`${r.id}: dynamic GP/h formula mismatch`)
+      if(r.capacityAdjustedGpHour!==null&&r.gp!==null&&r.capacityAdjustedGpHour>r.gp+.01)issues.push(`${r.id}: Capacity GP/h > Expected GP/h`)
+    })
+    if(unifiedRanking.some((r:any)=>r.quality==='DUPLICATE'))issues.push('DUPLICATE leaked into ranking')
+    if(!v5IncludeUnverified&&unifiedRanking.some((r:any)=>r.quality==='PLACEHOLDER'))issues.push('PLACEHOLDER leaked into Live Money Ranking')
+    if(mode==='F2P'&&unifiedRanking.some((r:any)=>r.member))issues.push('MEMBERS activity leaked into F2P ranking')
+    if(unifiedRanking.some((r:any)=>r.economyReady===false))issues.push('economyReady=false leaked into ranking')
+    if(unifiedRanking.some((r:any)=>(r.gp??0)<=0))issues.push('non-positive profit leaked into profitable ranking')
+    if(!bulkAllowMeasuredOverwrite&&bulkPreview.some(x=>x.patch?.measuredRate!==undefined))issues.push('bulk preview would overwrite measured rate while protection is OFF')
+    return issues
+  },[v5Rows,unifiedRanking,v5IncludeUnverified,mode,bulkAllowMeasuredOverwrite,bulkPreview])
+  useEffect(()=>{if(releaseGateIssues.length)console.error('V6 RELEASE GATE',releaseGateIssues)},[releaseGateIssues])
+
+  const v5Top=useMemo(()=>{
+    const skillRows=unifiedRanking.map((x:any)=>({kind:'skill',id:x.id,name:x.name,skillLabel:`${x.skills.join(', ')} ${x.level}`,inputCost:x.economy?.inputCost,outputPrice:x.economy?.outputPrice,profitEach:x.economy?.profitEach,rate:x.rate,gp:x.gp,capacityGp:x.capacityAdjustedGpHour,marketBasis:x.economy?.marketBasis||'N/A',rateSource:x.rateSource||x.source,liquidityLabel:x.liquidityLabel||'—',batchVolumePct:x.batchVolumePct,batchSize:x.batchSize,quality:x.quality||'LEGACY',economy:x.economy,member:x.member}))
+    const alchRows=alchemyRows.filter((x:any)=>x.profit!==null&&x.gpHour>0&&x.capacityGpHour!==null&&x.capacityGpHour>0&&(!x.member||mode==='MEMBER')).map((x:any)=>({kind:'alchemy',id:`alchemy-${x.id}`,name:`${x.name} → High Alchemy`,skillLabel:'Magic 55 • High Alchemy',inputCost:x.itemBuy===null||x.natureCost===null?null:x.itemBuy+x.natureCost+(x.fireCost||0),inputText:`${x.name} ×1: ${fmt(x.itemBuy)} GP + Nature rune ×1: ${fmt(x.natureCost)} GP${alchemyDefaults.fireStaff?'':` + Fire rune ×5: ${fmt(x.fireCost)} GP`}`,outputText:`High Alchemy: ${fmt(x.alchValue)} GP`,outputPrice:x.alchValue,profitEach:x.profit,rate:x.rate,gp:x.gpHour,capacityGp:x.capacityGpHour,marketBasis:'Live input + 5% daily-volume capacity',rateSource:'ESTIMATE',liquidityLabel:x.liquidityLabel,batchVolumePct:null,batchSize:null,quality:'ESTIMATE',economy:null,member:x.member}))
+    const convertRows=noSkillConversions.filter((x:any)=>x.profit!==null&&x.gpHour>0&&x.capacityGpHour!==null&&x.capacityGpHour>0&&(!x.member||mode==='MEMBER')).map((x:any)=>({kind:'conversion',id:`convert-${x.name}`,name:x.name,skillLabel:'Skill gerektirmiyor',inputCost:x.cost,inputText:`${x.input} ×1: ${fmt(x.inputBuy)} GP + NPC fee: ${fmt(x.fee)} GP`,outputText:`${x.output} ×1: ${fmt(x.outputSell)} GP − GE tax: ${fmt(x.tax)} GP`,outputPrice:x.outputSell,profitEach:x.profit,rate:x.rate,gp:x.gpHour,capacityGp:x.capacityGpHour,marketBasis:'Live GE + 5% daily-volume capacity',rateSource:'ESTIMATE',liquidityLabel:x.liquidityLabel,batchVolumePct:null,batchSize:null,quality:'ESTIMATE',economy:null,member:x.member}))
+    return [...skillRows,...alchRows,...convertRows].filter((x:any)=>x.gp!==null&&x.gp>0&&x.capacityGp!==null&&x.capacityGp>0).sort((a:any,b:any)=>b.capacityGp-a.capacityGp).slice(0,10)
+  },[unifiedRanking,alchemyRows,noSkillConversions,mode,alchemyDefaults,dailyMaxHours])
+
+  const alternativeUseRows=useMemo(()=>{
+    const alchemy=alchemyRows.filter((x:any)=>x.itemBuy!==null&&x.itemSell!==null&&x.profit!==null&&(!x.member||mode==='MEMBER')).map((x:any)=>({id:`alch-alt-${x.id}`,item:x.name,method:'High Alchemy',inputCost:x.itemBuy,alternativeName:'GE satış',alternativeProfit:x.directSellProfit,chosenProfit:x.profit,delta:x.alternativeDelta,rate:x.rate,gpHour:x.gpHour,capacityGpHour:x.capacityGpHour,liquidity:x.liquidityLabel,basis:'Anlık GE alış/satış + sabit alch değeri',member:x.member}))
+    const processing=v5Rows.filter((x:any)=>x.economy?.hasPrices&&x.economy?.outputName&&x.economy?.inputs?.length&&x.economy?.profitEach!==null&&x.rate>0&&(!x.member||mode==='MEMBER')).map((x:any)=>{
+      const inputSaleNet=x.economy.inputs.every((i:any)=>sell(i.name)!==null)?x.economy.inputs.reduce((n:number,i:any)=>n+((sell(i.name)||0)-geTax(sell(i.name)||0))*i.qty,0):null
+      const inputBuyCost=x.economy.inputs.every((i:any)=>i.price!==null)?x.economy.inputs.reduce((n:number,i:any)=>n+(i.price||0)*i.qty,0):null
+      const directInputProfit=inputSaleNet===null||inputBuyCost===null?null:inputSaleNet-inputBuyCost
+      const processProfit=x.economy.profitEach
+      return {id:`proc-alt-${x.id}`,item:x.economy.inputs.map((i:any)=>`${i.qty}× ${i.name}`).join(' + '),method:x.name,output:x.economy.outputName,inputCost:inputBuyCost,alternativeName:'Girdileri doğrudan GE’de sat',alternativeProfit:directInputProfit,chosenProfit:processProfit,delta:directInputProfit===null?null:processProfit-directInputProfit,rate:x.rate,gpHour:x.gp,capacityGpHour:x.capacityAdjustedGpHour,liquidity:x.liquidityLabel,basis:'Canlı GE alış/satış − GE vergisi',member:x.member}
+    }).filter((x:any)=>x.alternativeProfit!==null&&x.chosenProfit!==null)
+    return [...alchemy,...processing].sort((a:any,b:any)=>Math.abs(b.delta??0)-Math.abs(a.delta??0))
+  },[alchemyRows,v5Rows,mode,prices,mapping,volumes])
+  const v5BuyOrderItems=useMemo(()=>{
+    type RecipeUse={name:string;targetGpHour:number}
+    type ItemOpportunity={
+      name:string;live:number;target:number;gap:number;gapPct:number;proximity:number;
+      targetHit:boolean;bestTargetGpHour:number;recipes:RecipeUse[]
+    }
+    const byItem=new Map<string,ItemOpportunity>()
+    v5Rows.filter(x=>x.open&&x.economyReady&&x.quality==='VERIFIED'&&x.economy.hasPrices).forEach(x=>{
+      x.economy.inputs.forEach(inp=>{
+        const target=v5BuyTargets[inp.name]
+        if(!(target>0)||inp.price===null) return
+        // Item is eligible only if this OPEN recipe is profitable when the global target(s) are used.
+        if(x.targetProfitEach===null||x.targetProfitEach<=0||x.targetGpHour===null||x.targetGpHour<=0) return
+        const live=inp.price
+        const gap=live-target
+        const gapPct=target>0?gap/target*100:0
+        const proximity=live>0?target/live*100:100
+        const use={name:x.name,targetGpHour:x.targetGpHour}
+        const existing=byItem.get(inp.name)
+        if(existing){
+          if(!existing.recipes.some(r=>r.name===x.name)) existing.recipes.push(use)
+          existing.bestTargetGpHour=Math.max(existing.bestTargetGpHour,x.targetGpHour)
+        } else {
+          byItem.set(inp.name,{
+            name:inp.name,live,target,gap,gapPct,proximity,
+            targetHit:live<=target,bestTargetGpHour:x.targetGpHour,recipes:[use]
+          })
+        }
+      })
+    })
+    return [...byItem.values()]
+      .map(item=>({...item,recipes:[...item.recipes].sort((a,b)=>b.targetGpHour-a.targetGpHour).slice(0,3)}))
+      .sort((a,b)=>{
+        if(a.targetHit!==b.targetHit) return a.targetHit?-1:1
+        const proximityDiff=Math.abs(b.proximity-a.proximity)
+        if(proximityDiff>0.05) return b.proximity-a.proximity
+        return b.bestTargetGpHour-a.bestTargetGpHour
+      })
+      .slice(0,10)
+  },[v5Rows,v5BuyTargets])
+
+  const v5PageRows=useMemo(()=>{
+    const rows=v5Rows
+      .filter(x=>x.pages.includes(v5Page))
+      .filter(x=>v5ShowLocked||x.open)
+      .filter(x=>v5AccessFilter==='ALL'||(v5AccessFilter==='F2P'?!x.member:x.member))
+      .filter(x=>v5KindFilter==='ALL'||x.kind===v5KindFilter)
+      .filter(x=>v5AttentionFilter==='ALL'||x.attention===v5AttentionFilter)
+      .filter(x=>v5DataFilter==='ALL'||x.source===v5DataFilter)
+      .filter(x=>v5ProfitFilter==='ALL'||(v5ProfitFilter==='PROFIT'?(x.gp??0)>0:(x.gp??0)<=0))
+      .filter(x=>!v5Search.trim()||[x.name,x.kind,x.input,x.output,x.note,x.edit.note].join(' ').toLowerCase().includes(v5Search.toLowerCase()))
+    return rows.sort((a,b)=>v5Sort==='GP_ASC'?(a.gp??0)-(b.gp??0):v5Sort==='LEVEL_ASC'?a.level-b.level:v5Sort==='RATE_DESC'?b.rate-a.rate:v5Sort==='GP_DESC'?((b.gp??0)-(a.gp??0)):((b.capacityAdjustedGpHour??-Infinity)-(a.capacityAdjustedGpHour??-Infinity)))
+  },[v5Rows,v5Page,v5ShowLocked,v5Search,v5AccessFilter,v5KindFilter,v5AttentionFilter,v5DataFilter,v5ProfitFilter,v5Sort])
+  const v5MoneySkills=useMemo(()=>Array.from(new Set([...v5Rows,...legacyMeasuredRanking].flatMap(x=>x.skills))).sort(),[v5Rows,legacyMeasuredRanking])
+  const v5MoneyRows=useMemo(()=>unifiedRanking
+    .filter(x=>v5MoneySkill==='ALL'||x.skills.includes(v5MoneySkill))
+    .filter(x=>v5MoneyKind==='ALL'||x.kind===v5MoneyKind)
+    .filter(x=>v5MoneyAttention==='ALL'||x.attention===v5MoneyAttention)
+    .filter(x=>v5MoneyData==='ALL'||x.source===v5MoneyData||(v5MoneyData==='MEASURED'&&(x.source==='GERÇEK'||x.source==='MEASURED')))
+    .filter(x=>!v5MoneySearch.trim()||[x.name,x.kind,(x.input||''),(x.output||''),(x.note||''),(x.edit?.note||'')].join(' ').toLowerCase().includes(v5MoneySearch.toLowerCase()))
+  ,[unifiedRanking,v5MoneySkill,v5MoneyKind,v5MoneyAttention,v5MoneyData,v5MoneySearch])
+  const v5PageInfo=V5_PAGES.find(p=>p.id===v5Page)!
+  const v5Update=(id:string,patch:Partial<V5Edit>)=>setV5Edits(old=>({...old,[id]:{...(old[id]||{}),...patch}}))
+  const bulkActivityRows=useMemo(()=>v5Rows.filter(x=>{
+    if(bulkMode==='F2P'&&x.member)return false
+    if(bulkMode==='MEMBER'&&!x.member)return false
+    if(bulkSkill!=='ALL'&&!x.skills.includes(bulkSkill))return false
+    if(bulkAccess==='OPEN'&&!x.open)return false
+    if(bulkAccess==='LOCKED'&&x.open)return false
+    if(bulkQuality!=='ALL'&&x.quality!==bulkQuality)return false
+    if(bulkMissingOnly&&x.rate>0)return false
+    if(bulkSearch.trim()){
+      const q=bulkSearch.trim().toLowerCase()
+      if(![x.id,x.name,...x.skills].join(' ').toLowerCase().includes(q))return false
+    }
+    return true
+  }),[v5Rows,bulkMode,bulkSkill,bulkAccess,bulkQuality,bulkMissingOnly,bulkSearch])
+  const bulkSkills=useMemo(()=>Array.from(new Set(V5_CATALOGUE.flatMap(x=>x.skills))).sort(),[])
+  const bulkTsv=(rows=bulkActivityRows)=>[
+    ['Activity ID','Activity','F2P/P2P','Skill','Level','Quality','Theory Rate/h','Estimated Rate/h','Measured Rate/h','XP/unit','Attention','Notes'].join('\t'),
+    ...rows.map(x=>[x.id,x.name,x.member?'P2P':'F2P',x.skills.join('/'),x.level,x.quality,x.edit.theoryRate??'',x.edit.estimatedRate??'',x.measuredRate??'',x.xpEach??'',x.attention,x.edit.note??x.note??''].join('\t'))
+  ].join('\n')
+  const missingRateTsv=()=>[
+    ['Activity ID','Activity','F2P/P2P','Skill','Level','Current Theory Rate','Current Measured Rate','Quality'].join('\t'),
+    ...bulkActivityRows.filter(x=>x.rate<=0||x.quality==='PLACEHOLDER'||x.rateSource==='THEORY'||x.rateSource==='ESTIMATE').map(x=>[x.id,x.name,x.member?'P2P':'F2P',x.skills.join('/'),x.level,x.edit.theoryRate??x.theoryRate??'',x.measuredRate??'',x.quality].join('\t'))
+  ].join('\n')
+  const copyText=async(text:string)=>{try{await navigator.clipboard.writeText(text)}catch{const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}}
+  const exportCsv=(text:string,name:string)=>{
+    const rows=text.split('\n').map(line=>line.split('\t').map(v=>`"${String(v).replaceAll('"','""')}"`).join(',')).join('\r\n')
+    const blob=new Blob(['\ufeff'+rows],{type:'text/csv;charset=utf-8'})
+    const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();URL.revokeObjectURL(url)
+  }
+  const parseDelimitedLine=(line:string,delimiter:string)=>{
+    if(delimiter==='\t')return line.split('\t')
+    const out:string[]=[];let cur='';let quoted=false
+    for(let i=0;i<line.length;i++){const c=line[i];if(c==='"'){if(quoted&&line[i+1]==='"'){cur+='"';i++}else quoted=!quoted}else if(c===delimiter&&!quoted){out.push(cur);cur=''}else cur+=c}
+    out.push(cur);return out
+  }
+  const previewCsvText=(text:string)=>{
+    const lines=text.replace(/^\ufeff/,'').split(/\r?\n/).filter(x=>x.trim())
+    if(!lines.length){setBulkPreview([]);setBulkValidationErrors(['CSV boş.']);return}
+    const delimiter=lines[0].includes('\t')?'\t':','
+    const header=parseDelimitedLine(lines[0],delimiter).map(x=>x.trim())
+    const headerMap=new Map(header.map((h,i)=>[h.toLowerCase(),i]))
+    const idx=(name:string)=>headerMap.get(name.toLowerCase())??-1
+    const required=['Activity ID','Activity','F2P/P2P','Skill','Level','Quality','Theory Rate/h','Estimated Rate/h','Measured Rate/h','XP/unit','Attention','Notes']
+    const missingHeaders=required.filter(h=>idx(h)<0)
+    if(missingHeaders.length){setBulkPreview([]);setBulkValidationErrors([`Eksik header: ${missingHeaders.join(', ')}`]);return}
+    const allowedQuality=new Set(['VERIFIED','NEEDS_VERIFICATION','PLACEHOLDER','DUPLICATE','INCOMPLETE','DEPRECATED'])
+    const allowedSkills=new Set(Object.keys(DEFAULT_LEVELS))
+    const validation:string[]=[]
+    const seenIds=new Set<string>()
+    const parsed=lines.slice(1).map((raw,rowIndex)=>{
+      const c=parseDelimitedLine(raw,delimiter)
+      const get=(name:string)=>(c[idx(name)]||'').trim()
+      const id=get('Activity ID'),name=get('Activity'),membership=get('F2P/P2P'),skill=get('Skill'),level=get('Level'),quality=get('Quality')
+      if(!id)validation.push(`Satır ${rowIndex+2}: Activity ID boş.`)
+      else if(!(id.startsWith('v5-')||id.startsWith('econ-')))validation.push(`Satır ${rowIndex+2}: Geçersiz Activity ID: ${id}`)
+      else if(seenIds.has(id))validation.push(`Satır ${rowIndex+2}: Duplicate Activity ID: ${id}`)
+      else seenIds.add(id)
+      if(!name)validation.push(`Satır ${rowIndex+2}: Activity boş.`)
+      if(!['F2P','P2P'].includes(membership))validation.push(`Satır ${rowIndex+2}: F2P/P2P yalnız F2P veya P2P olabilir.`)
+      if(!allowedSkills.has(skill))validation.push(`Satır ${rowIndex+2}: Geçersiz skill: ${skill}`)
+      if(level===''||!Number.isFinite(Number(level)))validation.push(`Satır ${rowIndex+2}: Level numeric olmalı.`)
+      if(!allowedQuality.has(quality))validation.push(`Satır ${rowIndex+2}: Geçersiz Quality: ${quality}`)
+      ;['Theory Rate/h','Estimated Rate/h','Measured Rate/h','XP/unit'].forEach(col=>{const s=get(col);if(s!==''&&!Number.isFinite(Number(s)))validation.push(`Satır ${rowIndex+2}: ${col} numeric veya boş olmalı.`);else if(s!==''&&Number(s)<0)validation.push(`Satır ${rowIndex+2}: ${col} negatif olamaz.`)})
+      return {raw,get,id,name,membership,skill,level,quality}
+    })
+    if(validation.length){setBulkPreview([]);setBulkValidationErrors(validation);setBulkReport(r=>r?{...r,errors:validation.length}:null);return}
+    const preview:BulkPreviewRow[]=[]
+    parsed.forEach(({raw,get,id,name,quality})=>{
+      const idMatches=V5_CATALOGUE.filter(a=>a.id===id)
+      if(!idMatches.length){preview.push({raw,key:id,status:'NOT FOUND',message:'Activity ID database içinde bulunamadı'});return}
+      const a=idMatches[0]
+      if(a.name.trim()!==name.trim()){preview.push({raw,key:id,activityId:a.id,activityName:a.name,status:'AMBIGUOUS',message:`ID eşleşti fakat Activity adı farklı: CSV="${name}" DB="${a.name}"`});return}
+      const current=v5Edits[a.id]||{}, patch:Partial<V5Edit>={}
+      const num=(col:string)=>get(col)===''?undefined:Number(get(col))
+      const theory=num('Theory Rate/h'),estimate=num('Estimated Rate/h'),measured=num('Measured Rate/h'),xp=num('XP/unit')
+      if(theory!==undefined)patch.theoryRate=theory
+      if(estimate!==undefined)patch.estimatedRate=estimate
+      if(bulkAllowMeasuredOverwrite&&measured!==undefined)patch.measuredRate=measured
+      if(xp!==undefined)patch.xpEach=xp
+      const att=get('Attention').toUpperCase()
+      if(['HIGH','MEDIUM','LOW','AFK'].includes(att))patch.attention=att as any
+      patch.quality=quality as any
+      const note=get('Notes');if(note)patch.note=note
+      // Estimate Basis and Audit Flag are intentionally ignored: they never shift mapping.
+      if(theory!==undefined)patch.rateSource=quality==='VERIFIED'?'VERIFIED THEORY':'THEORY'
+      else if(estimate!==undefined)patch.rateSource='ESTIMATE'
+      const changed=Object.entries(patch).some(([k,v])=>(current as any)[k]!==v)
+      preview.push({raw,key:id,activityId:a.id,activityName:a.name,status:changed?'WOULD UPDATE':'NO CHANGE',patch})
+    })
+    setBulkValidationErrors([])
+    setBulkPreview(preview)
+  }
+  const importCsvFile=async(file:File|null)=>{
+    if(!file)return
+    const text=await file.text()
+    setBulkPaste(text)
+    previewCsvText(text)
+  }
+  const parseBulkPreview=()=>{
+    const lines=bulkPaste.split(/\r?\n/).map(x=>x.trimEnd()).filter(x=>x.trim())
+    const preview:BulkPreviewRow[]=[]
+    lines.forEach((raw,idx)=>{
+      const cols=raw.split('\t')
+      if(idx===0&&/activity id/i.test(cols[0]||''))return
+      const key=(cols[0]||'').trim()
+      const idMatch=V5_CATALOGUE.filter(a=>a.id===key)
+      const nameMatch=idMatch.length?idMatch:V5_CATALOGUE.filter(a=>a.name.trim().toLowerCase()===key.toLowerCase())
+      if(!nameMatch.length){preview.push({raw,key,status:'NOT FOUND'});return}
+      if(nameMatch.length>1){preview.push({raw,key,status:'AMBIGUOUS',message:`${nameMatch.length} exact-name matches; use Activity ID`});return}
+      const a=nameMatch[0], current=v5Edits[a.id]||{}
+      const num=(s:string|undefined)=>s!==undefined&&s.trim()!==''&&Number.isFinite(Number(s))?Number(s):undefined
+      const theory=num(cols[1]),estimate=num(cols[2]),xp=num(cols[3])
+      const attention=(cols[4]||'').trim().toUpperCase()
+      const note=cols.slice(5).join('\t').trim()
+      const patch:Partial<V5Edit>={}
+      if(theory!==undefined)patch.theoryRate=theory
+      if(estimate!==undefined)patch.estimatedRate=estimate
+      if(xp!==undefined)patch.xpEach=xp
+      if(['HIGH','MEDIUM','LOW','AFK'].includes(attention))patch.attention=attention as any
+      if(note)patch.note=note
+      if(theory!==undefined)patch.rateSource=(current.quality??a.quality)==='VERIFIED'?'VERIFIED THEORY':'THEORY'
+      else if(estimate!==undefined)patch.rateSource='ESTIMATE'
+      const changed=Object.entries(patch).some(([k,v])=>(current as any)[k]!==v)
+      preview.push({raw,key,activityId:a.id,activityName:a.name,status:changed?'WOULD UPDATE':'NO CHANGE',patch})
+    })
+    setBulkPreview(preview)
+  }
+  const snapshotBulk=()=>{localStorage.setItem('osrs-v5-last-bulk-snapshot',JSON.stringify(v5Edits));setBulkUndo(v5Edits)}
+  const applyBulkImport=()=>{
+    const blockers=bulkValidationErrors.length+bulkPreview.filter(x=>x.status==='NOT FOUND'||x.status==='AMBIGUOUS').length
+    if(blockers){setBulkReport({restored:0,updated:0,estimates:0,measuredPreserved:0,ignored:['Estimate Basis','Audit Flag'],errors:blockers,preview:[]});return}
+    const updates=bulkPreview.filter(x=>x.status==='WOULD UPDATE'&&x.activityId&&x.patch)
+    if(!updates.length)return
+    const before=v5Edits
+    snapshotBulk()
+    const measuredPreserved=updates.filter(x=>!bulkAllowMeasuredOverwrite&&typeof before[x.activityId!]?.measuredRate==='number').length
+    setV5Edits(old=>{
+      const next={...old}
+      updates.forEach(x=>{
+        const prior=next[x.activityId!]||{}
+        const patch={...x.patch!}
+        if(!bulkAllowMeasuredOverwrite)delete patch.measuredRate
+        next[x.activityId!]={...prior,...patch}
+      })
+      return next
+    })
+    setBulkReport({
+      restored:0,updated:updates.length,
+      estimates:updates.filter(x=>typeof x.patch?.estimatedRate==='number').length,
+      measuredPreserved,
+      ignored:['Estimate Basis','Audit Flag'],errors:0,
+      preview:bulkPreview.filter(x=>x.activityId).slice(0,10).map(x=>{const a=V5_CATALOGUE.find(a=>a.id===x.activityId)!;return `${a.id} | ${a.name} | ${a.member?'P2P':'F2P'} | ${a.skills[0]} | ${a.level} | ${x.patch?.quality??a.quality??'NEEDS_VERIFICATION'}`})
+    })
+    setBulkPreview(old=>old.map(x=>x.status==='WOULD UPDATE'?{...x,status:'MATCHED'}:x))
+  }
+  const undoLastBulk=()=>{
+    if(!bulkUndo)return
+    setV5Edits(bulkUndo);setBulkReport({restored:Object.keys(bulkUndo).length,updated:0,estimates:0,measuredPreserved:Object.values(bulkUndo).filter(x=>typeof x.measuredRate==='number').length,ignored:['Estimate Basis','Audit Flag'],errors:0,preview:[]});localStorage.removeItem('osrs-v5-last-bulk-snapshot');setBulkUndo(null)
+  }
+  const applyBulkCommon=()=>{
+    const ids=Object.keys(bulkSelected).filter(id=>bulkSelected[id])
+    if(!ids.length)return
+    const patch:Partial<V5Edit>={}
+    if(bulkCommonAttention)patch.attention=bulkCommonAttention as any
+    if(bulkCommonQuality)patch.quality=bulkCommonQuality as any
+    if(bulkCommonSource)patch.rateSource=bulkCommonSource as any
+    if(bulkCommonNote)patch.note=bulkCommonNote
+    if(!Object.keys(patch).length)return
+    snapshotBulk()
+    setV5Edits(old=>{const next={...old};ids.forEach(id=>next[id]={...(next[id]||{}),...patch});return next})
+  }
+  const v5Reset=(id:string)=>setV5Edits(old=>{const n={...old};delete n[id];return n})
+
+  const v4SearchResults = useMemo(() => {
+    const q = v4Search.trim().toLowerCase()
+    if (!q && !v4ViewAll) return []
+    return V4_ACTIVITY_DATABASE
+      .map(activity => ({ activity, access: evaluateActivity(activity, { mode, levels, unlocks: requirements }) }))
+      .filter(({ activity, access }) => {
+        if (!v4ShowLocked && !access.open) return false
+        if (v4KindFilter !== 'ALL' && activity.kind !== v4KindFilter) return false
+        if (!q) return true
+        const haystack = [activity.name, activity.category, ...activity.skills, ...activity.tags, ...(activity.items ?? [])].join(' ').toLowerCase()
+        return haystack.includes(q)
+      })
+  }, [v4Search, v4ShowLocked, v4ViewAll, v4KindFilter, mode, levels, requirements])
+  const v4PageCount = Math.max(1, Math.ceil(v4SearchResults.length / V4_PAGE_SIZE))
+  const v4PagedResults = v4SearchResults.slice((v4Page-1)*V4_PAGE_SIZE, v4Page*V4_PAGE_SIZE)
+
+  const v4Stats = useMemo(() => {
+    const evaluated = V4_ACTIVITY_DATABASE.map(activity => ({activity, access:evaluateActivity(activity,{mode,levels,unlocks:requirements})}))
+    return {
+      total:evaluated.length,
+      verified:evaluated.filter(x=>x.activity.verified==='VERIFIED').length,
+      members:evaluated.filter(x=>!x.activity.f2p && x.activity.members).length,
+      open:evaluated.filter(x=>x.access.open).length,
+      locked:evaluated.filter(x=>!x.access.open).length,
+    }
+  }, [mode, levels, requirements])
+
+  const v4TheoryRows = useMemo(() => V4_THEORY_ESTIMATES.map(t => {
+    const activity = V4_ACTIVITY_DATABASE.find(a => a.id === t.id)
+    if (!activity) return null
+    const req = evaluateActivity(activity,{mode,levels,unlocks:requirements})
+    const skillReq = (activity.requirements.skills ?? []).map(s=>`${s.skill} ${s.level}`).join(', ') || '—'
+    return { ...t, activity, open:req.open, missing:req.missing, skillReq }
+  }).filter(Boolean).sort((x:any,y:any)=>y.gpHour-x.gpHour) as any[], [mode, levels, requirements])
+
+  const v4TheoryOpenTop = useMemo(() => v4TheoryRows.filter((r:any)=>r.open).slice(0,5), [v4TheoryRows])
+  const v4TheoryFutureTop = useMemo(() => v4TheoryRows.filter((r:any)=>!r.open).slice(0,5), [v4TheoryRows])
+
+  const v4Ctx = useMemo(() => ({mode,levels,unlocks:requirements}), [mode,levels,requirements])
+  const v4SafeCombat = useMemo(() => rankCombat(V4_ACTIVITY_DATABASE,v4Ctx,true).slice(0,10), [v4Ctx])
+  const v4WildCombat = useMemo(() => rankCombat(V4_ACTIVITY_DATABASE,v4Ctx,false).filter(x=>['WILDERNESS','PVP'].includes(x.activity.riskType)).slice(0,10), [v4Ctx])
+  const v4Unlocks = useMemo(() => v4NextUnlocks(V4_ACTIVITY_DATABASE,v4Ctx).slice(0,20), [v4Ctx])
+  const v4QuestValue = useMemo(() => questUnlockValue(V4_ACTIVITY_DATABASE,v4Ctx).slice(0,10), [v4Ctx])
+  const v4Chains = useMemo(() => itemChains(V4_ACTIVITY_DATABASE,v4PlannerItem).slice(0,20), [v4PlannerItem])
+  const v4GearReady = useMemo(() => readyAfterSimpleRequirements(V4_ACTIVITY_DATABASE,v4Ctx).slice(0,20), [v4Ctx])
+
+  const coverageRows=useMemo(()=>{
+    const byId=new Map(V5_CATALOGUE.map(a=>[a.id,a]))
+    return V5_CANONICAL_MANIFEST.map(c=>({canonical:c,activity:byId.get(c.key)||null}))
+  },[])
+  const coverageSummary=useMemo(()=>{
+    const summarize=(member:boolean)=>{
+      const set=coverageRows.filter(x=>x.canonical.member===member)
+      const counts={VERIFIED:0,NEEDS_VERIFICATION:0,PLACEHOLDER:0,DUPLICATE:0,INCOMPLETE:0,DEPRECATED:0,MISSING:0}
+      set.forEach(x=>{if(!x.activity)counts.MISSING++;else counts[x.activity.quality||'NEEDS_VERIFICATION']++})
+      return {total:set.length,...counts,pct:set.length?counts.VERIFIED/set.length*100:0}
+    }
+    return {f2p:summarize(false),member:summarize(true)}
+  },[coverageRows])
+  const qualityCounts=useMemo(()=>{
+    const c={VERIFIED:0,NEEDS_VERIFICATION:0,PLACEHOLDER:0,DUPLICATE:0,INCOMPLETE:0,DEPRECATED:0}
+    V5_CATALOGUE.forEach(a=>c[a.quality||'NEEDS_VERIFICATION']++)
+    return c
+  },[])
+
+  return (
+    <main>
+      <header>
+        <div>
+          <h1>OSRS Economy Scanner V6.6 — Live GE Opportunity Radar</h1>
+          <p>
+            Live GE processing scanner • gerçek hız/fiyat • sermaye ve süre planı • F2P safety audit
+          </p>
+        </div>
+
+        <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',justifyContent:'flex-end'}}>
+          <button onClick={refresh} disabled={loading}>
+            {loading
+              ? 'Güncelleniyor...'
+              : '↻ Fiyatları Güncelle'}
+          </button>
+          <div style={{fontSize:11,color:error?'#f85149':updated?'#3fb950':'#8b949e',minWidth:190}}>
+            {loading
+              ? 'OSRS Wiki fiyatları alınıyor...'
+              : error
+                ? `Güncelleme başarısız${updated ? ` • Son başarılı: ${updated.toLocaleString('tr-TR')}` : ''}`
+                : updated
+                  ? `Son fiyat güncelleme: ${updated.toLocaleString('tr-TR')}`
+                  : 'Henüz fiyat güncellemesi yapılmadı'}
+          </div>
+        </div>
+      </header>
+
+      <nav style={{position:'sticky',top:0,zIndex:20,display:'flex',gap:8,flexWrap:'wrap',padding:'10px 0',background:'#0d1117',borderBottom:'1px solid #30363d'}}>
+        {([
+          ['dashboard','Dashboard'],['smart','Smart Order'],['skills','21 Skill Views'],['herblore','Herblore'],['alchemy','Alchemy & Skill-Free'],['alchemyGoal','Alchemy Profit Goal'],['portfolio','Capital Portfolio'],['market','GE Fırsat Radarı'],['money','Money Methods'],['planner','Unlocks / Planner'],['database','Full Database'],['coverage','Database Coverage'],['bulk','Bulk Data Entry'],
+        ] as const).map(([id,label])=><button key={id} type="button" onClick={()=>setActiveTab(id)}
+          style={{fontWeight:activeTab===id?800:500,outline:activeTab===id?'2px solid #58a6ff':'none'}}>{label}</button>)}
+      </nav>
+
+      {error && <div className="error">{error}</div>}
+      {activeTab==='herblore'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+        <h2 style={{marginTop:0}}>Herblore — Canlı GE Kâr Analizi</h2>
+        <p style={{fontSize:11,color:'#8b949e'}}>Alış fiyatları anlık GE buy fiyatı, satış fiyatları GE sell fiyatı üzerinden alınır; satış vergisi kârdan düşülür. İlk üç sekme herb temizleme ve unfinished potion (unf) üretimini; dördüncü sekme Arceuus Degrime büyüsünü kapsar. İşlem hızları tahminidir; GP/h kesin kazanç garantisi değildir. Herblore üyelik gerektirir.</p>
+        <div style={{display:'flex',gap:7,flexWrap:'wrap',marginBottom:10}}>
+          {([['grimyClean','1. Grimy al → Clean sat'],['cleanPotion','2. Clean al → Vial ile Unf Potion'],['grimyPotion','3. Grimy al → Clean + Vial → Unf Potion'],['degrime','4. Degrime (Arceuus)']] as const).map(([id,label])=><button key={id} type="button" onClick={()=>setHerbloreSubTab(id)} style={{fontWeight:herbloreSubTab===id?800:500,outline:herbloreSubTab===id?'2px solid #58a6ff':'none'}}>{label}</button>)}
+        {herbloreSubTab==='degrime'&&<div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap',margin:'8px 0',padding:8,border:'1px solid #30363d',borderRadius:6}}><b>Degrime ayarları</b><label style={{display:'flex',alignItems:'center',gap:5}}><input type="checkbox" checked={degrimeEarthStaff} onChange={e=>setDegrimeEarthStaff(e.target.checked)}/> Earth staff kullanıyorum (Earth rune maliyeti 0)</label><span style={{fontSize:11,color:'#8b949e'}}>Gereksinim: A Kingdom Divided • Magic 70 • Herb'e göre Herblore seviyesi</span></div>}
+        </div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:10}}>
+          <input value={herbloreSearch} onChange={e=>setHerbloreSearch(e.target.value)} placeholder="Herb / potion ara..." style={{minWidth:210}}/>
+          <select value={herbloreProfitFilter} onChange={e=>setHerbloreProfitFilter(e.target.value)}><option value="ALL">Kâr/Zarar: tümü</option><option value="PROFIT">Yalnızca kârlı</option><option value="LOSS">Zarar / fiyat eksik</option></select>
+          <select value={herbloreSort} onChange={e=>setHerbloreSort(e.target.value)}><option value="GP_DESC">Expected GP/h ↓</option><option value="GP_ASC">Expected GP/h ↑</option><option value="PROFIT_DESC">Kâr/adet ↓</option><option value="LEVEL_ASC">Herblore level ↑</option><option value="VOLUME_DESC">Hacim ↓</option><option value="NAME_ASC">İsim A–Z</option></select>
+          <select value={herbloreMinVolume} onChange={e=>setHerbloreMinVolume(e.target.value)}><option value="0">Min. 24h hacim: Tümü</option><option value="100">Min. 100 adet</option><option value="250">Min. 250 adet</option><option value="500">Min. 500 adet</option><option value="1000">Min. 1.000 adet</option><option value="2500">Min. 2.500 adet</option><option value="5000">Min. 5.000 adet</option><option value="10000">Min. 10.000 adet</option></select>
+          <label style={{display:'flex',alignItems:'center',gap:5}}><input type="checkbox" checked={herbloreShowLocked} onChange={e=>setHerbloreShowLocked(e.target.checked)}/> Level/üyelik kilitlerini göster</label>
+          <label style={{display:'flex',alignItems:'center',gap:5}}><input type="checkbox" checked={herbloreShowUnpriced} onChange={e=>setHerbloreShowUnpriced(e.target.checked)}/> Fiyatı eksik kayıtları göster</label>
+        </div>
+        <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Herblore seviyen: <b>{levels.Herblore||1}</b> • Gösterilen satır: <b>{herbloreCurrentRows.length}</b> • Güncel piyasa: {updated?updated.toLocaleString('tr-TR'):'Henüz yüklenmedi'}</div>
+        <div className="tableBox"><table><thead><tr><th>#</th><th>Herb / işlem</th><th>Level / erişim</th><th>Alınan ürün ve maliyetler</th><th>Satış ürünü / canlı satış</th><th>GE vergi</th><th>Net maliyet</th><th>Kâr / adet</th><th>Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Girdi hacmi / 24h</th><th>Çıktı hacmi / 24h</th><th>Alım limiti</th></tr></thead><tbody>
+          {herbloreCurrentRows.map((r:any,i:number)=><tr key={r.id} style={{opacity:(r.levelLocked||r.accountLocked)?0.62:1}}><td>{i+1}</td><td><b>{r.herb}</b><div style={{fontSize:10,color:'#8b949e'}}>{herbloreSubTab==='grimyClean'?'Temizleme':herbloreSubTab==='cleanPotion'?'Unfinished potion üretimi':herbloreSubTab==='grimyPotion'?'Temizleme + unfinished potion':'Degrime • Magic 70'}</div></td><td><b>{r.level}</b>{r.levelLocked&&<div style={{fontSize:10,color:'#d29922'}}>🔒 {[r.magicLocked?'Magic 70 gerekli':null,(levels.Herblore||1)<r.level?`${r.level-(levels.Herblore||1)} Herblore level eksik`:null].filter(Boolean).join(' • ')}</div>}{r.accountLocked&&<div style={{fontSize:10,color:'#d29922'}}>MEMBERS</div>}</td><td>{r.inputs.map((x:string,j:number)=><div key={j}>{x}</div>)}</td><td>{r.output}: {r.outputPrice===null?'FİYAT YOK':`${fmt(r.outputPrice)} GP`}</td><td>{fmt(r.tax)} GP</td><td>{fmt(r.inputCost)} GP</td><td style={{color:r.profit===null?'#8b949e':r.profit>0?'#3fb950':'#f85149'}}><b>{fmt(r.profit)} GP</b></td><td>{fmt(r.rate)}</td><td><b>{fmt(r.gpHour)}</b></td><td>{fmt(r.capacityGpHour)}</td><td>{fmt(r.inputVolume)}</td><td>{fmt(r.outputVolume)}</td><td>{fmt(r.buyLimit)}</td></tr>)}
+          {!herbloreCurrentRows.length&&<tr><td colSpan={14}>Filtreye uygun fiyatlı Herblore işlemi bulunamadı. Fiyatları güncelle veya “Fiyatı eksik kayıtları göster” seçeneğini aç.</td></tr>}
+        </tbody></table></div>
+        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Satış geliri = güncel GE sell fiyatı − GE vergisi. GP/h, normal temizleme için 5.000 adet/saat, unfinished potion üretimi için 2.500 adet/saat ve Degrime için 600 cast/saat × 27 herb varsayar. Degrime maliyetine herb başına 2/27 Nature rune ve Earth staff yoksa 4/27 Earth rune eklenir. Girdi ve çıktıların 24 saatlik hacimleri ayrı gösterilir; hacim filtresi işlemdeki en düşük hacimli piyasa tarafını (darboğazı) esas alır. Capacity GP/h, ilgili girdilerin ve çıktının 24 saatlik hacminin %5'i ve günlük çalışma süresi üzerinden sınırlandırılır. “Unf Potion” tam iksir değildir; ikinci bileşen eklenmemiş unfinished potion'dır.</p>
+      </section>}
+
+      {activeTab==='portfolio'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+        <h2 style={{marginTop:0}}>Herblore GE Emir Planı</h2>
+        <p style={{fontSize:11,color:'#8b949e'}}>Grimy herb al → sabah unfinished potion üret → seçtiğin profilde satış emri bırak. Yalnızca hacim, sermaye ve kâr koşullarını geçen grimy→unf fırsatları gösterilir.</p>
+        <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'end',padding:10,border:'1px solid #30363d',borderRadius:8}}>
+          <label style={{display:'grid',gap:4}}>Sermaye (GP)<input type="number" min="1" step="100000" value={portfolioCapital} onChange={e=>setPortfolioCapital(Math.max(1,Number(e.target.value)||1))} style={{width:180}}/></label>
+          <label style={{display:'grid',gap:4}}>İşlem profili<select value={portfolioProfile} onChange={e=>setPortfolioProfile(e.target.value as any)}><option value="FAST">FAST — hemen al / hemen sat</option><option value="BALANCED">BALANCED — 4–5 saat bekle</option><option value="PATIENT">PATIENT — gece emir bırak</option></select></label>
+        </div>
+        <div style={{fontSize:12,margin:'8px 0'}}>Fırsat: <b>{portfolioCandidates.rows.length}</b> · Bağlanan: <b>{fmt(portfolioCandidates.used)} GP</b> · Boşta: <b>{fmt(portfolioCandidates.reserve)} GP</b> · Tahmini net kâr: <b style={{color:portfolioCandidates.profit>0?'#3fb950':'inherit'}}>{fmt(portfolioCandidates.profit)} GP</b></div>
+        <div style={{fontSize:11,color:'#8b949e',marginBottom:8}}>Düşük risk: 24h hacmin en fazla %5'i, ürün başına sermayenin en fazla %50'si. Net 600K GP/h altı listelenmez • Üyelik: {mode} • Herblore: {levels.Herblore||1}.</div>
+        {portfolioCandidates.rows.length>0?<div className="tableBox"><table><thead><tr><th>Herb</th><th>Grimy alış emri</th><th>Unf satış emri</th><th>Adet</th><th>Bağlanan GP</th><th>Tahmini net kâr</th></tr></thead><tbody>
+          {portfolioCandidates.rows.map((r:any)=><tr key={r.id}><td><b>{r.name.replace(' • Grimy → Unf','')}</b></td><td>{fmt(r.plannedInputs[0]?.orderPrice)} GP</td><td>{fmt(r.outputPrice)} GP</td><td><b>{fmt(r.qty)}</b></td><td>{fmt(r.capitalUsed)} GP</td><td style={{color:'#3fb950'}}><b>{fmt(r.expectedProfit)} GP</b></td></tr>)}
+        </tbody></table></div>:<div style={{padding:10,border:'1px solid #d29922',borderRadius:6}}>Şu an 600K net GP/h, hacim ve sermaye koşullarını birlikte geçen grimy→unfinished fırsat yok. Eşiği düşürüp riskli ürün eklemedim.</div>}
+        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>FAST mevcut anlık fiyatlara yakın; BALANCED orta fiyatlara; PATIENT daha avantajlı alış ve satış hedeflerine göre hesaplanır. Dolum garantisi yoktur. Kâr hesabı vial of water ve GE satış vergisini içerir. Miktar, alış limiti, 24 saatlik hacmin en fazla %5'i ve ürün başına sermayenin en fazla %50'siyle sınırlandırılır. Fiyatlar ve kâr tahminidir; piyasa riski sıfırlanamaz.</p>
+      </section>}
+
+      {activeTab==='market'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+        <h2 style={{marginTop:0}}>GE Fırsat Radarı — Canlı Piyasa İskontosu</h2>
+        <p style={{fontSize:11,color:'#8b949e'}}>En yüksek 24h hacimli 30 GE ürünü taranır. Seçtiğin FAST / BALANCED / PATIENT profili her ürünün alış emrini, satış hedefini, miktarını ve tahmini dönüş süresini değiştirir. Yalnızca 600K net GP/h üzeri, en az %10 iskonto ve sermaye/hacim limitlerini geçen fırsatlar gösterilir.</p>
+        <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:10}}><label style={{display:'flex',gap:6,alignItems:'center'}}>İşlem profili <select value={portfolioProfile} onChange={e=>setPortfolioProfile(e.target.value as any)}><option value="FAST">FAST — mevcut fiyattan hızlı</option><option value="BALANCED">BALANCED — orta seviye limit emir</option><option value="PATIENT">PATIENT — daha avantajlı fiyatı bekle</option></select></label>
+          <label style={{display:'flex',gap:6,alignItems:'center'}}><input type="checkbox" checked={marketSoundEnabled} onChange={e=>setMarketSoundEnabled(e.target.checked)}/> Sesli fırsat alarmı</label>
+          <button type="button" onClick={()=>{setMarketScanTime(0);localStorage.setItem('osrs-market-weekly-time-v2','0');refresh()}}>Fiyatları ve haftalık ortalamayı yenile</button>
+          <span style={{fontSize:11,color:'#8b949e'}}>Haftalık veri: {marketWeeklyLoading?'çekiliyor…':marketScanTime?new Date(marketScanTime).toLocaleString('tr-TR'):'henüz alınmadı'} • Hazır ürün: {Object.keys(marketWeekly).length} • Yerel geçmiş: {Object.values(marketHistory).reduce((n,a)=>n+a.length,0).toLocaleString('tr-TR')} kayıt</span>
+        </div>
+        <div style={{padding:10,border:'1px solid #30363d',borderRadius:6,marginBottom:10}}><b>{marketRadarRows.length} ciddi fiyat iskontosu</b><div style={{fontSize:11,color:'#8b949e'}}>Alarm koşulu: 7 günlük ortalamaya göre ≥%10 düşüş • 24h hacim ≥1.000 • pozitif vergi sonrası ortalama dönüş • ürün başına en fazla %50 sermaye • 6 saatlik tahmini satış kapasitesi</div></div>
+        {marketRadarRows.length?<div className="tableBox"><table><thead><tr><th>Ürün / karar</th><th>Alış emri koy</th><th>Satış emri koy</th><th>Alış miktarı</th><th>Bağlanacak GP</th><th>Net kâr</th><th>Net GP/h</th><th>Alış / satış dolum tahmini</th><th>Toplam dönüş</th><th>İskonto</th><th>24h hacim</th><th>Hafta içi / sonu</th><th>Yoğun saat</th><th>Emir notu</th></tr></thead><tbody>{marketRadarRows.map((r:any)=><tr key={r.id}><td><b>{r.name}</b><div style={{fontSize:10,color:r.action==='BEKLE'?'#d29922':'#3fb950'}}>{r.action}{r.reason?` • ${r.reason}`:''}</div></td><td><b>{fmt(r.buyOffer)} GP</b></td><td><b>{fmt(r.sellOffer)} GP</b></td><td>{fmt(r.qty)}</td><td>{fmt(r.capital)} GP</td><td style={{color:'#3fb950'}}><b>{fmt(r.expectedProfit)} GP</b></td><td style={{color:r.expectedGpHour>=600000?'#3fb950':'#d29922'}}><b>{fmt(r.expectedGpHour)} GP/h</b></td><td>{r.buyFillHours===null?'Geçmiş yok':r.buyFillHours.toFixed(1)+'h'} / {r.sellFillHours===null?'Geçmiş yok':r.sellFillHours.toFixed(1)+'h'}</td><td style={{color:r.withinSixHours?'#3fb950':'#d29922'}}>{r.expectedHours===null?'Doğrulanamadı':r.expectedHours.toFixed(1)+'h'}{!r.withinSixHours?' • 6h üstü':''}</td><td style={{color:'#3fb950'}}><b>{fmt(r.discount*100,1)}%</b></td><td>{fmt(r.volume)}</td><td>{fmt(((marketWeekly[r.id]?.weekdayVolume||0)/5)/Math.max(1,(marketWeekly[r.id]?.weekendVolume||0)/2),2)}×</td><td>{marketWeekly[r.id]?.busiestHour??'—'}:00</td><td><button type="button" onClick={()=>copyText(`${r.name}\nProfil: ${r.profile}\nALIŞ EMRİ: ${r.buyOffer} GP × ${r.qty} adet\nSATIŞ EMRİ: ${r.sellOffer} GP\nSermaye: ${Math.round(r.capital)} GP\nTahmini net kâr: ${Math.round(r.expectedProfit)} GP\nTahmini net GP/h: ${Math.round(r.expectedGpHour)}\nTahmini dönüş: ${r.expectedHours?.toFixed(1)??'—'} saat`)}>Emri kopyala</button></td></tr>)}</tbody></table></div>:<div style={{padding:12,border:'1px solid #30363d',borderRadius:6}}>Canlı fiyat verisi henüz gelmedi. Üstteki ‘Fiyatları ve haftalık ortalamayı yenile’ düğmesine bas; yine boşsa OSRS Wiki fiyat API bağlantısı başarısız oluyor.</div>}
+        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}> FAST mevcut anlık alış/satış fiyatlarını; BALANCED 7 günlük düşük/yüksek fiyat dağılımının orta dilimlerini; PATIENT daha derin %20/%80 dilimlerini kullanır. Limit emirlerinin dolması garanti değildir. Dolum süresi, 7 günlük saatlik örneklerde hedef fiyatın görüldüğü saatlerin sıklığından tahmin edilir; 6 saati aşan dönüşler açıkça işaretlenir. Net kâr GE vergisi düşülerek hesaplanır. Alım miktarı toplam sermayenin %50'sini ve son 24h hacminin %5'ini aşmaz. Fiyatlar dakikada bir yenilenir; 7 günlük seri 30 dakikada bir güncellenir. Yerel fiyat/hacim örnekleri tarayıcıda saklanır. Tarama en yüksek hacimli 30 ürüne odaklanır.</p>
+      </section>}
+
+      {activeTab==='alchemy'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+        <h2 style={{marginTop:0}}>Alchemy & Skill-Free Processing</h2>
+        <p style={{fontSize:11,color:'#8b949e'}}>Bu bölüm bağımsızdır; ana Dashboard'da yalnızca genel kazanç sıralamasının ilk 10'una giren yöntemler gösterilir. GE alış/satış fiyatları ve rün fiyatları Wiki GE verisinden otomatik çekilir; maliyet alanları kilitlidir. Yalnızca işlem hızını düzenleyebilirsin.</p>
+        <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'end',padding:10,background:'#161b22',borderRadius:8,marginBottom:10}}>
+          <b style={{width:'100%'}}>İşlem hızı varsayılanı</b>
+          <label>High Alchemy işlem/saat <input type="number" min="1" value={alchemyDefaults.castsPerHour} onChange={e=>setAlchemyDefaults(o=>({...o,castsPerHour:Math.max(1,Number(e.target.value)||1)}))} style={{width:110}}/></label>
+          <label style={{display:'flex',alignItems:'center',gap:5}}><input type="checkbox" checked={alchemyDefaults.fireStaff} onChange={e=>setAlchemyDefaults(o=>({...o,fireStaff:e.target.checked}))}/> Fire staff kullanıyorum (Fire rune maliyeti 0)</label>
+          <button type="button" onClick={()=>{setAlchemyDefaults({castsPerHour:1200,fireStaff:true});setAlchemyEdits({});setConversionEdits({})}}>Tüm varsayılanları sıfırla</button>
+        </div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:10}}>
+          <input value={alchemySearch} onChange={e=>setAlchemySearch(e.target.value)} placeholder="Ürün / işlem ara..." style={{minWidth:230}}/>
+          <select value={alchemyAccessFilter} onChange={e=>setAlchemyAccessFilter(e.target.value)}><option value="ALL">F2P + Members</option><option value="F2P">F2P</option><option value="MEMBER">Members</option></select>
+          <select value={alchemyProfitFilter} onChange={e=>setAlchemyProfitFilter(e.target.value)}><option value="ALL">Kâr/Zarar: tümü</option><option value="PROFIT">Kârlı</option><option value="LOSS">Zarar / fiyat eksik</option></select>
+          <select value={alchemyDataFilter} onChange={e=>setAlchemyDataFilter(e.target.value)}><option value="ALL">Tüm veri</option><option value="LIVE">Varsayılan hız</option><option value="EDITED">Hızı düzenlenen</option></select>
+          <select value={alchemySort} onChange={e=>setAlchemySort(e.target.value)}><option value="GP_DESC">GP/h ↓</option><option value="GP_ASC">GP/h ↑</option><option value="PROFIT_DESC">Kâr/adet ↓</option><option value="VOLUME_DESC">Hacim ↓</option><option value="NAME_ASC">İsim A–Z</option></select>
+          <label style={{fontSize:11}}><input type="checkbox" checked={alchemyShowLocked} onChange={e=>setAlchemyShowLocked(e.target.checked)}/> Locked / Members göster</label>
+          <label style={{fontSize:11}}><input type="checkbox" checked={alchemyShowUnpriced} onChange={e=>setAlchemyShowUnpriced(e.target.checked)}/> Fiyatı eksik olanları göster</label>
+        </div>
+        {(()=>{const filterRows=(rows:any[],nameKey='name')=>rows.filter((r:any)=>!alchemySearch||String(r[nameKey]||'').toLowerCase().includes(alchemySearch.toLowerCase())).filter((r:any)=>alchemyAccessFilter==='ALL'||(alchemyAccessFilter==='F2P'?!r.member:r.member)).filter((r:any)=>alchemyShowLocked||!r.locked).filter((r:any)=>alchemyDataFilter==='ALL'||(alchemyDataFilter==='EDITED'?(r.id?alchemyEdits[r.id]?.rate!==undefined:conversionEdits[r.name]?.rate!==undefined):!(r.id?alchemyEdits[r.id]?.rate!==undefined:conversionEdits[r.name]?.rate!==undefined))).filter((r:any)=>alchemyProfitFilter==='ALL'||(alchemyProfitFilter==='PROFIT'?(r.gpHour??r.profit??-1)>0:(r.gpHour??r.profit??-1)<=0)).filter((r:any)=>{const price=r.itemBuy!==undefined?r.itemBuy:r.inputBuy;return alchemyShowUnpriced||(price!==null&&price!==undefined)}).sort((a:any,b:any)=>alchemySort==='GP_ASC'?((a.gpHour??-Infinity)-(b.gpHour??-Infinity)):alchemySort==='PROFIT_DESC'?((b.profit??-Infinity)-(a.profit??-Infinity)):alchemySort==='VOLUME_DESC'?((b.volume??-Infinity)-(a.volume??-Infinity)):alchemySort==='NAME_ASC'?String(a.name).localeCompare(String(b.name)):((b.gpHour??-Infinity)-(a.gpHour??-Infinity)));return <>
+          <h3>High Alchemy <span style={{fontSize:11,color:'#8b949e'}}>({filterRows(alchemyRows).length} eşleşme)</span></h3>
+          <div className="tableBox"><table><thead><tr><th>İşlem / alınan ürün ve canlı alış maliyetleri</th><th>Üyelik</th><th>Satış / High Alch geliri</th><th>Nature rune maliyeti</th><th>Fire rune maliyeti</th><th>Toplam maliyet</th><th>Expected Profit/item</th><th>Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Piyasa</th><th>24h hacim</th><th>Edit</th></tr></thead><tbody>
+          {filterRows(alchemyRows).map((r:any)=><tr key={r.id}><td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>Alış: {r.itemBuy===null?'FİYAT YOK':`${fmt(r.itemBuy)} GP`} ×1 + Nature rune ×1: {r.natureCost===null?'FİYAT YOK':`${fmt(r.natureCost)} GP`}{!alchemyDefaults.fireStaff?` + Fire rune ×5: ${r.fireCost===null?'FİYAT YOK':fmt(r.fireCost)+' GP'}`:''}</div></td><td>{r.member?'MEMBERS':'F2P'}</td><td>{fmt(r.alchValue)} GP coin</td><td>{r.natureCost===null?'FİYAT YOK':fmt(r.natureCost)}</td><td>{alchemyDefaults.fireStaff?'0 (Fire staff)':r.fireCost===null?'FİYAT YOK':fmt(r.fireCost)}</td><td>{r.itemBuy===null||r.natureCost===null||(!alchemyDefaults.fireStaff&&r.fireCost===null)?'FİYAT YOK':fmt(r.itemBuy+r.natureCost+(r.fireCost||0))}</td><td style={{color:r.profit===null?'#8b949e':r.profit>0?'#3fb950':'#f85149'}}>{fmt(r.profit)}</td><td>{fmt(r.rate)}</td><td><b>{fmt(r.gpHour)}</b></td><td>{fmt(r.capacityGpHour)}</td><td>{r.liquidityLabel}</td><td>{fmt(r.volume)}</td><td><button type="button" onClick={()=>setAlchemyEditId(alchemyEditId===r.id?null:r.id)}>{alchemyEditId===r.id?'Kapat':'Edit'}</button></td></tr>)}
+          {!filterRows(alchemyRows).length&&<tr><td colSpan={13}>Filtreye uygun High Alchemy ürünü yok.</td></tr>}
+          </tbody></table></div>
+          {alchemyEditId&&(()=>{const r=alchemyRows.find((x:any)=>x.id===alchemyEditId);if(!r)return null;const e=alchemyEdits[r.id]||{};return <div style={{padding:10,border:'1px solid #58a6ff',borderRadius:8,margin:'8px 0'}}><b>Edit — {r.name}</b><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
+            <label>İşlem/saat <input type="number" min="1" value={e.rate??r.rate} onChange={ev=>setAlchemyEdits(o=>({...o,[r.id]:{rate:Math.max(1,Number(ev.target.value)||1)}}))}/></label>
+            <button type="button" onClick={()=>setAlchemyEdits(o=>{const n={...o};delete n[r.id];return n})}>Hızı varsayılana döndür</button></div><div style={{fontSize:10,color:'#8b949e',marginTop:6}}>Alış fiyatı, High Alchemy değeri ve rün maliyetleri otomatik alınır; bu alanlar manuel değiştirilemez.</div></div>})()}
+          <h3>Skill gerektirmeyen dönüşümler <span style={{fontSize:11,color:'#8b949e'}}>({filterRows(noSkillConversions).length} eşleşme)</span></h3>
+          <div className="tableBox"><table><thead><tr><th>İşlem / girdi maliyeti</th><th>Durum</th><th>NPC işlem ücreti</th><th>Satış fiyatı (canlı GE)</th><th>GE vergisi</th><th>Toplam maliyet</th><th>Expected Profit/item</th><th>Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Piyasa</th><th>Edit</th></tr></thead><tbody>
+          {filterRows(noSkillConversions).map((r:any)=><tr key={r.name}><td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.location}</div><div style={{fontSize:10,color:'#8b949e'}}>Alış: {r.input} ×1 = {r.inputBuy===null?'FİYAT YOK':fmt(r.inputBuy)+' GP'}</div></td><td>{r.locked?'MEMBERS':'SKILL GEREKMİYOR'}</td><td>{fmt(r.fee)} GP</td><td>{r.outputSell===null?'FİYAT YOK':`${fmt(r.outputSell)} GP (${r.output})`}</td><td>{fmt(r.tax)}</td><td>{r.cost===null?'FİYAT YOK':fmt(r.cost)}</td><td style={{color:r.profit===null?'#8b949e':r.profit>0?'#3fb950':'#f85149'}}>{fmt(r.profit)}</td><td>{fmt(r.rate)}</td><td><b>{fmt(r.gpHour)}</b></td><td>{fmt(r.capacityGpHour)}</td><td>{r.liquidityLabel}</td><td><button type="button" onClick={()=>setConversionEditId(conversionEditId===r.name?null:r.name)}>{conversionEditId===r.name?'Kapat':'Edit'}</button></td></tr>)}
+          {!filterRows(noSkillConversions).length&&<tr><td colSpan={12}>Filtreye uygun dönüşüm yok.</td></tr>}
+          </tbody></table></div>
+          {conversionEditId&&(()=>{const r=noSkillConversions.find((x:any)=>x.name===conversionEditId);if(!r)return null;const e=conversionEdits[r.name]||{};return <div style={{padding:10,border:'1px solid #58a6ff',borderRadius:8,margin:'8px 0'}}><b>Edit — {r.name}</b><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
+            <label>İşlem/saat <input type="number" min="1" value={e.rate??r.rate} onChange={ev=>setConversionEdits(o=>({...o,[r.name]:{rate:Math.max(1,Number(ev.target.value)||1)}}))}/></label>
+            <button type="button" onClick={()=>setConversionEdits(o=>{const n={...o};delete n[r.name];return n})}>Hızı varsayılana döndür</button></div><div style={{fontSize:10,color:'#8b949e',marginTop:6}}>Girdi alış, çıktı satış ve sabit NPC ücreti otomatik/oyun verisinden alınır; maliyetler manuel değiştirilemez.</div></div>})()}
+          <h3>Alternatif kullanım karşılaştırması</h3>
+          <p style={{fontSize:11,color:'#8b949e'}}>Aynı ürünü High Alchemy yapmak mı yoksa GE’de satmak mı daha mantıklı? İşlenebilir hammaddelerde ise işlemek mi yoksa girdileri doğrudan satmak mı daha iyi? Karşılaştırma, her iki seçenek için de aynı girdinin canlı alış maliyetini baz alır. Pozitif fark, seçilen işlem lehinedir.</p>
+          <div className="tableBox"><table><thead><tr><th>Ürün / girdi</th><th>Seçenek</th><th>Alternatif</th><th>Alternatif net kâr/adet</th><th>İşlem net kâr/adet</th><th>Fark (işlem − alternatif)</th><th>Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Piyasa durumu</th></tr></thead><tbody>
+          {alternativeUseRows.slice(0,250).map((r:any)=><tr key={r.id}><td><b>{r.item}</b>{r.output&&<div style={{fontSize:10,color:'#8b949e'}}>→ {r.output}</div>}</td><td>{r.method}</td><td>{r.alternativeName}</td><td>{fmt(r.alternativeProfit)}</td><td>{fmt(r.chosenProfit)}</td><td style={{color:r.delta===null?'#8b949e':r.delta>0?'#3fb950':r.delta<0?'#f85149':'inherit'}}><b>{fmt(r.delta)}</b>{r.delta!==null&&<div style={{fontSize:10}}>{r.delta>0?'İşlem daha iyi':r.delta<0?'Alternatif daha iyi':'Başabaş'}</div>}</td><td>{fmt(r.rate)}</td><td>{fmt(r.gpHour)}</td><td>{fmt(r.capacityGpHour)}</td><td>{r.liquidity||'—'}</td></tr>)}
+          {!alternativeUseRows.length&&<tr><td colSpan={10}>Karşılaştırma için yeterli canlı fiyat verisi bulunamadı.</td></tr>}
+          </tbody></table></div>
+          <p style={{fontSize:10,color:'#8b949e'}}>Gerçekleşebilir kapasite GP/h, her gerekli ürünün 24 saatlik GE hacminin en fazla %5’inin alınabileceği/satılabileceği varsayımıyla ve günlük çalışma sürene göre sınırlandırılır. Hacim verisi eksikse yöntem Top 10’a alınmaz. Bu konservatif bir planlama varsayımıdır; gerçek GE emir dolum süresinin garantisi değildir. High Alchemy kârı = sabit alch geliri − ürün alış fiyatı − Nature rune ve gerekirse Fire rune maliyeti.</p>
+        </>})()}
+      </section>}
+
+
+      {activeTab==='alchemyGoal'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+        <h2 style={{marginTop:0}}>High Alchemy — Kâr Hedefi Planlayıcı</h2>
+        <p style={{fontSize:11,color:'#8b949e'}}>Hedef net kârını gir. Program canlı GE fiyatlarını ve rune maliyetlerini kullanır. Günlük plan yalnızca GE alış limiti en az 70 adet olan ve mevcut hacim verisine göre muhafazakâr piyasa kapasitesi en az 70 adet/gün olan ürünleri listeler. Hacim verisi eksik, düşük hacimli veya özel/nadir ürünler otomatik elenir. Her ürün için tek bir 4 saatlik GE alış limiti kullanılır; sıralama net kâr/adet en yüksekten başlar.</p>
+        <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'end',padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8,marginBottom:12}}>
+          <label style={{fontWeight:700}}>Hedef net kâr (GP)<br/><input type="number" min="1" step="10000" value={alchemyGoalTarget} onChange={e=>setAlchemyGoalTarget(Math.max(1,Number(e.target.value)||1))} style={{width:190,fontSize:18,fontWeight:800}}/></label>
+          <div><div style={{fontSize:10,color:'#8b949e'}}>Planlanan net kâr</div><strong style={{fontSize:20,color:alchemyGoalPlan.complete?'#3fb950':'#f85149'}}>{fmt(alchemyGoalPlan.totalProfit)} GP</strong></div>
+          <div><div style={{fontSize:10,color:'#8b949e'}}>Ürün alışları + rünler</div><strong style={{fontSize:20}}>{fmt(alchemyGoalPlan.totalCost)} GP</strong></div>
+          <div><div style={{fontSize:10,color:'#8b949e'}}>Toplam eşya</div><strong style={{fontSize:20}}>{fmt(alchemyGoalPlan.totalItems)}</strong></div>
+          <div><div style={{fontSize:10,color:'#8b949e'}}>Durum</div><strong style={{color:alchemyGoalPlan.complete?'#3fb950':'#f85149'}}>{alchemyGoalPlan.complete?'HEDEFE ULAŞILDI':'LİMİTLERLE HEDEF TAMAMLANAMIYOR'}</strong></div>
+        </div>
+        {!alchemyGoalPlan.complete&&<p style={{color:'#f85149',fontSize:12}}>Mevcut fiyatı kârlı, fiyatı güncel ve alış limiti bilinen ürünlerin her birinden bir GE limit penceresi kullanıldığında hedefe ulaşılamıyor. Eksik kalan: {fmt(alchemyGoalPlan.remaining)} GP. Daha sonra 4 saatlik limitler yenilenince aynı ürünlerden tekrar alınabilir; bu tabloda aynı ürün için limit aşımı yapılmıyor.</p>}
+        <div className="tableBox"><table><thead><tr><th>#</th><th>Ürün</th><th>GE alış limiti / önerilen adet</th><th>Alış fiyatı/adet</th><th>Alch geliri/adet</th><th>Nature rune</th><th>Fire rune</th><th>Toplam maliyet/adet</th><th>Net kâr/adet</th><th>Toplam ürün alış maliyeti</th><th>Toplam rün maliyeti</th><th>Genel toplam maliyet</th><th>Toplam net kâr</th><th>GP/h (tahmin)</th><th>4 saatlik alım sayacı</th></tr></thead><tbody>
+          {alchemyGoalPlan.rows.map((r:any,i:number)=>{const startedAt=alchemyGoalTimers[r.id];const remainingMs=startedAt?Math.max(0,4*60*60*1000-(alchemyGoalClock-startedAt)):0;const timerActive=Boolean(startedAt&&remainingMs>0);const countdown=remainingMs>0?(()=>{const seconds=Math.ceil(remainingMs/1000);return `${String(Math.floor(seconds/3600)).padStart(2,'0')}:${String(Math.floor((seconds%3600)/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`})():null;return <tr key={r.id}><td>{i+1}</td><td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.member?'MEMBERS':'F2P'} • High Alchemy</div></td><td><b>{fmt(r.qty)}</b> / {fmt(r.buyLimit)} <div style={{fontSize:10,color:'#8b949e'}}>limit başına 4 saat</div></td><td>{fmt(r.itemBuy)} GP</td><td>{fmt(r.alchValue)} GP</td><td>{fmt(r.natureCost)} GP</td><td>{alchemyDefaults.fireStaff?'0 (Fire staff)':fmt(r.fireCost)+' GP'}</td><td>{fmt(r.costPer)} GP</td><td style={{color:'#3fb950'}}><b>{fmt(r.profit)} GP</b></td><td>{fmt(r.totalItemCost)} GP</td><td>{fmt(r.totalRuneCost)} GP</td><td>{fmt(r.totalCost)} GP</td><td style={{color:'#3fb950'}}><b>{fmt(r.totalProfit)} GP</b></td><td>{fmt(r.gpHour)}</td><td style={{minWidth:150}}><label style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer'}}><input type="checkbox" checked={timerActive} onChange={e=>setAlchemyGoalTimers(o=>{const next={...o};if(e.target.checked)next[r.id]=Date.now();else delete next[r.id];return next})}/><span style={{fontVariantNumeric:'tabular-nums',fontWeight:700,color:timerActive?'#d29922':'#8b949e'}}>{countdown|| (startedAt?'Süre doldu':'Başlat')}</span></label><div style={{fontSize:10,color:'#8b949e'}}>Tikle: 04:00:00 başlar</div></td></tr>})}
+          {!alchemyGoalPlan.rows.length&&<tr><td colSpan={15}>Şu anda alış limiti ve fiyat bilgisi bulunan kârlı High Alchemy ürünü yok. GE fiyatları/ürün verileri güncellendikten sonra tekrar dene.</td></tr>}
+          </tbody></table></div>
+        <p style={{fontSize:10,color:'#8b949e',marginTop:8}}>Fiyatlar GE Wiki API verilerinden otomatik alınır; alış fiyatı anlık kesin dolum fiyatı değildir. Plan filtresi: GE alış limiti ≥70 adet ve muhafazakâr piyasa kapasitesi ≥70 adet/gün; eksik hacim verisi olan ürünler alınmaz. Nature rune ve gerekirse Fire rune maliyetleri kârdan düşülür. GP/h işlem hızına dayalı tahmindir; gerçek emir dolumunu garanti etmez.</p>
+      </section>}
+
+            {activeTab==='dashboard'&&<div>
+              <section style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+                <h3 style={{marginTop:0,marginBottom:8}}>Skill Seviyelerim</h3>
+                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Buradaki seviyeler Dashboard, 21 Skill Views ve Money Methods sonuçlarını birlikte günceller.</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:7}}>
+                  {Object.keys(levels).map(s=><label key={s} style={{display:'flex',alignItems:'center',gap:4,fontSize:11}}>{s}
+                    <input type="number" min="1" max="99" value={levels[s]} onChange={e=>setLevels(old=>({...old,[s]:clamp(Number(e.target.value),1,99)}))} style={{width:50,background:'#0d1117',color:'white',border:'1px solid #30363d',borderRadius:4,padding:4}}/>
+                  </label>)}
+                </div>
+              </section>
+              <section style={{marginBottom:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+                <h3 style={{marginTop:0}}>Live Money Ranking / Candidate Lab</h3>
+                <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>İlk 10, skill aktiviteleri + Alchemy + skill gerektirmeyen dönüşümler arasındaki pozitif tahmini Capacity GP/h değerine göre sıralanır. Alchemy/dönüşüm yöntemleri yalnızca ilk 10’a girdiklerinde burada görünür; tam listeleri kendi sekmelerindedir.</div>
+                <label style={{fontSize:10,display:'inline-flex',gap:5,alignItems:'center',marginBottom:7}}><input type="checkbox" checked={v5IncludeUnverified} onChange={e=>setV5IncludeUnverified(e.target.checked)}/> Candidate Lab — ESTIMATE / TEST REQUIRED</label>
+                <div className="tableBox"><table><thead><tr><th>Activity</th><th>Skill</th><th>Current Input Cost</th><th>Market Expected Sell</th><th>Expected Profit/item</th><th>Effective Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Market basis</th><th>Rate Source</th><th>Liquidity</th><th>Quality</th></tr></thead><tbody>
+                {v5Top.map((x:any)=><tr key={x.id}><td className="name">{x.name}<div style={{fontSize:9,color:'#8b949e'}}>{x.kind==='skill'&&x.economy?(x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div></>:<div>Canlı fiyat modeli: {x.economy.liveEligible?'fiyat eşleşmesi eksik':'henüz tanımlı değil'}</div>):x.kind==='alchemy'?<>{x.inputText&&<div>Alış: {x.inputText}</div>}<div>Satış: {x.outputText}</div></>:x.kind==='conversion'?<>{x.inputText&&<div>Alış: {x.inputText}</div>}<div>Satış: {x.outputText}</div></>:''}</div></td><td>{x.skillLabel}</td><td>{fmt(x.inputCost)}</td><td>{fmt(x.outputPrice)}</td><td>{fmt(x.profitEach)}</td><td>{fmt(x.rate)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.capacityGp)}</td><td>{x.marketBasis}</td><td>{x.rateSource}</td><td>{x.liquidityLabel}{x.batchVolumePct!==null&&x.batchVolumePct!==undefined?<div style={{fontSize:9}}>{fmt(x.batchVolumePct,1)}% / {x.batchSize}</div>:null}</td><td>{x.quality}{v5IncludeUnverified&&x.quality!=='VERIFIED'?<div style={{fontSize:9,fontWeight:800}}>ESTIMATE / TEST REQUIRED</div>:null}</td></tr>)}
+                {!v5Top.length&&<tr><td colSpan={12}>Mevcut level/mod ile VERIFIED pozitif GP/h adayı yok.</td></tr>}
+                </tbody></table></div>
+                <div style={{fontSize:10,marginTop:6}}>V5 katalog: <b>{V5_CATALOGUE.length}</b> activity • VERIFIED: <b>{qualityCounts.VERIFIED}</b> • PLACEHOLDER: <b>{qualityCounts.PLACEHOLDER}</b> • OPEN: <b>{v5Rows.filter(x=>x.open).length}</b> • Editlenmiş: <b>{Object.keys(v5Edits).length}</b></div>
+              </section>
+<section id="dashboard" className="cards">
+        <div className="card">
+          <label>ACCOUNT MODE</label>
+          <select
+            value={mode}
+            onChange={(e) =>
+              setMode(e.target.value as AccountMode)
+            }
+            style={{ width: '100%' }}
+          >
+            <option value="F2P">F2P</option>
+            <option value="MEMBER">MEMBER</option>
+          </select>
+        </div>
+
+        <div className="card">
+          <label>MEVCUT GP</label>
+          <input
+            type="number"
+            value={gp}
+            min="0"
+            onChange={(e) =>
+              setGp(Math.max(0, Number(e.target.value)))
+            }
+          />
+        </div>
+
+        <div className="card">
+          <label>HEDEF ÜRETİM</label>
+          <input
+            type="number"
+            value={quantity}
+            min="1"
+            onChange={(e) =>
+              setQuantity(
+                Math.max(1, Number(e.target.value))
+              )
+            }
+          />
+        </div>
+
+        <div className="card">
+          <label>HEDEF SÜRE</label>
+          <select
+            value={targetHours}
+            onChange={(e) => setTargetHours(Number(e.target.value))}
+            style={{ width: '100%' }}
+          >
+            <option value={0.5}>30 dakika</option>
+            <option value={1}>1 saat</option>
+            <option value={2}>2 saat</option>
+            <option value={3}>3 saat</option>
+          </select>
+        </div>
+
+        <div className="card">
+          <label>BOND / KALAN</label>
+          <strong>{fmt(bond)} GP</strong>
+          <span
+            style={{
+              fontSize: 11,
+              color: '#8b949e',
+            }}
+          >
+            Kalan: {fmt(missing)}
+          </span>
+        </div>
+
+        <div className="card">
+          <label>BOND İLERLEME</label>
+          <strong>
+            {bond ? bondProgress.toFixed(2) : '—'}%
+          </strong>
+          <div className="bar">
+            <div
+              style={{
+                width: `${bondProgress}%`,
+              }}
+            />
+          </div>
+        </div>
+      </section>
+
+      <section id="bond-planner" style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:10,flexWrap:'wrap',alignItems:'center'}}>
+          <div style={{fontWeight:'bold',color:'#e3b341'}}>BOND SUSTAINABILITY ENGINE — V4.4</div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            <button type="button" onClick={downloadFullBackup}>Tam Yedek Al</button>
+            <label><span style={{display:'inline-block',padding:'5px 9px',border:'1px solid #30363d',borderRadius:5,cursor:'pointer'}}>Yedeği Geri Yükle</span><input type="file" accept=".json,application/json" style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0];if(f)restoreFullBackup(f);e.currentTarget.value=''}}/></label>
+          </div>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:8,marginTop:10}}>
+          <div style={{padding:9,border:'1px solid #30363d',borderRadius:6}}><div style={{fontSize:9,color:'#8b949e'}}>SURVIVAL STATUS</div><b style={{fontSize:15}}>{sustainabilityStatus}</b><div style={{fontSize:9}}>Senaryo: {bondScenario}</div></div>
+          <div style={{padding:9,border:'1px solid #30363d',borderRadius:6}}><div style={{fontSize:9,color:'#8b949e'}}>40 / 50 SAAT EŞİĞİ</div><b>{fmt(requiredNetGp40)} / {fmt(requiredNetGp50)} GP/h</b><div style={{fontSize:9}}>Minimum sürdürülebilir net hız</div></div>
+          <div style={{padding:9,border:'1px solid #30363d',borderRadius:6}}><div style={{fontSize:9,color:'#8b949e'}}>ÖLÇÜM GÜVENİ</div><b>{measurementConfidence}</b><div style={{fontSize:9}}>{measurementCount} ölçüm • {measuredMethodCount} gerçek hızlı yöntem</div></div>
+          <div style={{padding:9,border:'1px solid #30363d',borderRadius:6}}><div style={{fontSize:9,color:'#8b949e'}}>SAFE BOND READY</div><b>{bond&&gp>=bondTarget?'EVET':'HAYIR'}</b><div style={{fontSize:9}}>Bond + capital + buffer</div></div>
+        </div>
+        <div style={{display:'flex',flexWrap:'wrap',gap:8,fontSize:11,marginTop:10}}>
+          <label>Aktif gün <input type="number" min="1" max="14" value={bondActiveDays} onChange={e=>setBondActiveDays(clamp(Number(e.target.value)||10,1,14))} style={{width:50}}/></label>
+          <label>Günlük max <select value={dailyMaxHours} onChange={e=>setDailyMaxHours(Number(e.target.value))}><option value={1}>1h</option><option value={2}>2h</option><option value={3}>3h</option><option value={4}>4h</option><option value={5}>5h</option></select></label>
+          <label>Saat bütçesi <select value={bondHoursBudget} onChange={e=>setBondHoursBudget(Number(e.target.value))}><option value={20}>20h</option><option value={30}>30h</option><option value={40}>40h</option><option value={50}>50h</option></select></label>
+          <label>Senaryo <select value={bondScenario} onChange={e=>setBondScenario(e.target.value as BondScenario)}><option value="CONSERVATIVE">Conservative</option><option value="EXPECTED">Expected</option></select></label>
+          <label>Öncelik <select value={progressionPriority} onChange={e=>setProgressionPriority(e.target.value as ProgressionPriority)}><option value="PROFIT">Profit</option><option value="BALANCED">Balanced</option><option value="PROGRESSION">Progression</option></select></label>
+          <label>Working capital <input type="number" min="0" step="100000" value={bondReserve} onChange={e=>setBondReserve(Math.max(0,Number(e.target.value)||0))} style={{width:100}}/></label>
+          <label>Emergency buffer <input type="number" min="0" step="100000" value={emergencyBuffer} onChange={e=>setEmergencyBuffer(Math.max(0,Number(e.target.value)||0))} style={{width:100}}/></label>
+          <label>Yorgunluk <select value={playerMode} onChange={e=>setPlayerMode(e.target.value as PlayerMode)}><option>ACTIVE</option><option>NORMAL</option><option>CHILL</option></select></label>
+          <label>Bond yöntemi <select value={selectedBondMethod} onChange={e=>setSelectedBondMethod(e.target.value)}><option value="">Otomatik en iyi</option>{allOpenMethods.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
+        </div>
+        <div style={{marginTop:10,fontSize:11,lineHeight:1.65}}>
+          Bond {fmt(bond)} + Working Capital {fmt(bondReserve)} + Buffer {fmt(emergencyBuffer)} = <b>{fmt(bondTarget)} GP güvenli hedef</b> • Eksik <b>{fmt(remainingSafeGp)}</b><br/>
+          Seçili: <b>{chosenBondMethod?.name||'—'}</b> • {chosenBondMethod?.source||'—'} • Ham {fmt(realisticGpHour)} GP/h • Senaryo sonrası <b>{fmt(sustainableGpHour)} GP/h</b><br/>
+          {bondHoursBudget} saat bütçesinde gereken <b>{fmt(requiredNetGpBudget)} GP/h</b> • Tahmini <b>{sustainableHours===null?'—':fmt(sustainableHours,1)+' saat'}</b>
+        </div>
+        <div style={{marginTop:10,padding:9,border:'1px solid #30363d',borderRadius:6,fontSize:10}}>
+          <b>10-DAY PLAN CHECK</b><br/>Kapasite: {bondActiveDays} gün × {dailyMaxHours}h = <b>{fmt(planCapacityHours,1)} saat</b> • Tahmini bitiş <b>{expectedCompletionDays===null?'—':`Day ${expectedCompletionDays}`}</b> • Buffer <b>{bufferDays===null?'—':bufferDays+' gün'}</b><br/>
+          {sustainableHours!==null && sustainableHours<=planCapacityHours ? '✓ Plan seçili zaman bütçesine sığıyor.' : '⚠ Plan zaman bütçesine sığmıyor veya veri yetersiz.'}
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:8,marginTop:10,fontSize:10}}>
+          <div style={{padding:8,border:'1px solid #238636',borderRadius:6}}><b>PRIMARY MONEY MAKER</b><div>{primaryMoneyMaker?.name||'NEEDS DATA'}</div><div>{primaryMoneyMaker?`${fmt(primaryMoneyMaker.gpHour)} GP/h • ${primaryMoneyMaker.source}`:'—'}</div></div>
+          <div style={{padding:8,border:'1px solid #9e6a03',borderRadius:6}}><b>LOW-ATTENTION BACKUP</b><div>{lowAttentionBackup?.name||'NEEDS DATA'}</div><div>{lowAttentionBackup?`${fmt(lowAttentionBackup.gpHour)} GP/h • ${lowAttentionBackup.attention}`:'—'}</div></div>
+          <div style={{padding:8,border:'1px solid #1f6feb',borderRadius:6}}><b>MARKET / LIMIT BACKUP</b><div>{marketBackup?.name||'NEEDS DATA'}</div><div>{marketBackup?`${fmt(marketBackup.gpHour)} GP/h • ${marketBackup.source}`:'—'}</div></div>
+        </div>
+        <details style={{marginTop:10,fontSize:10}}><summary style={{cursor:'pointer',fontWeight:700}}>High Alch Scanner / Basket — veri durumu</summary><div style={{padding:8,border:'1px solid #30363d',borderRadius:6,marginTop:6}}><b>NEEDS DATA:</b> Güvenilir High Alch value + buy limit dataset'i olmadığı için otomatik basket uydurulmadı. Mevcut High Alch yöntemleri Money Methods içinde çalışmaya devam eder.</div></details>
+      </section>
+
+      {mode==='MEMBER' && <section style={{marginBottom:12,padding:10,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+        <b>MEMBER REQUIREMENTS / UNLOCKS</b>
+        <div style={{fontSize:10,color:'#8b949e',margin:'5px 0 8px'}}>Yalnız kalıcı quest/access unlocklarını işaretle. Normal satın alınabilir ekipman activity'yi kilitlemez.</div>
+        {requirementGroups.map(group=><details key={group.title} style={{marginBottom:6,border:'1px solid #30363d',borderRadius:6,padding:7}}>
+          <summary style={{cursor:'pointer',fontWeight:700}}>{group.title} — {group.items.filter(x=>requirements[x]).length}/{group.items.length}</summary>
+          <div style={{display:'flex',flexWrap:'wrap',gap:7,marginTop:8}}>
+            {group.items.map(x=><label key={x} style={{fontSize:10}}><input type="checkbox" checked={!!requirements[x]} onChange={e=>setRequirements(o=>({...o,[x]:e.target.checked}))}/>{x}</label>)}
+          </div>
+        </details>)}
+      </section>}
+
+      {mode==='MEMBER' && <section style={{marginBottom:12,padding:10,background:'#161b22',border:'1px solid #8957e5',borderRadius:8}}>
+        <div style={{fontWeight:800,color:'#d2a8ff',marginBottom:4}}>MEMBER THEORY PREVIEW — V4</div>
+        <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Canlı GE hesabı değil; rota seçmek için kaba GP/h başlangıç verisi. GERÇEK ölçüm her zaman teorinin önündedir.</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))',gap:8}}>
+          <div style={{border:'1px solid #238636',borderRadius:6,padding:8}}>
+            <b>Şu an OPEN — teori</b>
+            {v4TheoryOpenTop.length ? v4TheoryOpenTop.map((r:any,i:number)=><div key={r.id} style={{marginTop:5,fontSize:10}}>#{i+1} {r.activity.name} — <b>{fmt(r.gpHour)} GP/h</b> • TAHMİN • {r.skillReq}</div>) : <div style={{marginTop:5,fontSize:10}}>Mevcut level/unlocklarla teorik MEMBER aday yok.</div>}
+          </div>
+          <div style={{border:'1px solid #1f6feb',borderRadius:6,padding:8}}>
+            <b>Gelecek potansiyeli — teori</b>
+            {v4TheoryFutureTop.map((r:any,i:number)=><div key={r.id} style={{marginTop:5,fontSize:10}}>#{i+1} {r.activity.name} — <b>{fmt(r.gpHour)} GP/h</b> • {r.skillReq} • {r.missing.slice(0,2).join(' / ')||'LOCKED'}</div>)}
+          </div>
+        </div>
+      </section>}
+
+      <section style={{marginBottom:12}}><div style={{fontWeight:'bold',fontSize:12,marginBottom:5}}>D — Bond Sustain Top 3</div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:8}}>{bondSustainTop3.map((m,i)=><div key={m.id} style={{background:'#12261a',border:'1px solid #8957e5',borderRadius:7,padding:9,fontSize:11}}><b>#{i+1} — {m.name}</b><div>{fmt(m.gpHour)} Capacity GP/h • {m.source} • {m.attention} • confidence {m.confidence}</div></div>)}</div></section>
+
+      <section style={{marginBottom:10,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+          <b style={{fontSize:14}}>BUY ORDER OPPORTUNITY — En Yakın 10 Malzeme</b>
+          <span style={{fontSize:10,color:'#8b949e'}}>Global item hedefleri • unique input item • açık + hedef fiyatta kârlı reçeteler</span>
+        </div>
+        {v5BuyOrderItems.length?v5BuyOrderItems.map((item,i)=>{
+          const status=item.targetHit?'HEDEF FİYAT GELDİ':item.proximity>=95?'ÇOK YAKIN':item.proximity>=90?'YAKIN':item.proximity>=80?'ORTA':item.proximity>=70?'UZAK':'ÇOK UZAK'
+          const color=item.targetHit?'#238636':item.proximity>=95?'#1f6f3d':item.proximity>=90?'#2ea043':item.proximity>=80?'#d29922':item.proximity>=70?'#db6d28':'#da3633'
+          return <div key={item.name} style={{marginTop:10,padding:12,border:`2px solid ${color}`,borderRadius:8,background:'#0d1117'}}>
+            {item.targetHit&&<div style={{fontSize:15,fontWeight:900,color:'#3fb950',marginBottom:4}}>🔥 HEDEF FİYAT GELDİ</div>}
+            <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+              <div>
+                <div style={{fontSize:18,fontWeight:900}}>#{i+1} {item.name}</div>
+                <div style={{fontSize:15,fontWeight:800,marginTop:3}}>Canlı: {fmt(item.live)} GP → Hedef: {fmt(item.target)} GP</div>
+                <div style={{fontSize:12,marginTop:3}}>Hedefe fark: {item.gap>=0?'+':''}{fmt(item.gap)} GP | {item.gapPct>=0?'+':''}{item.gapPct.toFixed(1)}%</div>
+              </div>
+              <div style={{minWidth:170,textAlign:'center',padding:'8px 12px',borderRadius:8,border:`2px solid ${color}`}}>
+                <div style={{fontSize:26,fontWeight:900,color}}>%{item.proximity.toFixed(1)}</div>
+                <div style={{fontSize:11,fontWeight:900,color}}>{status}</div>
+                <div style={{fontSize:9,color:'#8b949e'}}>HEDEFE YAKIN</div>
+              </div>
+            </div>
+            <div style={{fontSize:10,color:'#8b949e',marginTop:8}}><b>En kârlı kullanım:</b> {item.recipes.map(r=>r.name).join(' • ')}</div>
+          </div>
+        }):<div style={{marginTop:8,fontSize:11}}>Henüz global hedef alış fiyatı tanımlanmış ve hedef fiyatta kârlı en az bir açık reçetede kullanılan item yok.</div>}
+      </section>
+      <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #30363d',borderRadius:7,fontSize:11}}><b>Next Profitable Unlock — ekonomik öncelik</b>{nextUnlocks.length?nextUnlocks.map(r=><div key={r.id}>{r.name}: {r.skills.join('/')} {r.current}→{r.level} ({r.levelsMissing} level / {fmt(r.xpMissing)} XP) • Expected {fmt(r.gp)} GP/h • Capacity {fmt(r.capacityAdjustedGpHour)} GP/h • {r.rateSource}</div>):<div>Doğrulanmış ve ekonomik modeli hazır yakın unlock bulunamadı.</div>}<div style={{marginTop:7}}><b>F2P → First Bond Preparation</b>{bondPrepRemaining.slice(0,6).map(r=><div key={r.skill}>{r.skill}: {r.current}→{r.target} • {r.missing} level • {fmt(r.xpMissing)} XP</div>)}{!bondPrepRemaining.length&&<div>Bond activation skill hedefleri tamam.</div>}<div>Hitpoints: combat ile doğal ilerleme.</div></div></section>
+
+      {(mode==='MEMBER' || (bond&&gp>=bond)) && <section style={{marginBottom:10,padding:10,background:'#161b22',border:'1px solid #8957e5',borderRadius:7,fontSize:11}}><b>FIRST BOND TRANSITION PLAN</b><div>1) Member skill seviyelerini gir ve yalnızca gerçekten sahip olduğun quest/access kutularını işaretle.</div><div>2) İlk hedef: Bond + reserve için <b>{fmt(bondTarget)}</b> GP çalışma tabanı.</div><div>3) Şu an ekonomik rota: <b>{bondSustainTop3[0]?.name||'ölçüm/veri gerekli'}</b>{bondSustainTop3[0]?` — ${fmt(bondSustainTop3[0].gpHour)} GP/h`:''}.</div><div>4) Bond+reserve güvenceye girdikten sonraki GP <b>Progression GP</b> olarak quest/gear/skill gelişimine ayrılır.</div></section>}
+
+            </div>}
+
+      
+      {activeTab==='smart'&&<div>
+        <section style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+          <h2 style={{marginTop:0,color:'#f0f6fc',fontWeight:900,letterSpacing:'.2px'}}>SMART ORDER / 24H ORDER ADVISOR</h2>
+          <div style={{fontSize:10,color:'#8b949e',marginBottom:10}}>OSRS Wiki 5m zaman serisinin son 24 saati kullanılır. FAST ağırlıklı {'<1 saat'}, BALANCED 1–6 saat, PATIENT 6–24 saat penceresini hedefler. Tekil spike/dipler median/MAD filtresiyle bastırılır; fiyat dağılımı, hacim ve ilgili fiyat seviyesindeki işlem yoğunluğu birlikte değerlendirilir. Dolum aralıkları tahmindir, garanti değildir.</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'end'}}>
+            <label>Item<br/><input value={smartSearch} onChange={e=>setSmartSearch(e.target.value)} placeholder="Ruby, Sapphire..." style={{width:180}}/></label>
+            <label>Profil<br/><select value={smartProfile} onChange={e=>setSmartProfile(e.target.value as SmartProfile)}><option>FAST</option><option>BALANCED</option><option>PATIENT</option></select></label>
+            <label>Miktar<br/><select value={smartQtyPreset} onChange={e=>{const v=e.target.value;setSmartQtyPreset(v);if(v!=='CUSTOM')setSmartQty(Number(v))}}><option value="100">100</option><option value="250">250</option><option value="500">500</option><option value="1000">1.000</option><option value="CUSTOM">Özel</option></select></label>
+            {smartQtyPreset==='CUSTOM'&&<label>Özel miktar<br/><input type="number" min="1" value={smartQty} onChange={e=>setSmartQty(Math.max(1,Number(e.target.value)||1))} style={{width:100}}/></label>}
+          </div>
+          {smartSearch.trim()&&<div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>
+            {mapping.filter((m:any)=>prices[m.id]&&m.name?.toLowerCase().includes(smartSearch.toLowerCase())).slice(0,12).map((m:any)=><button key={m.id} onClick={()=>{setSmartItem(m.name);setSmartSearch(m.name);loadSmartSeries(m.name)}}>{m.name}</button>)}
+          </div>}
+          {smartError&&<div className="error" style={{marginTop:8}}>{smartError}</div>}
+          {smartItem&&smartLoading[smartItem]&&<div style={{marginTop:10}}>24h veri yükleniyor...</div>}
+          {selectedSmart&&<div style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+            <div style={{fontSize:18,fontWeight:900}}>{selectedSmart.item} • {selectedSmart.profile} • {fmt(selectedSmart.qty)} adet</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))',gap:8,marginTop:8}}>
+              <div className="card"><label>Current BUY / SELL</label><strong>{fmt(selectedSmart.currentBuy)} / {fmt(selectedSmart.currentSell)} GP</strong></div>
+              <div className="card"><label>24h Low / High</label><strong>{fmt(selectedSmart.low)} / {fmt(selectedSmart.high)} GP</strong></div>
+              <div className="card"><label>24h VWAP / Median</label><strong>{fmt(selectedSmart.vwap)} / {fmt(selectedSmart.median)} GP</strong></div>
+              <div className="card"><label>24h Volume</label><strong>{fmt(selectedSmart.dailyVol)}</strong></div>
+              <div className="card"><label>Confidence</label><strong>{selectedSmart.confidence}</strong></div>
+              <div className="card"><label>Tahmini Fill</label><strong>BUY {selectedSmart.buyFill.difficulty} • {selectedSmart.buyFill.range}<br/>SELL {selectedSmart.sellFill.difficulty} • {selectedSmart.sellFill.range}</strong></div>
+            </div>
+            <div className="tableBox" style={{marginTop:10}}><table><thead><tr><th>Profil</th><th>Recommended BUY</th><th>BUY fark</th><th>Recommended SELL</th><th>SELL fark</th><th>Confidence</th><th>BUY fill</th><th>SELL fill</th></tr></thead><tbody>
+              {selectedSmartProfiles.map((a:any)=><tr key={a.profile} style={{fontWeight:a.profile===smartProfile?800:400}}><td>{a.profile}{a.profile===smartProfile?' ★':''}</td><td>{fmt(a.recBuy)} GP</td><td>{a.currentBuy?`${((a.recBuy-a.currentBuy)/a.currentBuy*100).toFixed(1)}%`:'?'}</td><td>{fmt(a.recSell)} GP</td><td>{a.currentSell?`${((a.recSell-a.currentSell)/a.currentSell*100).toFixed(1)}%`:'?'}</td><td>{a.confidence}</td><td>{a.buyFill.difficulty} • {a.buyFill.range}</td><td>{a.sellFill.difficulty} • {a.sellFill.range}</td></tr>)}
+            </tbody></table></div>
+            {v5BuyTargets[selectedSmart.item]>0&&(()=>{const manual=v5BuyTargets[selectedSmart.item];const patient=smartAdvice(selectedSmart.item,'PATIENT',smartQty);if(!patient)return null;const diff=(manual-patient.recBuy)/patient.recBuy*100;const label=diff<=-10?'ÇOK SABIRLI / DOLMASI ZOR':diff<=-4?'SABIRLI':diff<=4?'SMART FİYATA YAKIN':diff<=10?'DAHA HIZLI':'ÇOK AGRESİF';return <div style={{marginTop:10,padding:10,border:'1px solid #d29922',borderRadius:7}}><b>Manual Target vs Smart Price</b><div style={{fontSize:14,marginTop:3}}>Manual Target: <b>{fmt(manual)} GP</b> • Smart PATIENT BUY: <b>{fmt(patient.recBuy)} GP</b></div><div style={{fontSize:11}}>Manual Target, Smart PATIENT'a göre {Math.abs(diff).toFixed(1)}% {diff<0?'daha düşük':'daha yüksek'} → <b>{label}</b></div></div>})()}
+            <div style={{fontSize:10,color:'#8b949e',marginTop:8}}>Dayanak: {selectedSmart.samples} adet 5m örnek • {selectedSmart.filteredCount} uç örnek filtrelendi • hacim ağırlıklı dağılım • miktar/24h hacim etkisi{selectedSmart.historyCount?` • ${selectedSmart.historyCount} benzer kişisel emir kaydı`:''}{selectedSmart.avgBuyHours!==null?` • BUY geçmiş ort. ${selectedSmart.avgBuyHours.toFixed(1)}h`:''}{selectedSmart.avgSellHours!==null?` • SELL geçmiş ort. ${selectedSmart.avgSellHours.toFixed(1)}h`:''}</div>
+          </div>}
+        </section>
+
+        <section style={{marginBottom:12,padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+          <h3 style={{marginTop:0}}>SMART BUY → PROCESS → SMART SELL</h3>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'end'}}>
+            <label>Processing / Alchemy activity<br/><input value={smartRecipeSearch} onChange={e=>setSmartRecipeSearch(e.target.value)} placeholder="Hızlı ara: sapphire, steel, cooking..." style={{width:300,marginBottom:4}}/><br/><select value={smartRecipeId} onChange={e=>setSmartRecipeId(e.target.value)} style={{maxWidth:560}}><option value="">Seç... ({filteredSmartRecipes.length})</option>{filteredSmartRecipes.map(x=><option key={x.id} value={x.id}>{x.open?'✓':'🔒'} {x.member?'MEMBERS':'F2P'} • {x.skill} {x.level} • {x.name}</option>)}</select></label>
+            <button onClick={loadSmartRecipe} disabled={!selectedSmartRecipe||!selectedSmartRecipe.open}>24h Recipe Verisini Yükle</button>
+          </div>
+          {selectedSmartRecipe&&<div style={{fontSize:10,color:selectedSmartRecipe.open?'#8b949e':'#d29922',marginTop:6}}>{selectedSmartRecipe.status} • {selectedSmartRecipe.member?'MEMBERS':'F2P'} • Hammadde/ürün 24h serileri yüklenince {smartProfile} fiyatlarıyla hesaplanır. Hız: <b>{selectedSmartRecipe.rateSource}{selectedSmartRecipe.rate!==null?` • ${fmt(selectedSmartRecipe.rate)}/h`:''}</b>{selectedSmartRecipe.requirements.length?` • Gereksinim: ${selectedSmartRecipe.requirements.join(', ')}`:''}</div>}
+          {smartRecipeCalc&&<div style={{marginTop:10,padding:10,border:'1px solid #30363d',borderRadius:7}}>
+            <div><b>Smart alış:</b> {smartRecipeCalc.inputAdv.map(x=>`${x.inp.name} ${fmt(x.adv!.recBuy)} GP × ${x.inp.qty||1}`).join(' + ')}</div>
+            <div><b>Smart satış:</b> {selectedSmartRecipe?.kind==='ALCHEMY'?`High Alchemy sabit çıktı ${fmt(smartRecipeCalc.netSell)} GP`:`${selectedSmartRecipe?.outputName} ${fmt(smartRecipeCalc.outAdv?.recSell)} GP • GE tax ${fmt(smartRecipeCalc.tax)} GP`}</div>
+            <div style={{display:'flex',gap:16,flexWrap:'wrap',marginTop:7}}><b>Kâr/item: {fmt(smartRecipeCalc.profit)} GP</b><b>Batch ({fmt(smartQty)}): {fmt(smartRecipeCalc.batchProfit)} GP</b><b>Input Capital: {fmt(smartRecipeCalc.inputCapital)} GP</b><b>Expected Revenue: {fmt(smartRecipeCalc.expectedRevenue)} GP</b><b>ROI: {smartRecipeCalc.roi===null?'?':smartRecipeCalc.roi.toFixed(1)+'%'}</b><b>Production Time: {smartRecipeCalc.productionMinutes===null?'DATA REQUIRED':smartRecipeCalc.productionMinutes.toFixed(1)+' dk'}</b><b>Buy Waiting: {smartRecipeCalc.buyFillWindows.join(' / ')}</b><b>Sell Waiting: {smartRecipeCalc.sellFillWindow||'ALCH / N/A'}</b><b>XP/batch: {fmt(smartRecipeCalc.xpBatch)}</b><b>Production GP/h: {smartRecipeCalc.gpHour===null?'DATA REQUIRED':fmt(smartRecipeCalc.gpHour)}</b><b>Expected XP/h: {smartRecipeCalc.xpHour===null?'DATA REQUIRED':fmt(smartRecipeCalc.xpHour)}</b><b>{selectedSmartRecipe?.rateSource}{selectedSmartRecipe&&selectedSmartRecipe.rate!==null?` • ${fmt(selectedSmartRecipe.rate)}/h`:''}</b></div><div style={{fontSize:9,color:'#8b949e',marginTop:6}}>Production GP/h yalnız aktif üretim hızıdır; BUY/SELL bekleme süresi Full Cycle Return ile aynı şey değildir.</div>
+          </div>}
+        </section>
+
+        <section style={{padding:12,background:'#161b22',border:'1px solid #30363d',borderRadius:8}}>
+          <h3 style={{marginTop:0}}>Order History / Gerçekleşen Emir Geçmişi</h3>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'end'}}>
+            <label>Item<br/><input value={historyDraft.item} onChange={e=>setHistoryDraft(d=>({...d,item:e.target.value}))} style={{width:150}}/></label>
+            <label>BUY/SELL<br/><select value={historyDraft.side} onChange={e=>setHistoryDraft(d=>({...d,side:e.target.value as OrderSide}))}><option>BUY</option><option>SELL</option></select></label>
+            <label>Miktar<br/><input type="number" value={historyDraft.quantity} onChange={e=>setHistoryDraft(d=>({...d,quantity:Number(e.target.value)}))} style={{width:85}}/></label>
+            <label>Emir fiyatı<br/><input type="number" value={historyDraft.orderPrice} onChange={e=>setHistoryDraft(d=>({...d,orderPrice:Number(e.target.value)}))} style={{width:90}}/></label>
+            <label>Gerçekleşen<br/><input type="number" value={historyDraft.filledQuantity} onChange={e=>setHistoryDraft(d=>({...d,filledQuantity:Number(e.target.value)}))} style={{width:85}}/></label>
+            <label>Fill saat<br/><input value={historyDraft.fillHours} onChange={e=>setHistoryDraft(d=>({...d,fillHours:e.target.value}))} placeholder="14 / 0.5" style={{width:82}}/></label>
+            <label>Ort. fiyat<br/><input value={historyDraft.averageFillPrice} onChange={e=>setHistoryDraft(d=>({...d,averageFillPrice:e.target.value}))} placeholder="ops." style={{width:80}}/></label>
+            <label>Durum<br/><select value={historyDraft.status} onChange={e=>setHistoryDraft(d=>({...d,status:e.target.value as OrderStatus}))}><option>OPEN</option><option>PARTIAL</option><option>FILLED</option><option>CANCELLED</option></select></label>
+            <button onClick={addOrderHistory}>Emri Kaydet</button>
+          </div>
+          <div className="tableBox" style={{marginTop:10}}><table><thead><tr><th>Tarih</th><th>Item</th><th>Side</th><th>Miktar</th><th>Emir</th><th>Doldu</th><th>Süre</th><th>Ort.</th><th>Durum</th><th></th></tr></thead><tbody>
+            {orderHistory.slice(0,100).map(h=><tr key={h.id}><td>{new Date(h.date).toLocaleString('tr-TR')}</td><td>{h.item}</td><td>{h.side}</td><td>{fmt(h.quantity)}</td><td>{fmt(h.orderPrice)}</td><td>{fmt(h.filledQuantity)}</td><td>{h.fillHours===null?'—':h.fillHours<1?'<1h':`${h.fillHours}h`}</td><td>{h.averageFillPrice===null?'—':fmt(h.averageFillPrice)}</td><td>{h.status}</td><td><button onClick={()=>setOrderHistory(old=>old.filter(x=>x.id!==h.id))}>Sil</button></td></tr>)}
+            {!orderHistory.length&&<tr><td colSpan={10}>Henüz emir geçmişi yok. Örn: Sapphire • BUY • 500 • 150 GP • 500 doldu • 14 saat.</td></tr>}
+          </tbody></table></div>
+        </section>
+      </div>}
+
+{activeTab==='skills'&&<div>
+        <section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+          <h3 style={{marginTop:0}}>V5 — 21 Deep Skill / Progression Views</h3>
+          <div style={{display:'flex',gap:5,flexWrap:'wrap',marginBottom:10}}>
+            {V5_PAGES.map(p=><button type="button" key={p.id} onClick={()=>setV5Page(p.id)} style={{fontWeight:v5Page===p.id?800:500,outline:v5Page===p.id?'2px solid #58a6ff':'none'}}>{p.label}</button>)}
+          </div>
+          <div><b>{v5PageInfo.label}</b> <span style={{fontSize:10,color:'#8b949e'}}>({v5PageInfo.skills.join(' + ')})</span></div>
+          <div style={{display:'flex',gap:7,flexWrap:'wrap',alignItems:'center',marginTop:8}}>
+            <input value={v5Search} onChange={e=>setV5Search(e.target.value)} placeholder="Bu sayfada ara..."/>
+            <select value={v5AccessFilter} onChange={e=>setV5AccessFilter(e.target.value)}><option value="ALL">F2P + Member</option><option value="F2P">F2P</option><option value="MEMBER">Member</option></select>
+            <select value={v5KindFilter} onChange={e=>setV5KindFilter(e.target.value)}><option value="ALL">Tüm türler</option><option>GATHERING</option><option>PROCESSING</option><option>COMBAT</option><option>TRAINING</option><option>RECURRING</option><option>UTILITY</option></select>
+            <select value={v5AttentionFilter} onChange={e=>setV5AttentionFilter(e.target.value)}><option value="ALL">Tüm dikkat</option><option>AFK</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option></select>
+            <select value={v5DataFilter} onChange={e=>setV5DataFilter(e.target.value)}><option value="ALL">Tüm veri</option><option value="THEORY">THEORY</option><option value="USER THEORY">USER THEORY</option><option value="MEASURED">MEASURED</option></select>
+            <select value={v5ProfitFilter} onChange={e=>setV5ProfitFilter(e.target.value)}><option value="ALL">Kâr/Zarar: Tümü</option><option value="PROFIT">Kârlı</option><option value="LOSS">Zarar / 0</option></select>
+            <select value={v5Sort} onChange={e=>setV5Sort(e.target.value)}><option value="CAPACITY_DESC">Capacity GP/h ↓</option><option value="GP_DESC">Expected GP/h ↓</option><option value="GP_ASC">GP/h ↑</option><option value="LEVEL_ASC">Level ↑</option><option value="RATE_DESC">Rate/h ↓</option></select>
+            <label style={{fontSize:10}}><input type="checkbox" checked={v5ShowLocked} onChange={e=>setV5ShowLocked(e.target.checked)}/> LOCKED göster</label>
+          </div>
+          <div style={{fontSize:10,color:'#8b949e',margin:'7px 0'}}>Kayıt: {v5PageRows.length} • OPEN {v5PageRows.filter(x=>x.open).length}. THEORY değerleri başlangıç planlama tahminidir; Edit ile theory/measurement değerlerini değiştirebilirsin.</div>
+          <div className="tableBox"><table><thead><tr><th>Activity</th><th>F2P/P2P</th><th>Level</th><th>Tür</th><th>Current Input Cost</th><th>Market Expected Sell</th><th>Expected Profit/item</th><th>Effective Rate/h</th><th>Expected GP/h</th><th>Capacity GP/h</th><th>Market basis</th><th>XP/h</th><th>Dikkat</th><th>Durum</th><th>Quality</th><th>Veri</th><th>Edit</th></tr></thead><tbody>
+          {v5PageRows.map(x=><tr key={x.id} className={!x.open?'lockedRow':''}>
+            <td className="name">{x.name}<div style={{fontSize:9,color:'#8b949e'}}>{x.input?`In: ${x.input}`:''}{x.output?` → Out: ${x.output}`:''}</div><div style={{fontSize:9,color:x.economy.hasPrices?'#3fb950':'#8b949e',marginTop:3}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div>{x.economy.profitEach!==null&&<div>Expected Profit/item: {fmt(x.economy.profitEach)} GP • Expected GP/h: {fmt(x.liveGp)} • Market basis: {x.economy.marketBasis}</div>}</>:<div>Canlı fiyat: {x.economy.liveEligible?'eşleşme/veri eksik':'reçete modeli henüz tanımlı değil — THEORY korunuyor'}</div>}</div>{(x.edit.note||x.note)&&<div style={{fontSize:9,color:'#8b949e'}}>{x.edit.note||x.note}</div>}</td>
+            <td>{x.member?'MEMBER':'F2P'}</td><td>{x.skills.join(', ')} {x.level}<div style={{fontSize:9}}>Sen: {x.current}</div></td><td>{x.kind}</td>
+            <td>{fmt(x.economy.inputCost)}</td><td>{fmt(x.economy.outputPrice)}</td><td>{fmt(x.economy.profitEach)}</td><td>{fmt(x.rate)}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.capacityAdjustedGpHour)}</td><td>{x.economy.marketBasis}</td><td>{fmt(x.xpHour)}</td><td>{x.attention}</td>
+            <td><b>{x.open?'OPEN':'LOCKED'}</b>{!x.open&&<div style={{fontSize:9}}>{x.member&&mode==='F2P'?'Membership':x.current<x.level?`${x.level-x.current} level eksik`:x.requirement||'Requirement'}</div>}</td>
+            <td><b>{x.quality}</b>{x.sourceRef&&<div style={{fontSize:9,color:'#8b949e'}}>{x.sourceRef}</div>}</td><td>{x.source}</td><td><button type="button" onClick={()=>setV5Editing(v5Editing===x.id?null:x.id)}>Edit</button></td>
+          </tr>)}
+          {!v5PageRows.length&&<tr><td colSpan={17}>Eşleşen activity yok.</td></tr>}
+          </tbody></table></div>
+          {v5Editing&&(()=>{const x=v5Rows.find(r=>r.id===v5Editing);if(!x)return null;return <div style={{marginTop:10,padding:10,border:'1px solid #58a6ff',borderRadius:8}}>
+            <b>Edit — {x.name}</b><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
+            <label>Theory Rate/h <input type="number" value={x.edit.theoryRate??x.theoryRate} onChange={e=>v5Update(x.id,{theoryRate:Number(e.target.value)})}/></label>
+            <label>Measured Rate/h <input type="number" value={x.edit.measuredRate??x.measuredRate??''} onChange={e=>v5Update(x.id,{measuredRate:e.target.value===''?undefined:Number(e.target.value)})}/></label>
+            <label>Effective Rate/h <input type="number" readOnly value={x.rate}/></label>
+            <label>Expected GP/h (dynamic market) <input type="number" readOnly value={x.gp??''}/></label>
+            <label>Manual GP/h override (DEBUG ONLY — ranking'i etkilemez) <input type="number" placeholder="boş = otomatik" value={x.edit.gpOverride??''} onChange={e=>v5Update(x.id,{gpOverride:e.target.value===''?undefined:Number(e.target.value)})}/></label>
+            <label style={{minWidth:280}}>Not <input style={{width:'100%'}} value={x.edit.note??''} onChange={e=>v5Update(x.id,{note:e.target.value})}/></label>
+            <button type="button" onClick={()=>v5Reset(x.id)}>Override sıfırla</button></div>
+            {x.economy.inputs.length>0&&<div style={{marginTop:8,padding:8,border:'1px solid #30363d',borderRadius:6}}>
+              <b>Buy Order hedef alış fiyatları</b>
+              <div style={{fontSize:9,color:'#8b949e',margin:'3px 0 6px'}}>Bu hedef ITEM bazlı ve globaldir: örneğin Ruby = 650 girersen Ruby kullanan tüm reçeteler 650 hedefini kullanır. Boş bırakırsan canlı alış fiyatı kullanılır.</div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{x.economy.inputs.map(inp=><label key={inp.name}>{inp.name} <span style={{fontSize:9,color:'#8b949e'}}>canlı {fmt(inp.price)} GP</span> <input type="number" min="0" placeholder="Hedef alış" value={x.targets[inp.name]??''} onChange={e=>setV5BuyTargets(old=>{const next={...old};if(e.target.value==='')delete next[inp.name];else next[inp.name]=Math.max(0,Number(e.target.value));return next})}/></label>)}</div>
+              {x.hasTarget&&<div style={{fontSize:10,marginTop:6}}>Hedef maliyet: <b>{fmt(x.targetInputCost)} GP</b> • Hedef kâr/adet: <b>{fmt(x.targetProfitEach)} GP</b> • Hedef GP/h: <b>{fmt(x.targetGpHour)}</b> • Effective rate: <b>{fmt(x.rate)}/h {x.rateSource}</b></div>}
+            </div>}
+            <div style={{fontSize:9,color:'#8b949e',marginTop:5}}>Orijinal theory: {fmt(x.theoryRate)}/h • {fmt(x.theoryGpHour)} GP/h. GP/h override boşsa canlı kâr × Effective Rate otomatik hesaplanır. Measured Rate varsa theory hiçbir ekonomik sıralamada kullanılmaz.</div><div style={{fontSize:10,marginTop:5}}>{x.economy.hasPrices?<><b>Canlı fiyat:</b> {x.economy.inputText||'Girdi yok'} → {x.economy.outputText} • <b>{fmt(x.economy.profitEach)} GP/adet</b></>:<><b>Canlı fiyat modeli:</b> henüz eksik. Bu kayıtta GP/h THEORY/override üzerinden kalır.</>}</div>
+          </div>})()}
+        </section>
+      </div>}
+
+      {activeTab==='money'&&<div>
+        <section style={{marginBottom:12,padding:12,border:'1px solid #58a6ff',borderRadius:8}}>
+          <h3 style={{marginTop:0}}>V5 Money Methods — Full Database Ranking</h3>
+          <div style={{fontSize:10,color:'#8b949e',marginBottom:8}}>Bu tablo artık 21 skill görünümündeki aynı V5 activity kayıtlarından otomatik oluşur. Skill level değişince OPEN havuz ve sıralama anında değişir.</div>
+          <div style={{display:'flex',gap:7,flexWrap:'wrap',marginBottom:8}}>
+            <input value={v5MoneySearch} onChange={e=>setV5MoneySearch(e.target.value)} placeholder="Money method ara..."/>
+            <select value={v5MoneySkill} onChange={e=>setV5MoneySkill(e.target.value)}><option value="ALL">Tüm skill'ler</option>{v5MoneySkills.map(s=><option key={s}>{s}</option>)}</select>
+            <select value={v5MoneyKind} onChange={e=>setV5MoneyKind(e.target.value)}><option value="ALL">Tüm türler</option><option>GATHERING</option><option>PROCESSING</option><option>COMBAT</option><option>TRAINING</option><option>RECURRING</option><option>UTILITY</option></select>
+            <select value={v5MoneyAttention} onChange={e=>setV5MoneyAttention(e.target.value)}><option value="ALL">Tüm dikkat</option><option>AFK</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option></select>
+            <select value={v5MoneyData} onChange={e=>setV5MoneyData(e.target.value)}><option value="ALL">Theory + Measured</option><option value="THEORY">THEORY</option><option value="USER THEORY">USER THEORY</option><option value="MEASURED">MEASURED</option></select>
+          </div>
+          <div style={{fontSize:10,marginBottom:6}}>OPEN + pozitif GP/h: <b>{v5MoneyRows.length}</b> yöntem. Örn. Herblore level yükseldiğinde uygun potion kayıtları burada otomatik açılır.</div>
+          <div className="tableBox"><table><thead><tr><th>#</th><th>Yöntem</th><th>Skill</th><th>Tür</th><th>GP/h</th><th>Rate/h</th><th>XP/h</th><th>Dikkat</th><th>Veri</th><th>F2P/P2P</th></tr></thead><tbody>
+          {v5MoneyRows.map((x,i)=><tr key={x.id}><td>{i+1}</td><td className="name">{x.name}<div style={{fontSize:9,color:'#8b949e'}}>{x.input?`In: ${x.input}`:''}{x.output?` → Out: ${x.output}`:''}</div>{x.economy&&<div style={{fontSize:9,color:x.economy.hasPrices?'#3fb950':'#8b949e'}}>{x.economy.hasPrices?<>{x.economy.inputText&&<div>Alış: {x.economy.inputText}</div>}<div>Satış: {x.economy.outputText}</div>{x.economy.profitEach!==null&&<div>Kâr/adet: {fmt(x.economy.profitEach)} GP</div>}</>:<div>Canlı fiyat modeli yok / eksik</div>}</div>}</td><td>{x.skills.join(', ')} {x.level}</td><td>{x.kind}</td><td><b>{fmt(x.gp)}</b></td><td>{fmt(x.rate)}</td><td>{fmt(x.xpHour)}</td><td>{x.attention}</td><td>{x.source}</td><td>{x.member?'MEMBER':'F2P'}</td></tr>)}
+          {!v5MoneyRows.length&&<tr><td colSpan={10}>Filtrelere uyan OPEN ve pozitif GP/h yöntemi yok.</td></tr>}
+          </tbody></table></div>
+        </section>
+        <details>
+          <summary style={{cursor:'pointer',fontWeight:700,marginBottom:8}}>Legacy V4 Money Methods (canlı GE hesapları)</summary>
+<section className="filters" id="money-methods">
+        <label>
+          <input
+            type="checkbox"
+            checked={availableOnly}
+            onChange={(e) =>
+              setAvailableOnly(e.target.checked)
+            }
+          />
+          Sadece AÇIK
+        </label>
+
+        <label>
+          <input
+            type="checkbox"
+            checked={showMembers}
+            onChange={(e) =>
+              setShowMembers(e.target.checked)
+            }
+          />
+          MEMBERS yöntemleri göster
+        </label>
+
+        <select value={activityTypeFilter} onChange={(e)=>setActivityTypeFilter(e.target.value)}>
+          <option value="All">Aktivite: Tümü</option><option>Processing</option><option>Cooking</option><option>Gathering</option><option>Combat</option>
+        </select>
+        <select value={attentionFilter} onChange={(e)=>setAttentionFilter(e.target.value)}>
+          <option value="All">Dikkat: Tümü</option><option value="AFK">AFK</option><option value="LOW">Low</option><option value="MEDIUM">Medium</option><option value="HIGH">High</option>
+        </select>
+        <select value={purposeFilter} onChange={(e)=>setPurposeFilter(e.target.value)}>
+          <option value="All">Amaç: Tümü</option><option value="MONEY">Money</option><option value="SKILL + PROFIT">Skill + Profit</option><option value="XP">XP</option>
+        </select>
+        <label><input type="checkbox" checked={noLossOnly} onChange={(e)=>setNoLossOnly(e.target.checked)} /> Sadece zarar ettirmeyenler</label>
+        <label>Plan güveni % <input type="number" min="10" max="100" step="5" value={planningFactor} onChange={(e)=>setPlanningFactor(clamp(Number(e.target.value)||50,10,100))} style={{width:55}} /></label>
+
+        <select
+          value={profitFilter}
+          onChange={(e) =>
+            setProfitFilter(e.target.value)
+          }
+        >
+          <option value="All">Kâr/Zarar: Tümü</option>
+          <option value="Profit">Sadece kârlı</option>
+          <option value="Loss">Sadece zararlı</option>
+        </select>
+
+        <select
+          value={skillFilter}
+          onChange={(e) =>
+            setSkillFilter(e.target.value)
+          }
+        >
+          <option value="All">Tüm skill'ler</option>
+          <option>Crafting</option>
+          <option>Cooking</option>
+          <option>Smithing</option>
+          <option>Magic</option>
+          <option>Prayer</option>
+          <option>Fishing</option>
+          <option>Mining</option>
+          <option>Woodcutting</option>
+        </select>
+
+        <select
+          value={categoryFilter}
+          onChange={(e) =>
+            setCategoryFilter(e.target.value)
+          }
+        >
+          {categories.map((c) => (
+            <option key={c} value={c}>
+              {c === 'All' ? 'Tüm kategoriler' : c}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={sort}
+          onChange={(e) =>
+            setSort(e.target.value)
+          }
+        >
+          <option value="profit">Kâr/adet ↓</option>
+          <option value="runprofit">Kâr/tur ↓</option>
+          <option value="gph">GP/saat ↓</option>
+          <option value="roi">ROI ↓</option>
+          <option value="volume">Hacim ↓</option>
+          <option value="level">Level ↑</option>
+        </select>
+      </section>
+
+      <div className="explain">
+        <b>Input:</b> Wiki HIGH = hızlı alış &nbsp;•&nbsp;
+        <b>Output:</b> Wiki LOW = hızlı satış &nbsp;•&nbsp;
+        <b>GE tax:</b> dahil &nbsp;•&nbsp;
+        <b>Hedef:</b> {fmt(quantity)} adet &nbsp;•&nbsp;
+        <b>Süre:</b> {targetHours === 0.5 ? '30 dk' : `${targetHours} saat`} &nbsp;•&nbsp;
+        <b>Ölçülmemiş hız planı:</b> %{planningFactor} &nbsp;•&nbsp;
+        <b>Güncelleme:</b>{' '}
+        {updated
+          ? updated.toLocaleString('tr-TR')
+          : '—'}
+      </div>
+
+      <div className="tableBox">
+        <table
+          style={{
+            tableLayout: 'auto',
+            minWidth: 0,
+          }}
+        >
+          <thead>
+            <tr>
+              <th>Yöntem / {fmt(quantity)} adet plan</th>
+              <th>Durum</th>
+              <th>Skill</th>
+              <th>Maliyet</th>
+              <th>Satış</th>
+              <th>Kâr</th>
+              <th>Kâr / {fmt(quantity)}</th>
+              <th>ROI</th>
+              <th>XP</th>
+              <th>GP/XP</th>
+              <th>Başarı</th>
+              <th>24h Hacim</th>
+              <th>Adet/Tur</th>
+              <th>Kâr/Tur</th>
+              <th>XP/Tur</th>
+              <th>Hız</th>
+              <th>GP/h</th>
+              <th>XP/h</th>
+              <th>Kaynak</th>
+              <th>Tür</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {visibleRows.map((r) => {
+              const lowVolume =
+                r.dailyVolume !== null &&
+                r.dailyVolume < 1000
+
+              return (
+                <tr
+                  key={r.name}
+                  className={
+                    !r.unlocked
+                      ? 'lockedRow'
+                      : ''
+                  }
+                >
+                  <td
+                    className="name"
+                    style={{ minWidth: 250 }}
+                  >
+                    <div>{r.name}</div>
+
+                    <div
+                      style={{
+                        color: '#8b949e',
+                        fontWeight: 'normal',
+                        fontSize: 9,
+                        marginTop: 3,
+                      }}
+                    >
+                      {r.ingredientsText}
+                    </div>
+
+                    <div
+                      style={{
+                        fontWeight: 'normal',
+                        fontSize: 9,
+                        marginTop: 3,
+                        color: '#c9d1d9',
+                      }}
+                    >
+                      {fmt(quantity)} adet:
+                      {' '}Sermaye{' '}
+                      <b>{fmt(r.capitalForQty)}</b>
+                      {' '}• Kâr{' '}
+                      <b
+                        className={
+                          (r.profitForQty ?? 0) >= 0
+                            ? 'positive'
+                            : 'negative'
+                        }
+                      >
+                        {fmt(r.profitForQty)}
+                      </b>
+                      {' '}• XP{' '}
+                      <b>{fmt(r.xpForQty)}</b>
+                    </div>
+
+                    <div
+                      style={{
+                        fontWeight: 'normal',
+                        fontSize: 9,
+                        marginTop: 3,
+                        color: '#8b949e',
+                      }}
+                    >
+                      Mevcut GP ile max <b>{fmt(r.maxByCapital)}</b> adet •{' '}
+                      {targetHours === 0.5 ? '30 dk' : `${targetHours} saat`}: <b>{fmt(r.timeLimitedQty)}</b> adet
+                      {r.timeLimitedQty < r.timePotentialQty ? ' (sermaye limiti)' : ''} • Sermaye{' '}
+                      <b>{fmt(r.timeCapital)}</b> • Kâr{' '}
+                      <b className={(r.timeProfit ?? 0) >= 0 ? 'positive' : 'negative'}>{fmt(r.timeProfit)}</b> • XP{' '}
+                      <b>{fmt(r.timeXp)}</b>
+                    </div>
+
+                    <div style={{ marginTop: 5, fontWeight: 'normal' }}>
+                      <button
+                        type="button"
+                        onClick={() => setEditingMethodId(editingMethodId === r.id ? null : r.id)}
+                        style={{
+                          fontSize: 10,
+                          padding: '4px 8px',
+                          border: '1px solid #388bfd',
+                          borderRadius: 5,
+                          background: editingMethodId === r.id ? '#1f6feb' : '#0d1117',
+                          color: '#58a6ff',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {editingMethodId === r.id ? '− ÖLÇÜMÜ KAPAT' : '+ ÖLÇÜM / DÜZENLE'}
+                      </button>
+
+                      {editingMethodId === r.id && (
+<div
+                          style={{
+                            marginTop: 6,
+                            padding: 7,
+                            border: '1px solid #30363d',
+                            borderRadius: 5,
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(2, minmax(110px, 1fr))',
+                            gap: 6,
+                            minWidth: 260,
+                          }}
+                        >
+                          <label style={{ fontSize: 9 }}>
+                            Gerçek adet/saat
+                            <input
+                              type="number"
+                              min="0"
+                              placeholder={String(Math.round(r.theoreticalItemsPerHour))}
+                              value={r.userData.actualItemsPerHour ?? ''}
+                              onChange={(e) => {
+                                const v = e.target.value === '' ? undefined : Math.max(0, Number(e.target.value))
+                                updateMethodData(r.id, { actualItemsPerHour: v })
+                              }}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <div style={{ fontSize: 9, alignSelf: 'end' }}>
+                            Teorik: <b>{fmt(r.theoreticalItemsPerHour)}</b>/h<br />
+                            Etkin: <b>{fmt(r.effectiveItemsPerHour)}</b>/h
+                          </div>
+                          <label style={{ fontSize: 9 }}>
+                            Ölçülen adet
+                            <input
+                              type="number"
+                              min="0"
+                              value={r.userData.measuredQuantity ?? ''}
+                              onChange={(e) => {
+                                const q = e.target.value === '' ? undefined : Math.max(0, Number(e.target.value))
+                                const m = r.userData.measuredMinutes
+                                const speed = q && m ? (q / m) * 60 : r.userData.actualItemsPerHour
+                                updateMethodData(r.id, { measuredQuantity: q, actualItemsPerHour: speed })
+                              }}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <label style={{ fontSize: 9 }}>
+                            Geçen süre (dk)
+                            <input
+                              type="number"
+                              min="0"
+                              value={r.userData.measuredMinutes ?? ''}
+                              onChange={(e) => {
+                                const m = e.target.value === '' ? undefined : Math.max(0, Number(e.target.value))
+                                const q = r.userData.measuredQuantity
+                                const speed = q && m ? (q / m) * 60 : r.userData.actualItemsPerHour
+                                updateMethodData(r.id, { measuredMinutes: m, actualItemsPerHour: speed })
+                              }}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <label style={{ fontSize: 9 }}>
+                            Gerçek girdi maliyeti/adet
+                            <input
+                              type="number"
+                              min="0"
+                              placeholder={String(Math.round(r.wikiInputCost || 0))}
+                              value={r.userData.actualBuyCost ?? ''}
+                              onChange={(e) => updateMethodData(r.id, { actualBuyCost: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <label style={{ fontSize: 9 }}>
+                            Gerçek satış/alch değeri
+                            <input
+                              type="number"
+                              min="0"
+                              placeholder={String(Math.round(r.outputPrice || 0))}
+                              value={r.userData.actualSellPrice ?? ''}
+                              onChange={(e) => updateMethodData(r.id, { actualSellPrice: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <label style={{ fontSize: 9 }}>
+                            Adet / tur
+                            <input
+                              type="number"
+                              min="1"
+                              value={r.itemsPerRun}
+                              onChange={(e) =>
+                                updateMethodData(r.id, {
+                                  itemsPerRun: Math.max(1, Math.floor(Number(e.target.value) || 1)),
+                                })
+                              }
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <label style={{ fontSize: 9 }}>
+                            Yöntem türü
+                            <select
+                              value={r.purpose}
+                              onChange={(e) => updateMethodData(r.id, { purpose: e.target.value as MethodPurpose })}
+                              style={{ width: '100%' }}
+                            >
+                              <option>MONEY</option>
+                              <option>SKILL + PROFIT</option>
+                              <option>XP</option>
+                            </select>
+                          </label>
+                          <label style={{ fontSize: 9 }}>
+                            Dikkat seviyesi
+                            <select value={r.attentionLevel} onChange={(e)=>updateMethodData(r.id,{attentionLevel:e.target.value as AttentionLevel})} style={{width:'100%'}}>
+                              <option value="AFK">AFK</option><option value="LOW">LOW</option><option value="MEDIUM">MEDIUM</option><option value="HIGH">HIGH</option>
+                            </select>
+                          </label>
+                          {r.cooking && <>
+                            <label style={{fontSize:9}}>Raw adet<input id={`cook-total-${r.id}`} type="number" min="1" placeholder="100" style={{width:'100%'}} /></label>
+                            <label style={{fontSize:9}}>Cooked adet<input id={`cook-ok-${r.id}`} type="number" min="0" placeholder="80" style={{width:'100%'}} /></label>
+                            <label style={{fontSize:9}}>Burnt adet<input id={`cook-burn-${r.id}`} type="number" min="0" placeholder="20" style={{width:'100%'}} /></label>
+                            <button type="button" style={{fontSize:9}} onClick={()=>{
+                              const total=Number((document.getElementById(`cook-total-${r.id}`) as HTMLInputElement)?.value||0)
+                              const successful=Number((document.getElementById(`cook-ok-${r.id}`) as HTMLInputElement)?.value||0)
+                              const burnt=Number((document.getElementById(`cook-burn-${r.id}`) as HTMLInputElement)?.value||0)
+                              if(total>0 && successful>=0 && burnt>=0 && successful+burnt<=total){
+                                updateMethodData(r.id,{actualSuccessByLevel:{...(r.userData.actualSuccessByLevel||{}),[String(r.currentLevel)]:{total,successful,burnt,rate:successful/total}}}); addMeasurement(r.id,{date:new Date().toISOString(),skillLevel:r.currentLevel,quantity:total,minutes:r.userData.measuredMinutes||0,itemsPerHour:r.userData.actualItemsPerHour||0,successful,burnt,failed:burnt})
+                              }
+                            }}>Cooking başarısını kaydet @ Lv{r.currentLevel}</button>
+                            {r.successAtLevel && <button type="button" style={{fontSize:9}} onClick={()=>{
+                              const next={...(r.userData.actualSuccessByLevel||{})}; delete next[String(r.currentLevel)]; updateMethodData(r.id,{actualSuccessByLevel:next})
+                            }}>Bu level ölçümünü sil</button>}
+                          </>}
+                          <label style={{fontSize:9}}>Hedef buy order / girdi maliyeti<input type="number" min="0" value={r.userData.targetBuyPrice??''} onChange={e=>updateMethodData(r.id,{targetBuyPrice:e.target.value===''?undefined:Number(e.target.value)})} style={{width:'100%'}} /></label>
+                          <label style={{fontSize:9}}>Ort. müdahale aralığı (sn)<input type="number" min="0" value={r.userData.averageSecondsBetweenInteractions??''} onChange={e=>updateMethodData(r.id,{averageSecondsBetweenInteractions:e.target.value===''?undefined:Number(e.target.value)})} style={{width:'100%'}} /></label>
+                          <div style={{fontSize:9,color:'#8b949e'}}>History: {historySummary(r.id).count} test • son {fmt(historySummary(r.id).last?.itemsPerHour)} /h • ağırlıklı {fmt(historySummary(r.id).weighted)} /h</div>
+                          <button type="button" style={{fontSize:9}} onClick={()=>{const q=r.userData.measuredQuantity||0,m=r.userData.measuredMinutes||0;if(q>0&&m>0)addMeasurement(r.id,{date:new Date().toISOString(),skillLevel:r.currentLevel,quantity:q,minutes:m,itemsPerHour:q/m*60,buyPrice:r.userData.actualBuyCost,sellPrice:r.userData.actualSellPrice,profit:r.profit??undefined,xp:r.xpForQty??undefined})}}>Bu hız testini history'ye ekle</button>
+                          <div style={{ display: 'flex', gap: 5, alignItems: 'end' }}>
+                            <button type="button" onClick={() => clearActualSpeed(r.id)} style={{ fontSize: 9, padding: '4px 6px' }}>Hızı sil</button>
+                            <button type="button" onClick={() => clearActualPrices(r.id)} style={{ fontSize: 9, padding: '4px 6px' }}>Fiyatı sil</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {r.cooking && <div style={{color:'#58a6ff',fontWeight:'normal',fontSize:9,marginTop:3}}>
+                      Başarı %{(r.successRate*100).toFixed(1)} ({r.successAtLevel ? `GERÇEK @ Lv${r.currentLevel}` : 'TAHMİN'}) • Tur: {fmt(r.expectedSuccessfulPerRun,1)} cooked / {fmt(r.expectedBurntPerRun,1)} burnt • AFK ~{r.afkSecondsPerRun}s/tur
+                    </div>}
+                    {r.note && (
+                      <div
+                        style={{
+                          color: '#d29922',
+                          fontWeight: 'normal',
+                          fontSize: 9,
+                          marginTop: 2,
+                        }}
+                      >
+                        {r.note}
+                      </div>
+                    )}
+                  </td>
+
+                  <td>
+                    <span
+                      className={
+                        r.unlocked
+                          ? 'open'
+                          : 'locked'
+                      }
+                    >
+                      {r.status}
+                    </span>
+                  </td>
+
+                  <td>
+                    {r.skill}
+                    <br />
+                    {r.currentLevel}/{r.level}
+                  </td>
+
+                  <td>
+                    {fmt(r.effectiveCost)}
+                  </td>
+
+                  <td>
+                    {fmt(r.outputNet)}
+                  </td>
+
+                  <td
+                    className={
+                      (r.profit ?? 0) >= 0
+                        ? 'positive'
+                        : 'negative'
+                    }
+                  >
+                    {r.profit !== null &&
+                    r.profit > 0
+                      ? '+'
+                      : ''}
+                    {fmt(r.profit)}
+                  </td>
+
+                  <td
+  className={
+    (r.profitForQty ?? 0) >= 0
+      ? 'positive'
+      : 'negative'
+  }
+>
+  {r.profitForQty !== null &&
+  r.profitForQty > 0
+    ? '+'
+    : ''}
+  {fmt(r.profitForQty)}
+</td>
+
+                  <td
+                    className={
+                      (r.roi ?? 0) >= 0
+                        ? 'positive'
+                        : 'negative'
+                    }
+                  >
+                    {r.roi === null
+                      ? '—'
+                      : `${r.roi.toFixed(1)}%`}
+                  </td>
+
+                  <td>{fmt(r.xp, 1)}</td>
+
+                  <td
+                    className={
+                      (r.profitPerXp ?? 0) >= 0
+                        ? 'positive'
+                        : 'negative'
+                    }
+                  >
+                    {fmt(r.profitPerXp, 2)}
+                  </td>
+
+                  <td>
+                    {(r.successRate * 100).toFixed(0)}%
+                  </td>
+
+                  <td>
+                    {fmt(r.dailyVolume)}
+                    {lowVolume && (
+                      <div className="warn">
+                        ⚠ LOW VOLUME
+                      </div>
+                    )}
+                  </td>
+
+                  <td>
+                    <b>{fmt(r.itemsPerRun)}</b>
+                  </td>
+
+                  <td className={(r.profitPerRun ?? 0) >= 0 ? 'positive' : 'negative'}>
+                    {r.profitPerRun !== null && r.profitPerRun > 0 ? '+' : ''}{fmt(r.profitPerRun)}
+                  </td>
+
+                  <td>{fmt(r.xpPerRun, 1)}</td>
+
+                  <td>
+                    <b>{fmt(r.effectiveItemsPerHour)}/h</b>
+                    <div style={{ fontSize: 8, color: '#8b949e' }}>
+                      Teorik {fmt(r.theoreticalItemsPerHour)}/h
+                      {r.speedSource === 'GERÇEK' ? ` • Gerçek ${fmt(r.effectiveItemsPerHour)}/h` : ''}
+                    </div>
+                  </td>
+
+                  <td
+                    className={
+                      (r.gpHour ?? 0) >= 0
+                        ? 'positive'
+                        : 'negative'
+                    }
+                  >
+                    {fmt(r.gpHour)}
+                  </td>
+
+                  <td>{fmt(r.xpHour)}</td>
+
+                  <td>
+                    <span
+                      style={{
+                        fontSize: 9,
+                        fontWeight: 'bold',
+                        color: r.speedSource === 'GERÇEK' ? '#3fb950' : '#d29922',
+                      }}
+                    >
+                      {r.speedSource === 'GERÇEK' ? 'GERÇEK ÖLÇÜM' : 'TAHMİN'}
+                    </span>
+                  </td>
+
+                  <td>
+                    <span style={{ fontSize: 9, fontWeight: 'bold' }}>{r.purpose}</span>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style={{marginTop:18}}>Gathering Aktiviteleri</h3>
+      <div className="tableBox"><table><thead><tr><th>Aktivite</th><th>Durum</th><th>Skill</th><th>Net GP/adet</th><th>Plan adet/h</th><th>GP/h</th><th>XP/h</th><th>Dikkat</th><th>Rekabet</th><th>Veri</th></tr></thead><tbody>
+        {gatheringRows.filter(r => (skillFilter==='All'||r.skill===skillFilter) && (attentionFilter==='All'||r.attentionLevel===attentionFilter) && (activityTypeFilter==='All'||activityTypeFilter==='Gathering')).map(r=><tr key={r.id} className={!r.unlocked?'lockedRow':''}>
+          <td className="name">{r.name}<div style={{fontSize:9,color:'#8b949e'}}>{r.bankingMethod} • {r.notes}</div>
+            <button type="button" onClick={()=>setEditingGatheringId(editingGatheringId===r.id?null:r.id)}>{editingGatheringId===r.id?'KAPAT':'+ ÖLÇÜM'}</button>
+            {editingGatheringId===r.id && <div style={{marginTop:5,display:'flex',gap:4,flexWrap:'wrap'}}>
+              <input type="number" placeholder="Gerçek adet/h" value={r.userData.actualItemsPerHour??''} onChange={(e)=>setGatheringData(old=>({...old,[r.id]:{...(old[r.id]||{}),actualItemsPerHour:e.target.value===''?undefined:Number(e.target.value)}}))} />
+              <input type="number" placeholder="Toplanan adet" value={r.userData.measuredQuantity??''} onChange={(e)=>{const q=e.target.value===''?undefined:Number(e.target.value); const m=r.userData.measuredMinutes; setGatheringData(old=>({...old,[r.id]:{...(old[r.id]||{}),measuredQuantity:q,actualItemsPerHour:q&&m?(q/m)*60:r.userData.actualItemsPerHour}}))}} />
+              <input type="number" placeholder="Dakika" value={r.userData.measuredMinutes??''} onChange={(e)=>{const m=e.target.value===''?undefined:Number(e.target.value); const q=r.userData.measuredQuantity; setGatheringData(old=>({...old,[r.id]:{...(old[r.id]||{}),measuredMinutes:m,actualItemsPerHour:q&&m?(q/m)*60:r.userData.actualItemsPerHour}}))}} />
+              <div style={{fontSize:10,color:'#8b949e'}}>History: {historySummary(r.id).count} test • son {fmt(historySummary(r.id).last?.itemsPerHour)} /h • ağırlıklı {fmt(historySummary(r.id).weighted)} /h</div>
+              <button onClick={()=>{const q=r.userData.measuredQuantity||0,m=r.userData.measuredMinutes||0;if(q>0&&m>0)addMeasurement(r.id,{date:new Date().toISOString(),skillLevel:r.currentLevel,quantity:q,minutes:m,itemsPerHour:q/m*60,outputs:mixedSamples[r.id]})}}>Bu gathering testini history'ye ekle</button>
+              {r.secondaryItem && <div style={{fontSize:10}}>Gerçek dağılım (birikimli): {r.item} <input type="number" min="0" style={{width:70}} value={mixedSamples[r.id]?.[r.item]??''} onChange={e=>setMixedSamples(o=>({...o,[r.id]:{...(o[r.id]||{}),[r.item]:Number(e.target.value)||0}}))}/> • {r.secondaryItem} <input type="number" min="0" style={{width:70}} value={mixedSamples[r.id]?.[r.secondaryItem]??''} onChange={e=>setMixedSamples(o=>({...o,[r.id]:{...(o[r.id]||{}),[r.secondaryItem!]:Number(e.target.value)||0}}))}/> • n={r.sampleTotal}</div>}
+              <button onClick={()=>setGatheringData(old=>({...old,[r.id]:{...(old[r.id]||{}),actualItemsPerHour:undefined,measuredQuantity:undefined,measuredMinutes:undefined}}))}>Ölçümü sil</button>
+            </div>}
+          </td><td>{r.unlocked?'✓ AÇIK':`🔒 ${r.skill.toUpperCase()} ${r.requiredLevel}`}</td><td>{r.skill} {r.currentLevel}/{r.requiredLevel}</td><td>{fmt(r.netSell)}</td><td>{fmt(r.planningItemsPerHour)}</td><td>{fmt(r.gpHour)}</td><td>{fmt(r.xpHour)}</td><td>{r.attentionLevel}</td><td>{r.competitionRisk}</td><td>{r.speedSource}</td>
+        </tr>)}
+      </tbody></table></div>
+
+
+            </details>
+      </div>}
+
+      {activeTab==='planner'&&<div>
+<section id="account-planner" style={{marginTop:18,padding:12,border:'1px solid #30363d',borderRadius:8}}>
+        <h3 style={{marginTop:0}}>V4 Account Planner — Final Integration</h3>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))',gap:10}}>
+          <div className="tableBox"><table><thead><tr><th colSpan={3}>Best Safe Combat</th></tr><tr><th>Activity</th><th>Net GP/h</th><th>Risk</th></tr></thead><tbody>{v4SafeCombat.slice(0,5).map(x=><tr key={x.activity.id}><td>{x.activity.name}</td><td>{x.netGpHour==null?'—':fmt(x.netGpHour)}</td><td>{x.activity.riskType}</td></tr>)}{!v4SafeCombat.length&&<tr><td colSpan={3}>Açık/doğrulanmış combat yöntemi yok.</td></tr>}</tbody></table></div>
+          <div className="tableBox"><table><thead><tr><th colSpan={3}>Wilderness / PvP — Ayrı Liste</th></tr><tr><th>Activity</th><th>Net GP/h</th><th>Risk</th></tr></thead><tbody>{v4WildCombat.slice(0,5).map(x=><tr key={x.activity.id}><td>{x.activity.name}</td><td>{x.netGpHour==null?'—':fmt(x.netGpHour)}</td><td>{x.activity.riskType}</td></tr>)}{!v4WildCombat.length&&<tr><td colSpan={3}>Açık yöntem yok.</td></tr>}</tbody></table></div>
+        </div>
+        <h4>Next Profitable Unlock — Full Database</h4>
+        <div className="tableBox"><table><thead><tr><th>Ufuk</th><th>Activity</th><th>Eksik skill</th><th>Diğer kilitler</th></tr></thead><tbody>{v4Unlocks.slice(0,10).map(x=><tr key={x.activity.id}><td>{x.bucket}</td><td>{x.activity.name}</td><td>{x.missingSkills.map(r=>`${r.skill} ${r.current}→${r.level}`).join(' • ')||'—'}</td><td>{x.access.missing.filter(m=>!m.includes('gerekli (mevcut')).join(' • ')||'—'}</td></tr>)}</tbody></table></div>
+        <h4>Şimdi yapabilirsin — sadece ekipmanı edin</h4>
+        <div className="tableBox"><table><thead><tr><th>Activity</th><th>Skill</th><th>Gerekli ekipman</th></tr></thead><tbody>
+          {v4GearReady.map(x=><tr key={x.activity.id}><td>{x.activity.name}</td><td>{x.activity.requirements.skills?.map(s=>`${s.skill} ${s.level}`).join(' • ')||'—'}</td><td>{x.access.missing.filter(m=>m.startsWith('Ekipman edin:')).map(m=>m.replace('Ekipman edin: ','')).join(' • ')}</td></tr>)}
+          {!v4GearReady.length&&<tr><td colSpan={3}>Yalnızca ekipman alarak açılacak yöntem yok.</td></tr>}
+        </tbody></table></div>
+        <h4>Quest Unlock Value</h4>
+        <div className="tableBox"><table><thead><tr><th>Quest</th><th>Açtığı verified activity</th><th>Örnekler</th></tr></thead><tbody>{v4QuestValue.map(q=><tr key={q.quest}><td>{q.quest}</td><td>{q.count}</td><td>{q.activities.slice(0,4).join(' • ')}</td></tr>)}{!v4QuestValue.length&&<tr><td colSpan={3}>Eksik quest requirement bulunamadı.</td></tr>}</tbody></table></div>
+        <h4>Item → Money Chain</h4>
+        <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}><input value={v4PlannerItem} onChange={e=>setV4PlannerItem(e.target.value)} placeholder="Item ara: onyx, rune, shark..."/><span style={{fontSize:10,color:'#8b949e'}}>Gather myself = 0 GP sayılmaz; ekonomik maliyet GE opportunity cost'tur.</span></div>
+        {v4PlannerItem&&<div className="tableBox" style={{marginTop:6}}><table><thead><tr><th>Activity</th><th>Acquire</th><th>Process</th><th>Final</th><th>Sell</th></tr></thead><tbody>{v4Chains.map(a=><tr key={a.id}><td>{a.name}</td><td>{a.chain?.acquire?.join(' → ')||'—'}</td><td>{a.chain?.process?.join(' → ')||'—'}</td><td>{a.chain?.finalProduct?.join(' → ')||'—'}</td><td>{a.chain?.sell?.join(' → ')||'—'}</td></tr>)}{!v4Chains.length&&<tr><td colSpan={5}>Bu item için tanımlı verified/needs-verification chain kaydı yok.</td></tr>}</tbody></table></div>}
+        <div style={{fontSize:10,color:'#8b949e',marginTop:8}}>Bond Sustain mevcut canlı ekonomi motorunda kalır; V4 combat tarafında yalnızca net GP/h (loot − supplies) tanımlı ve VERIFIED yöntemler güvenli karşılaştırmaya alınır. Wilderness/PvP otomatik olarak ayrı tutulur.</div>
+      </section>
+
+            </div>}
+
+      {activeTab==='bulk'&&<div>
+        <section style={{padding:12,border:'1px solid #58a6ff',borderRadius:8,marginBottom:12}}>
+          <h3 style={{marginTop:0,color:'#f0f6fc'}}>BULK DATA ENTRY / TOPLU VERİ GİRİŞİ</h3>
+          <div style={{fontSize:11,color:'#8b949e',marginBottom:10}}>GP/h girilmez. Rate + recipe + canlı fiyat → Effective GP/h otomatik hesaplanır. Bulk import measuredRate ve measurement history'yi varsayılan olarak değiştirmez.</div>
+          <div style={{display:'flex',gap:7,flexWrap:'wrap',alignItems:'end'}}>
+            <label>Mode<br/><select value={bulkMode} onChange={e=>setBulkMode(e.target.value)}><option value="ALL">ALL</option><option value="F2P">F2P</option><option value="MEMBER">Member</option></select></label>
+            <label>Skill<br/><select value={bulkSkill} onChange={e=>setBulkSkill(e.target.value)}><option value="ALL">ALL</option>{bulkSkills.map(s=><option key={s}>{s}</option>)}</select></label>
+            <label>Access<br/><select value={bulkAccess} onChange={e=>setBulkAccess(e.target.value)}><option value="ALL">ALL</option><option>OPEN</option><option>LOCKED</option></select></label>
+            <label>Quality<br/><select value={bulkQuality} onChange={e=>setBulkQuality(e.target.value)}><option value="ALL">ALL</option>{['VERIFIED','NEEDS_VERIFICATION','PLACEHOLDER','DUPLICATE','INCOMPLETE','DEPRECATED'].map(q=><option key={q}>{q}</option>)}</select></label>
+            <label>Search<br/><input value={bulkSearch} onChange={e=>setBulkSearch(e.target.value)} placeholder="ID / activity / skill"/></label>
             <label style={{display:'flex',gap:4,alignItems:'center'}}><input type="checkbox" checked={bulkMissingOnly} onChange={e=>setBulkMissingOnly(e.target.checked)}/> Rate missing only</label>
             <button onClick={()=>copyText(bulkTsv())}>Copy TSV</button>
             <button onClick={()=>exportCsv(bulkTsv(),'osrs-filtered-activities.csv')}>Export CSV</button>
