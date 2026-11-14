@@ -1763,7 +1763,7 @@ export default function App() {
     return herbDefs.map((h:any)=>{
       const grimyName=`Grimy ${h.herb.toLowerCase()}`
       const cleanName=h.herb
-      const unfinishedName=`${h.herb} potion (unf)`
+      const unfinishedName=({'Guam leaf':'Guam potion (unf)','Ranarr weed':'Ranarr potion (unf)','Irit leaf':'Irit potion (unf)'} as Record<string,string>)[h.herb]||`${h.herb} potion (unf)`
       const grimyItem=mapping.find((item:any)=>Number(item.id)===h.grimyId)||getItem(grimyName), cleanItem=getItem(cleanName), unfinishedItem=getItem(unfinishedName)
       const grimyBuy=grimyItem&&prices[grimyItem.id]?.high!=null?Number(prices[grimyItem.id].high):null
       const cleanBuy=cleanItem&&prices[cleanItem.id]?.high!=null?Number(prices[cleanItem.id].high):null
@@ -2712,6 +2712,15 @@ export default function App() {
   },[v5Rows,herbloreRows,alchemyRows,mapping,prices,volumes,mode,portfolioCapital,portfolioProfile,portfolioRisk,dailyMaxHours,degrimeEarthStaff])
 
 
+  const nightHerbs=useMemo(()=>{
+    // Unfinished-potion Herblore levels (Wiki), plus Cadantine blood potion which needs a Vial of blood.
+    const potionLevel:Record<string,number>={guam:3,marrentill:5,tarromin:12,harralander:22,ranarr:30,toadflax:34,irit:45,avantoe:50,kwuarm:55,huasca:58,snapdragon:63,cadantine:66,lantadyme:69,dwarfweed:72,torstol:78}
+    const list:any[]=herbloreRows.map((hr:any)=>hr.grimyPotion||hr.cleanPotion).filter((h:any)=>h&&h.herb).map((h:any)=>({key:h.key,herb:h.herb,level:potionLevel[h.key]??h.level,grimyName:h.grimyName,cleanName:h.cleanName,unfinishedName:h.unfinishedName,vialName:'Vial of water'}))
+    const cad=list.find((x:any)=>x.key==='cadantine')
+    if(cad)list.push({key:'cadantineblood',herb:'Cadantine blood',level:80,grimyName:cad.grimyName,cleanName:cad.cleanName,unfinishedName:'Cadantine blood potion (unf)',vialName:'Vial of blood'})
+    return list
+  },[herbloreRows])
+
   // ---- Gece Emir Listesi: hourly history (last 24h) for herb items, fetched only while the tab is open ----
   useEffect(()=>{
     if(activeTab!=='night'||!mapping.length||!Object.keys(prices).length)return
@@ -2719,7 +2728,7 @@ export default function App() {
     let cancelled=false
     setNightLoading(true)
     ;(async()=>{
-      const names=herbloreRows.flatMap((hr:any)=>{const h=hr.grimyPotion||hr.cleanPotion||{};return [h.grimyName,h.cleanName,h.unfinishedName]})
+      const names=nightHerbs.flatMap((h:any)=>[h.grimyName,h.cleanName,h.unfinishedName])
       const ids=Array.from(new Set(names.map((n:string)=>getItem(n)?.id).filter((x:any)=>x!=null)))
       const out:Record<string,NightSample[]>={}
       for(let i=0;i<ids.length;i+=5){
@@ -2735,7 +2744,7 @@ export default function App() {
       if(!cancelled){setNightHist(out);setNightHistTime(Date.now());setNightLoading(false)}
     })()
     return ()=>{cancelled=true;setNightLoading(false)}
-  },[activeTab,mapping,prices,herbloreRows,nightHistTime])
+  },[activeTab,mapping,prices,nightHerbs,nightHistTime])
 
   const nightPlan=useMemo(()=>{
     type S3={PATIENT:number;BALANCED:number;FAST:number}
@@ -2763,12 +2772,11 @@ export default function App() {
       return {l,ok,pts:Math.min(lows.length,highs.length),buy,sell}
     }
     const sel=portfolioProfile
-    const vial=live('Vial of water')
+    const vialWater=live('Vial of water')
     const rows:any[]=[]
     let noData=0
-    herbloreRows.forEach((hr:any)=>{
-      const h:any=hr.grimyPotion||hr.cleanPotion
-      if(!h||!h.herb)return
+    nightHerbs.forEach((h:any)=>{
+      const vial=live(h.vialName)
       const inName=nightRoute==='GRIMY'?h.grimyName:h.cleanName
       const a=ladder(inName),b=ladder(h.unfinishedName)
       if(!a||!b||!vial){noData++;return}
@@ -2781,7 +2789,7 @@ export default function App() {
       const bottleneck=Math.min(a.l.vol,b.l.vol)
       const limits=[a.l.limit,vial.limit].filter(x=>x>0)
       const qtyCap=Math.max(0,Math.min(limits.length?Math.min(...limits):Infinity,Math.floor(bottleneck*0.05)))
-      rows.push({key:h.key,herb:h.herb,level:h.level,locked,inName,outName:h.unfinishedName,a,b,cost,net,rate,gpHour:net[sel]*rate,bottleneck,qtyCap})
+      rows.push({key:h.key,herb:h.herb,vialName:h.vialName,level:h.level,locked,inName,outName:h.unfinishedName,a,b,cost,net,rate,gpHour:net[sel]*rate,bottleneck,qtyCap})
     })
     const eligible=rows.filter(r=>r.net[sel]>0&&r.qtyCap>=1&&Number.isFinite(r.qtyCap)&&(!nightOnly600||r.gpHour>=600000))
     const plan=new Map<string,{qty:number;capital:number;profit:number}>()
@@ -2796,8 +2804,8 @@ export default function App() {
     const out=rows.map(r=>({...r,plan:plan.get(r.key)||null,reason:reasonOf(r)})).sort((x,y)=>(y.plan?1:0)-(x.plan?1:0)||y.gpHour-x.gpHour)
     const used=[...plan.values()].reduce((n,x)=>n+x.capital,0)
     const profit=[...plan.values()].reduce((n,x)=>n+x.profit,0)
-    return {rows:out,used,reserve:Math.max(0,portfolioCapital-used),profit,count:plan.size,skipped:rows.length-eligible.length,noData,vialCost:vial?{P:vial.low,B:Math.round((vial.low+vial.high)/2),F:vial.high}:null}
-  },[herbloreRows,prices,volumes,nightHist,nightRoute,nightOnly600,nightLevelFilter,portfolioProfile,portfolioCapital,levels,mapping])
+    return {rows:out,used,reserve:Math.max(0,portfolioCapital-used),profit,count:plan.size,skipped:rows.length-eligible.length,noData,vialCost:vialWater?{P:vialWater.low,B:Math.round((vialWater.low+vialWater.high)/2),F:vialWater.high}:null}
+  },[nightHerbs,prices,volumes,nightHist,nightRoute,nightOnly600,nightLevelFilter,portfolioProfile,portfolioCapital,levels,mapping])
 
   const copyNightPlan=async()=>{
     const lines=nightPlan.rows.filter((r:any)=>r.plan).flatMap((r:any)=>[`${r.inName}: ${r.plan.qty} adet — alış emri ${r.a.buy[portfolioProfile]} GP`])
@@ -3348,7 +3356,7 @@ export default function App() {
         </div>
         {nightPlan.rows.length>0?<div className="tableBox"><table><thead><tr><th>Herb</th><th>{nightRoute==='GRIMY'?'Grimy':'Clean'} alış emri</th><th>Unf satış emri</th><th>Net kâr / adet</th><th>~GP/saat</th><th>Gece adedi</th><th>Sermaye</th><th>Beklenen net kâr</th><th>Likidite</th></tr></thead><tbody>
           {nightPlan.rows.map((r:any)=><tr key={r.key} style={{opacity:r.plan?1:.55}}>
-            <td><b>{r.herb}</b><div style={{fontSize:10,color:'#8b949e'}}>Lv {r.level}{r.locked?' • seviye yetmiyor':''}</div></td>
+            <td><b>{r.herb}</b><div style={{fontSize:10,color:'#8b949e'}}>Lv {r.level}{r.locked?' • seviye yetmiyor':''}{r.vialName!=='Vial of water'?` • ${r.vialName}`:''}</div></td>
             <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.a.buy[k])}{r.a.ok?'':'*'}</div>)}</td>
             <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.b.sell[k])}{r.b.ok?'':'*'}</div>)}</td>
             <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400,color:r.net[k]>0?'#3fb950':'#f85149'}}>{k[0]} {fmt(r.net[k])}</div>)}</td>
