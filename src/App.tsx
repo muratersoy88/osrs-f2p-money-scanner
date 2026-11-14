@@ -1294,7 +1294,8 @@ export default function App() {
   const [nightHist,setNightHist]=useState<Record<string,NightSample[]>>({})
   const [nightHistTime,setNightHistTime]=useState(0)
   const [nightLoading,setNightLoading]=useState(false)
-  const [nightRoute,setNightRoute]=useState<'GRIMY'|'CLEAN'>('GRIMY')
+  const [nightRoute,setNightRoute]=useState<'GRIMY'|'CLEAN'|'DEGRIME'>('GRIMY')
+  const [nightHours,setNightHours]=useState(2)
   const [nightOnly600,setNightOnly600]=useState(false)
   const [nightLevelFilter,setNightLevelFilter]=useState(false)
   const [nightCopied,setNightCopied]=useState(false)
@@ -2720,7 +2721,7 @@ export default function App() {
   const nightHerbs=useMemo(()=>{
     // Unfinished-potion Herblore levels (Wiki), plus Cadantine blood potion which needs a Vial of blood.
     const potionLevel:Record<string,number>={guam:3,marrentill:5,tarromin:12,harralander:22,ranarr:30,toadflax:34,irit:45,avantoe:50,kwuarm:55,huasca:58,snapdragon:63,cadantine:66,lantadyme:69,dwarfweed:72,torstol:78}
-    const list:any[]=herbloreRows.map((hr:any)=>hr.grimyPotion||hr.cleanPotion).filter((h:any)=>h&&h.herb).map((h:any)=>({key:h.key,herb:h.herb,level:potionLevel[h.key]??h.level,grimyName:h.grimyName,cleanName:h.cleanName,unfinishedName:h.unfinishedName,vialName:'Vial of water'}))
+    const list:any[]=herbloreRows.map((hr:any)=>hr.grimyPotion||hr.cleanPotion).filter((h:any)=>h&&h.herb).map((h:any)=>({key:h.key,herb:h.herb,level:potionLevel[h.key]??h.level,cleanLevel:h.level,grimyName:h.grimyName,cleanName:h.cleanName,unfinishedName:h.unfinishedName,vialName:'Vial of water'}))
     const cad=list.find((x:any)=>x.key==='cadantine')
     if(cad)list.push({key:'cadantineblood',herb:'Cadantine blood',level:80,grimyName:cad.grimyName,cleanName:cad.cleanName,unfinishedName:'Cadantine blood potion (unf)',vialName:'Vial of blood'})
     return list
@@ -2744,6 +2745,7 @@ export default function App() {
   const nightFetchNames=useMemo(()=>{
     const names:string[]=[]
     nightHerbs.forEach((h:any)=>names.push(h.grimyName,h.cleanName,h.unfinishedName))
+    names.push('Nature rune','Earth rune')
     nightV5.forEach((m:any)=>{m.inputs.forEach((x:any)=>names.push(x.name));names.push(m.output)})
     return Array.from(new Set(names.filter(n=>typeof n==='string'&&n)))
   },[nightHerbs,nightV5])
@@ -2797,45 +2799,78 @@ export default function App() {
     return {l,ok,pts:Math.min(lows.length,highs.length),buy,sell}
   }
 
+  // Two-constraint allocator (capital AND session time; hours===null means no time limit).
+  // Three rankings are tried (profit per GP invested, profit per hour, and profit per combined
+  // share of capital+time) and the plan with the highest total profit is kept.
+  const nightAllocate=(items:{key:string;cost:number;net:number;qtyCap:number;rate:number}[],capital:number,hours:number|null,perItemCap:number)=>{
+    type Plan=Map<string,{qty:number;capital:number;profit:number;hours:number}>
+    const C=Math.max(1,capital)
+    const run=(score:(r:{cost:number;net:number;rate:number})=>number):Plan=>{
+      const plan:Plan=new Map()
+      let cap=Math.max(0,capital),time=hours===null?Infinity:Math.max(0,hours)
+      ;[...items].sort((x,y)=>score(y)-score(x)).forEach(r=>{
+        const qty=Math.floor(Math.min(r.qtyCap,perItemCap/r.cost,cap/r.cost,time*r.rate))
+        if(!(qty>=1))return
+        plan.set(r.key,{qty,capital:qty*r.cost,profit:qty*r.net,hours:qty/r.rate})
+        cap-=qty*r.cost
+        if(hours!==null)time-=qty/r.rate
+      })
+      return plan
+    }
+    const candidates:Plan[]=[run(r=>r.net/r.cost)]
+    if(hours!==null){
+      candidates.push(run(r=>r.net*r.rate))
+      if(hours>0)candidates.push(run(r=>r.net/(r.cost/C+1/r.rate/hours)))
+    }
+    const total=(pl:Plan)=>[...pl.values()].reduce((n,x)=>n+x.profit,0)
+    return candidates.reduce((best,c)=>total(c)>total(best)?c:best,candidates[0])
+  }
+
   const nightPlan=useMemo(()=>{
-    type S3={PATIENT:number;BALANCED:number;FAST:number}
     const keys=['PATIENT','BALANCED','FAST'] as const
-    const live=nightLive,ladder=nightLadder
     const sel=portfolioProfile
-    const vialWater=live('Vial of water')
+    const vialWater=nightLive('Vial of water')
+    const natL=nightLadder('Nature rune'),earthL=nightLadder('Earth rune')
+    const rate=nightRoute==='GRIMY'?1475:nightRoute==='CLEAN'?3200:16200
     const rows:any[]=[]
     let noData=0
     nightHerbs.forEach((h:any)=>{
-      const vial=live(h.vialName)
-      const inName=nightRoute==='GRIMY'?h.grimyName:h.cleanName
-      const a=ladder(inName),b=ladder(h.unfinishedName)
-      if(!a||!b||!vial){noData++;return}
-      const locked=(levels.Herblore||1)<h.level
+      if(nightRoute==='DEGRIME'&&h.vialName!=='Vial of water')return
+      const inName=nightRoute==='CLEAN'?h.cleanName:h.grimyName
+      const outName=nightRoute==='DEGRIME'?h.cleanName:h.unfinishedName
+      const a=nightLadder(inName),b=nightLadder(outName)
+      if(!a||!b){noData++;return}
+      const extras:{name:string;perUnit:number;price:NightS3;vol:number;limit:number}[]=[]
+      if(nightRoute==='DEGRIME'){
+        if(!natL||(!degrimeEarthStaff&&!earthL)){noData++;return}
+        extras.push({name:'Nature rune',perUnit:2/27,price:natL.buy,vol:natL.l.vol,limit:natL.l.limit})
+        if(!degrimeEarthStaff&&earthL)extras.push({name:'Earth rune',perUnit:4/27,price:earthL.buy,vol:earthL.l.vol,limit:earthL.l.limit})
+      }else{
+        const vial=nightLive(h.vialName)
+        if(!vial){noData++;return}
+        extras.push({name:h.vialName,perUnit:1,price:{PATIENT:vial.low,BALANCED:Math.round((vial.low+vial.high)/2),FAST:vial.high},vol:vial.vol,limit:vial.limit})
+      }
+      const locked=nightRoute==='DEGRIME'?((levels.Herblore||1)<h.cleanLevel||(levels.Magic||1)<70):(levels.Herblore||1)<h.level
       if(nightLevelFilter&&locked)return
-      const vialCost:S3={PATIENT:vial.low,BALANCED:Math.round((vial.low+vial.high)/2),FAST:vial.high}
-      const cost:S3={PATIENT:0,BALANCED:0,FAST:0},net:S3={PATIENT:0,BALANCED:0,FAST:0}
-      keys.forEach(k=>{cost[k]=a.buy[k]+vialCost[k];net[k]=b.sell[k]-geTax(b.sell[k])-cost[k]})
-      const rate=nightRoute==='GRIMY'?1475:3200
-      const bottleneck=Math.min(a.l.vol,b.l.vol)
-      const limits=[a.l.limit,vial.limit].filter(x=>x>0)
+      const cost:NightS3={PATIENT:0,BALANCED:0,FAST:0},net:NightS3={PATIENT:0,BALANCED:0,FAST:0}
+      keys.forEach(k=>{
+        cost[k]=a.buy[k]+extras.reduce((n,e)=>n+e.perUnit*e.price[k],0)
+        net[k]=b.sell[k]-geTax(b.sell[k])-cost[k]
+      })
+      const bottleneck=Math.min(a.l.vol,b.l.vol,...extras.map(e=>e.vol/e.perUnit))
+      const limits=[a.l.limit,...extras.map(e=>e.limit>0?Math.floor(e.limit/e.perUnit):0)].filter(x=>x>0)
       const qtyCap=Math.max(0,Math.min(limits.length?Math.min(...limits):Infinity,Math.floor(bottleneck*0.05)))
-      rows.push({key:h.key,herb:h.herb,vialName:h.vialName,vialCost,level:h.level,locked,inName,outName:h.unfinishedName,a,b,cost,net,rate,gpHour:net[sel]*rate,bottleneck,qtyCap})
+      rows.push({key:h.key,herb:h.herb,extras,level:nightRoute==='DEGRIME'?h.cleanLevel:h.level,locked,inName,outName,a,b,cost,net,rate,gpHour:net[sel]*rate,bottleneck,qtyCap})
     })
-    const eligible=rows.filter(r=>r.net[sel]>0&&r.qtyCap>=1&&Number.isFinite(r.qtyCap)&&(!nightOnly600||r.gpHour>=600000))
-    const plan=new Map<string,{qty:number;capital:number;profit:number}>()
-    let remaining=Math.max(0,portfolioCapital)
-    ;[...eligible].sort((x,y)=>y.net[sel]/y.cost[sel]-x.net[sel]/x.cost[sel]).forEach(r=>{
-      const c=r.cost[sel]
-      const qty=Math.min(r.qtyCap,Math.floor(portfolioCapital*0.5/c),Math.floor(remaining/c))
-      if(qty<1)return
-      plan.set(r.key,{qty,capital:qty*c,profit:qty*r.net[sel]});remaining-=qty*c
-    })
-    const reasonOf=(r:any)=>r.net[sel]<=0?'zararda':r.qtyCap<1||!Number.isFinite(r.qtyCap)?'hacim/limit yetersiz':(nightOnly600&&r.gpHour<600000)?'600K GP/h altı':!plan.has(r.key)?'sermaye yetmedi':''
+    const eligible=rows.filter(r=>r.net[sel]>0&&r.cost[sel]>0&&r.qtyCap>=1&&Number.isFinite(r.qtyCap)&&(!nightOnly600||r.gpHour>=600000))
+    const plan=nightAllocate(eligible.map(r=>({key:r.key,cost:r.cost[sel],net:r.net[sel],qtyCap:r.qtyCap,rate:r.rate})),portfolioCapital,nightHours>0?nightHours:null,portfolioCapital*0.5)
+    const reasonOf=(r:any)=>r.net[sel]<=0?'zararda':r.qtyCap<1||!Number.isFinite(r.qtyCap)?'hacim/limit yetersiz':(nightOnly600&&r.gpHour<600000)?'600K GP/h altı':!plan.has(r.key)?'sermaye/süre yetmedi':''
     const out=rows.map(r=>({...r,plan:plan.get(r.key)||null,reason:reasonOf(r)})).sort((x,y)=>(y.plan?1:0)-(x.plan?1:0)||y.gpHour-x.gpHour)
     const used=[...plan.values()].reduce((n,x)=>n+x.capital,0)
     const profit=[...plan.values()].reduce((n,x)=>n+x.profit,0)
-    return {rows:out,used,reserve:Math.max(0,portfolioCapital-used),profit,count:plan.size,skipped:rows.length-eligible.length,noData,vialCost:vialWater?{P:vialWater.low,B:Math.round((vialWater.low+vialWater.high)/2),F:vialWater.high}:null}
-  },[nightHerbs,prices,volumes,nightHist,nightRoute,nightOnly600,nightLevelFilter,portfolioProfile,portfolioCapital,levels,mapping])
+    const hoursUsed=[...plan.values()].reduce((n,x)=>n+x.hours,0)
+    return {rows:out,used,reserve:Math.max(0,portfolioCapital-used),profit,hoursUsed,count:plan.size,skipped:rows.length-eligible.length,noData,vialCost:vialWater?{P:vialWater.low,B:Math.round((vialWater.low+vialWater.high)/2),F:vialWater.high}:null}
+  },[nightHerbs,prices,volumes,nightHist,nightRoute,nightOnly600,nightLevelFilter,nightHours,portfolioProfile,portfolioCapital,levels,mapping,degrimeEarthStaff])
 
   const nightMethods=useMemo(()=>{
     type S3={PATIENT:number;BALANCED:number;FAST:number}
@@ -2859,27 +2894,22 @@ export default function App() {
       rows.push({...m,ins,outL,cost,net,bottleneck,qtyCap,gpHour:net[sel]*m.rate})
     })
     const eligible=rows.filter(r=>r.net[sel]>0&&r.cost[sel]>0&&r.qtyCap>=1&&Number.isFinite(r.qtyCap)&&(!nightOnly600||r.gpHour>=600000))
-    const plan=new Map<string,{qty:number;capital:number;profit:number}>()
-    let remaining=Math.max(0,nightPlan.reserve)
-    ;[...eligible].sort((x,y)=>y.net[sel]/y.cost[sel]-x.net[sel]/x.cost[sel]).forEach(r=>{
-      const c=r.cost[sel]
-      const qty=Math.min(r.qtyCap,Math.floor(portfolioCapital*0.5/c),Math.floor(remaining/c))
-      if(qty<1)return
-      plan.set(r.key,{qty,capital:qty*c,profit:qty*r.net[sel]});remaining-=qty*c
-    })
-    const reasonOf=(r:any)=>r.net[sel]<=0?'zararda':r.qtyCap<1?'hacim/limit yetersiz':(nightOnly600&&r.gpHour<600000)?'600K GP/h altı':!plan.has(r.key)?'sermaye yetmedi':''
+    const hoursLeft=nightHours>0?Math.max(0,nightHours-nightPlan.hoursUsed):null
+    const plan=nightAllocate(eligible.map(r=>({key:r.key,cost:r.cost[sel],net:r.net[sel],qtyCap:r.qtyCap,rate:r.rate})),nightPlan.reserve,hoursLeft,portfolioCapital*0.5)
+    const reasonOf=(r:any)=>r.net[sel]<=0?'zararda':r.qtyCap<1?'hacim/limit yetersiz':(nightOnly600&&r.gpHour<600000)?'600K GP/h altı':!plan.has(r.key)?'sermaye/süre yetmedi':''
     const out=rows.map(r=>({...r,plan:plan.get(r.key)||null,reason:reasonOf(r)})).sort((x,y)=>(y.plan?1:0)-(x.plan?1:0)||y.gpHour-x.gpHour)
     const used=[...plan.values()].reduce((n,x)=>n+x.capital,0)
     const profit=[...plan.values()].reduce((n,x)=>n+x.profit,0)
-    return {rows:out,used,profit,count:plan.size,reserve:Math.max(0,nightPlan.reserve-used)}
-  },[nightV5,prices,volumes,nightHist,nightOnly600,portfolioProfile,portfolioCapital,nightPlan.reserve])
+    const hoursUsed=[...plan.values()].reduce((n,x)=>n+x.hours,0)
+    return {rows:out,used,profit,hoursUsed,count:plan.size,reserve:Math.max(0,nightPlan.reserve-used)}
+  },[nightV5,prices,volumes,nightHist,nightOnly600,nightHours,portfolioProfile,portfolioCapital,nightPlan.reserve,nightPlan.hoursUsed])
 
   const saveNightLedger=()=>{
     const sel=portfolioProfile
     const rows:NightLedgerRow[]=[]
     nightPlan.rows.filter((r:any)=>r.plan).forEach((r:any)=>{
       rows.push({item:r.inName,side:'BUY',qty:r.plan.qty,price:r.a.buy[sel],filled:null,hours:null,avg:null})
-      rows.push({item:r.vialName,side:'BUY',qty:r.plan.qty,price:Math.round(r.vialCost[sel]),filled:null,hours:null,avg:null})
+      r.extras.forEach((e:any)=>rows.push({item:e.name,side:'BUY',qty:Math.ceil(r.plan.qty*e.perUnit),price:Math.round(e.price[sel]),filled:null,hours:null,avg:null}))
       rows.push({item:r.outName,side:'SELL',qty:r.plan.qty,price:r.b.sell[sel],filled:null,hours:null,avg:null})
     })
     nightMethods.rows.filter((r:any)=>r.plan).forEach((r:any)=>{
@@ -3441,7 +3471,8 @@ export default function App() {
         <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'end',padding:10,border:'1px solid #30363d',borderRadius:8}}>
           <label style={{display:'grid',gap:4}}>Mevcut GP bakiyesi<input type="number" min="1" step="100000" value={portfolioCapital} onChange={e=>setPortfolioCapital(Math.max(1,Number(e.target.value)||1))} style={{width:180}}/></label>
           <div style={{display:'grid',gap:4}}>Plan stratejisi<div style={{display:'flex',gap:6}}>{(['PATIENT','BALANCED','FAST'] as const).map(k=><button key={k} onClick={()=>setPortfolioProfile(k)} style={{padding:'6px 12px',borderRadius:6,border:'1px solid #30363d',background:portfolioProfile===k?'#238636':'transparent',color:'inherit',cursor:'pointer',fontWeight:portfolioProfile===k?700:400}}>{k==='PATIENT'?'Patient':k==='BALANCED'?'Balanced':'Fast'}</button>)}</div></div>
-          <div style={{display:'grid',gap:4}}>Rota<div style={{display:'flex',gap:6}}>{([['GRIMY','Grimy → Unf'],['CLEAN','Clean → Unf']] as const).map(([k,label])=><button key={k} onClick={()=>setNightRoute(k)} style={{padding:'6px 12px',borderRadius:6,border:'1px solid #30363d',background:nightRoute===k?'#1f6feb':'transparent',color:'inherit',cursor:'pointer',fontWeight:nightRoute===k?700:400}}>{label}</button>)}</div></div>
+          <div style={{display:'grid',gap:4}}>Rota<div style={{display:'flex',gap:6}}>{([['GRIMY','Grimy → Unf'],['CLEAN','Clean → Unf'],['DEGRIME','Degrime (Grimy → Clean)']] as const).map(([k,label])=><button key={k} onClick={()=>setNightRoute(k)} style={{padding:'6px 12px',borderRadius:6,border:'1px solid #30363d',background:nightRoute===k?'#1f6feb':'transparent',color:'inherit',cursor:'pointer',fontWeight:nightRoute===k?700:400}}>{label}</button>)}</div></div>
+          <label style={{display:'grid',gap:4}}>Seans süresi (saat, 0 = sınırsız)<input type="number" min="0" step="0.5" value={nightHours} onChange={e=>setNightHours(Math.max(0,Number(e.target.value)||0))} style={{width:120}}/></label>
           <label style={{display:'flex',gap:6,alignItems:'center',fontSize:12}}><input type="checkbox" checked={nightOnly600} onChange={e=>setNightOnly600(e.target.checked)}/>Sadece 600K+ GP/saat</label>
           <label style={{display:'flex',gap:6,alignItems:'center',fontSize:12}}><input type="checkbox" checked={nightLevelFilter} onChange={e=>setNightLevelFilter(e.target.checked)}/>Herblore seviyeme göre ({levels.Herblore||1})</label>
         </div>
@@ -3449,17 +3480,18 @@ export default function App() {
           Anlık fiyat: <b>{updated?updated.toLocaleString('tr-TR'):'yüklenmedi'}</b> (OSRS Wiki /latest, /24h) • Saatlik geçmiş (son 24 saat): <b>{nightLoading?'çekiliyor…':nightHistTime?new Date(nightHistTime).toLocaleString('tr-TR'):'henüz alınmadı'}</b><br/>
           <b>P</b>=Patient, <b>B</b>=Balanced, <b>F</b>=Fast. Alış emri: Fast anlık yüksek fiyat; Balanced son 24 saatteki saatlik düşük fiyatların ortancası; Patient aynı serinin alt %20'lik dilimi (anlık düşük fiyatın %3 altına inmez). Satış emri: Fast anlık düşük fiyat; Balanced saatlik yüksek fiyatların ortancası; Patient üst %80'lik dilim (anlık yüksek fiyatın %3 üstüne çıkmaz). Seçili strateji kalın yazılır. * = saatlik geçmiş yetersiz, 24h ortalama kullanıldı.
         </div>
-        {nightPlan.rows.length>0?<div className="tableBox"><table><thead><tr><th>Herb</th><th>{nightRoute==='GRIMY'?'Grimy':'Clean'} alış emri</th><th>Unf satış emri</th><th>Net kâr / adet</th><th>~GP/saat</th><th>Gece adedi</th><th>Sermaye</th><th>Beklenen net kâr</th><th>Likidite</th></tr></thead><tbody>
+        {nightPlan.rows.length>0?<div className="tableBox"><table><thead><tr><th>Herb</th><th>{nightRoute==='CLEAN'?'Clean':'Grimy'} alış emri</th><th>Ek malzeme alış emri</th><th>{nightRoute==='DEGRIME'?'Clean herb':'Unf'} satış emri</th><th>Net kâr / adet</th><th>~GP/saat (yalnız bu işle)</th><th>Gece adedi</th><th>Sermaye</th><th>Beklenen net kâr</th><th>Likidite</th></tr></thead><tbody>
           {nightPlan.rows.map((r:any)=><tr key={r.key} style={{opacity:r.plan?1:.55}}>
-            <td><b>{r.herb}</b><div style={{fontSize:10,color:'#8b949e'}}>Lv {r.level}{r.locked?' • seviye yetmiyor':''}{r.vialName!=='Vial of water'?` • ${r.vialName}`:''}</div></td>
-            <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.a.buy[k])}{r.a.ok?'':'*'}</div>)}</td>
-            <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.b.sell[k])}{r.b.ok?'':'*'}</div>)}</td>
+            <td><b>{r.herb}</b><div style={{fontSize:10,color:'#8b949e'}}>Lv {r.level}{nightRoute==='DEGRIME'?' • Magic 70':''}{r.locked?' • seviye yetmiyor':''}</div></td>
+            <td>{r.inName}{r.plan?` ×${fmt(r.plan.qty)}`:''}{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.a.buy[k])}{r.a.ok?'':'*'}</div>)}</td>
+            <td>{r.extras.map((e:any)=><div key={e.name} style={{marginBottom:3}}>{e.name}{r.plan?` ×${fmt(Math.ceil(r.plan.qty*e.perUnit))}`:''}{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontSize:11,fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(Math.round(e.price[k]))}</div>)}</div>)}</td>
+            <td>{r.outName}{r.plan?` ×${fmt(r.plan.qty)}`:''}{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.b.sell[k])}{r.b.ok?'':'*'}</div>)}</td>
             <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400,color:r.net[k]>0?'#3fb950':'#f85149'}}>{k[0]} {fmt(r.net[k])}</div>)}</td>
             <td>{fmt(r.gpHour)}<div style={{fontSize:10,color:'#8b949e'}}>{fmt(r.rate)}/saat hızla</div></td>
-            <td><b>{r.plan?fmt(r.plan.qty):'—'}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.plan?`üst sınır ${fmt(r.qtyCap)}`:r.reason}</div></td>
+            <td><b>{r.plan?fmt(r.plan.qty):'—'}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.plan?`üst sınır ${fmt(r.qtyCap)} • ${r.plan.hours.toFixed(2)} sa`:r.reason}</div></td>
             <td>{r.plan?`${fmt(r.plan.capital)} GP`:'—'}</td>
             <td style={{color:'#3fb950'}}><b>{r.plan?`${fmt(r.plan.profit)} GP`:'—'}</b></td>
-            <td>24h {fmt(r.bottleneck)}{r.plan?<div style={{fontSize:10,color:'#8b949e'}}>pay %{(r.plan.qty/Math.max(1,r.bottleneck)*100).toFixed(1)}</div>:null}</td>
+            <td>24h {fmt(Math.round(r.bottleneck))}{r.plan?<div style={{fontSize:10,color:'#8b949e'}}>pay %{(r.plan.qty/Math.max(1,r.bottleneck)*100).toFixed(1)}</div>:null}</td>
           </tr>)}
         </tbody></table></div>:<div style={{padding:10,border:'1px solid #d29922',borderRadius:6}}>Fiyat verisi eşleşen herb bulunamadı{nightPlan.noData>0?` (${nightPlan.noData} herb için fiyat yok)`:''}. Üstteki “Fiyatları Güncelle” düğmesine basıp tekrar dene.</div>}
         <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'center',fontSize:12,marginTop:10,padding:10,border:'1px solid #30363d',borderRadius:8}}>
@@ -3467,9 +3499,10 @@ export default function App() {
           <span>Toplam kullanılan sermaye: <b>{fmt(nightPlan.used)} GP</b></span>
           <span>Kullanılabilir bakiye: <b>{fmt(nightPlan.reserve)} GP</b></span>
           <span>Beklenen toplam net kâr: <b style={{color:nightPlan.profit>0?'#3fb950':'inherit'}}>{fmt(nightPlan.profit)} GP</b></span>
+          <span>Tahmini işlem süresi: <b>{nightPlan.hoursUsed.toFixed(2)} saat</b>{nightHours>0?` / ${nightHours}`:''}{nightPlan.hoursUsed>0?` • etkin ≈ ${fmt(nightPlan.profit/nightPlan.hoursUsed)} GP/saat`:''}</span>
           <button onClick={copyNightPlan} disabled={!nightPlan.count} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #30363d',background:'transparent',color:'inherit',cursor:'pointer'}}>{nightCopied?'Kopyalandı':'Emir listesini kopyala'}</button>
         </div>
-        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Listelenen herb: {nightPlan.rows.length} • plana girmeyen (soluk satırlar): {nightPlan.skipped}{nightPlan.noData>0?` • fiyat verisi olmayan: ${nightPlan.noData}`:''}. Adet; GE alış limiti, 24 saatlik hacmin %5'i ve ürün başına sermayenin %50'si ile sınırlıdır; sermaye en yüksek getiri/sermaye oranına göre dağıtılır. Net kâr; %2 GE satış vergisi ve Vial of water{nightPlan.vialCost?` (P ${nightPlan.vialCost.P} / B ${nightPlan.vialCost.B} / F ${nightPlan.vialCost.F} GP)`:''} dahil. GP/saat tahmini işlem hızıdır (Grimy→Unf ~1.475, Clean→Unf ~3.200 adet/saat). Tüm fiyatlar geçmiş verilerden türetilmiş tahmindir, dolum veya kâr garantisi yoktur. High Alchemy dahil değildir.</p>
+        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Listelenen herb: {nightPlan.rows.length} • plana girmeyen (soluk satırlar): {nightPlan.skipped}{nightPlan.noData>0?` • fiyat verisi olmayan: ${nightPlan.noData}`:''}. Adet; GE alış limiti, 24 saatlik hacmin %5'i, ürün başına sermayenin %50'si ve seans süresi ile sınırlıdır; sermaye ve süre birlikte en verimli kullanılacak şekilde (kâr / [sermaye payı + süre payı]) dağıtılır. “GP/saat (yalnız bu işle)” sütunu satırların toplamı değildir; gerçek toplam süre ve etkin GP/saat altta yazar (banka ve GE süresi hariç). Net kâr; %2 GE satış vergisi ve Vial of water{nightPlan.vialCost?` (P ${nightPlan.vialCost.P} / B ${nightPlan.vialCost.B} / F ${nightPlan.vialCost.F} GP)`:''} dahil. İşlem hızları tahmindir (Grimy→Unf ~1.475, Clean→Unf ~3.200, Degrime ~16.200 adet/saat; Degrime için Magic 70 + Arceuus, 2 Nature rune / 27 herb{degrimeEarthStaff?', Earth staff varsayımı açık':', Earth rune dahil'}). Tüm fiyatlar geçmiş verilerden türetilmiş tahmindir, dolum veya kâr garantisi yoktur. High Alchemy dahil değildir.</p>
 
         <h3 style={{marginBottom:4}}>Diğer işleme metodları <span style={{fontSize:11,fontWeight:400,color:'#8b949e'}}>(uygulamadaki doğrulanmış V5 metodları • canlı fiyatta en kârlı ilk 30 • Herblore planından kalan {fmt(nightPlan.reserve)} GP ile)</span></h3>
         {nightMethods.rows.length>0?<div className="tableBox"><table><thead><tr><th>Metod</th><th>Alış emirleri</th><th>Satış emri</th><th>Net kâr / işlem</th><th>~GP/saat</th><th>Gece adedi (işlem)</th><th>Sermaye</th><th>Beklenen net kâr</th><th>Likidite</th></tr></thead><tbody>
@@ -3489,7 +3522,7 @@ export default function App() {
           <span>Bu bölümde emir verilen: <b>{nightMethods.count}</b></span>
           <span>Kullanılan sermaye: <b>{fmt(nightMethods.used)} GP</b></span>
           <span>Beklenen net kâr: <b style={{color:nightMethods.profit>0?'#3fb950':'inherit'}}>{fmt(nightMethods.profit)} GP</b></span>
-          <b>Genel toplam: {fmt(nightPlan.used+nightMethods.used)} GP bağlı • {fmt(nightPlan.profit+nightMethods.profit)} GP beklenen net kâr • {fmt(nightMethods.reserve)} GP boşta</b>
+          <b>Genel toplam: {fmt(nightPlan.used+nightMethods.used)} GP bağlı • {fmt(nightPlan.profit+nightMethods.profit)} GP beklenen net kâr • {(nightPlan.hoursUsed+nightMethods.hoursUsed).toFixed(2)} saat • {fmt(nightMethods.reserve)} GP boşta</b>
         </div>
 
         <h3 style={{marginBottom:4}}>Emir defteri</h3>
