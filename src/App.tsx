@@ -2649,7 +2649,9 @@ export default function App() {
       candidates.push({id:`v5-${r.id}`,group:`v5-${r.id}`,name:r.name,kind:'Üretim / işleme',skill:(r.skills||[]).join(', '),level:r.level,member:Boolean(r.member),rate:r.rate,rateSource:r.rateSource||'Tahmin',inputs:ins,output:r.economy.outputName,outputQty:Number(r.economy.outputQty)||1,buyLimit:Math.min(...limits.map((x:number,i:number)=>Math.floor(x/ins[i].qty))),volume:Math.min(...vols),buyUnit:0,sellUnit:0,taxed:true,attention:r.attention||'MEDIUM',requirements:r.requirements||[]})
     })
     // Herblore's 15 herbs, all four routes; one route per herb can enter a portfolio.
-    herbloreRows.forEach((h:any)=>{
+    herbloreRows.forEach((hr:any)=>{
+      const h:any={...(hr.grimyPotion||hr.cleanPotion||{}),grimyClean:hr.grimyClean,cleanPotion:hr.cleanPotion,grimyPotion:hr.grimyPotion,degrime:hr.degrime}
+      if(!h.herb)return
       const defs=[
         {r:h.grimyClean,key:'grimyClean',inputs:[{name:h.grimyName,qty:1}],output:h.cleanName,rate:5000,skill:'Herblore',level:h.level,extra:0},
         {r:h.cleanPotion,key:'cleanPotion',inputs:[{name:h.cleanName,qty:1},{name:'Vial of water',qty:1}],output:h.unfinishedName,rate:2500,skill:'Herblore',level:h.level,extra:0},
@@ -2717,7 +2719,7 @@ export default function App() {
     let cancelled=false
     setNightLoading(true)
     ;(async()=>{
-      const names=herbloreRows.flatMap((h:any)=>[h.grimyName,h.cleanName,h.unfinishedName])
+      const names=herbloreRows.flatMap((hr:any)=>{const h=hr.grimyPotion||hr.cleanPotion||{};return [h.grimyName,h.cleanName,h.unfinishedName]})
       const ids=Array.from(new Set(names.map((n:string)=>getItem(n)?.id).filter((x:any)=>x!=null)))
       const out:Record<string,NightSample[]>={}
       for(let i=0;i<ids.length;i+=5){
@@ -2763,10 +2765,13 @@ export default function App() {
     const sel=portfolioProfile
     const vial=live('Vial of water')
     const rows:any[]=[]
-    herbloreRows.forEach((h:any)=>{
+    let noData=0
+    herbloreRows.forEach((hr:any)=>{
+      const h:any=hr.grimyPotion||hr.cleanPotion
+      if(!h||!h.herb)return
       const inName=nightRoute==='GRIMY'?h.grimyName:h.cleanName
       const a=ladder(inName),b=ladder(h.unfinishedName)
-      if(!a||!b||!vial)return
+      if(!a||!b||!vial){noData++;return}
       const locked=(levels.Herblore||1)<h.level
       if(nightLevelFilter&&locked)return
       const vialCost:S3={PATIENT:vial.low,BALANCED:Math.round((vial.low+vial.high)/2),FAST:vial.high}
@@ -2787,10 +2792,11 @@ export default function App() {
       if(qty<1)return
       plan.set(r.key,{qty,capital:qty*c,profit:qty*r.net[sel]});remaining-=qty*c
     })
-    const out=eligible.map(r=>({...r,plan:plan.get(r.key)||null})).sort((x,y)=>y.gpHour-x.gpHour)
+    const reasonOf=(r:any)=>r.net[sel]<=0?'zararda':r.qtyCap<1||!Number.isFinite(r.qtyCap)?'hacim/limit yetersiz':(nightOnly600&&r.gpHour<600000)?'600K GP/h altı':!plan.has(r.key)?'sermaye yetmedi':''
+    const out=rows.map(r=>({...r,plan:plan.get(r.key)||null,reason:reasonOf(r)})).sort((x,y)=>(y.plan?1:0)-(x.plan?1:0)||y.gpHour-x.gpHour)
     const used=[...plan.values()].reduce((n,x)=>n+x.capital,0)
     const profit=[...plan.values()].reduce((n,x)=>n+x.profit,0)
-    return {rows:out,used,reserve:Math.max(0,portfolioCapital-used),profit,count:plan.size,skipped:rows.length-eligible.length,vialCost:vial?{P:vial.low,B:Math.round((vial.low+vial.high)/2),F:vial.high}:null}
+    return {rows:out,used,reserve:Math.max(0,portfolioCapital-used),profit,count:plan.size,skipped:rows.length-eligible.length,noData,vialCost:vial?{P:vial.low,B:Math.round((vial.low+vial.high)/2),F:vial.high}:null}
   },[herbloreRows,prices,volumes,nightHist,nightRoute,nightOnly600,nightLevelFilter,portfolioProfile,portfolioCapital,levels,mapping])
 
   const copyNightPlan=async()=>{
@@ -3347,12 +3353,12 @@ export default function App() {
             <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.b.sell[k])}{r.b.ok?'':'*'}</div>)}</td>
             <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400,color:r.net[k]>0?'#3fb950':'#f85149'}}>{k[0]} {fmt(r.net[k])}</div>)}</td>
             <td>{fmt(r.gpHour)}<div style={{fontSize:10,color:'#8b949e'}}>{fmt(r.rate)}/saat hızla</div></td>
-            <td><b>{r.plan?fmt(r.plan.qty):'—'}</b><div style={{fontSize:10,color:'#8b949e'}}>üst sınır {fmt(r.qtyCap)}</div></td>
+            <td><b>{r.plan?fmt(r.plan.qty):'—'}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.plan?`üst sınır ${fmt(r.qtyCap)}`:r.reason}</div></td>
             <td>{r.plan?`${fmt(r.plan.capital)} GP`:'—'}</td>
             <td style={{color:'#3fb950'}}><b>{r.plan?`${fmt(r.plan.profit)} GP`:'—'}</b></td>
             <td>24h {fmt(r.bottleneck)}{r.plan?<div style={{fontSize:10,color:'#8b949e'}}>pay %{(r.plan.qty/Math.max(1,r.bottleneck)*100).toFixed(1)}</div>:null}</td>
           </tr>)}
-        </tbody></table></div>:<div style={{padding:10,border:'1px solid #d29922',borderRadius:6}}>Seçili strateji ve rotada, hacim ve limit koşullarını geçen kârlı fırsat yok.</div>}
+        </tbody></table></div>:<div style={{padding:10,border:'1px solid #d29922',borderRadius:6}}>Fiyat verisi eşleşen herb bulunamadı{nightPlan.noData>0?` (${nightPlan.noData} herb için fiyat yok)`:''}. Üstteki “Fiyatları Güncelle” düğmesine basıp tekrar dene.</div>}
         <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'center',fontSize:12,marginTop:10,padding:10,border:'1px solid #30363d',borderRadius:8}}>
           <span>Emir verilen ürün: <b>{nightPlan.count}</b></span>
           <span>Toplam kullanılan sermaye: <b>{fmt(nightPlan.used)} GP</b></span>
@@ -3360,7 +3366,7 @@ export default function App() {
           <span>Beklenen toplam net kâr: <b style={{color:nightPlan.profit>0?'#3fb950':'inherit'}}>{fmt(nightPlan.profit)} GP</b></span>
           <button onClick={copyNightPlan} disabled={!nightPlan.count} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #30363d',background:'transparent',color:'inherit',cursor:'pointer'}}>{nightCopied?'Kopyalandı':'Emir listesini kopyala'}</button>
         </div>
-        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Elenen (zararda/düşük hacim/limit): {nightPlan.skipped}. Adet; GE alış limiti, 24 saatlik hacmin %5'i ve ürün başına sermayenin %50'si ile sınırlıdır; sermaye en yüksek getiri/sermaye oranına göre dağıtılır. Net kâr; %2 GE satış vergisi ve Vial of water{nightPlan.vialCost?` (P ${nightPlan.vialCost.P} / B ${nightPlan.vialCost.B} / F ${nightPlan.vialCost.F} GP)`:''} dahil. GP/saat tahmini işlem hızıdır (Grimy→Unf ~1.475, Clean→Unf ~3.200 adet/saat). Tüm fiyatlar geçmiş verilerden türetilmiş tahmindir, dolum veya kâr garantisi yoktur. High Alchemy dahil değildir.</p>
+        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Listelenen herb: {nightPlan.rows.length} • plana girmeyen (soluk satırlar): {nightPlan.skipped}{nightPlan.noData>0?` • fiyat verisi olmayan: ${nightPlan.noData}`:''}. Adet; GE alış limiti, 24 saatlik hacmin %5'i ve ürün başına sermayenin %50'si ile sınırlıdır; sermaye en yüksek getiri/sermaye oranına göre dağıtılır. Net kâr; %2 GE satış vergisi ve Vial of water{nightPlan.vialCost?` (P ${nightPlan.vialCost.P} / B ${nightPlan.vialCost.B} / F ${nightPlan.vialCost.F} GP)`:''} dahil. GP/saat tahmini işlem hızıdır (Grimy→Unf ~1.475, Clean→Unf ~3.200 adet/saat). Tüm fiyatlar geçmiş verilerden türetilmiş tahmindir, dolum veya kâr garantisi yoktur. High Alchemy dahil değildir.</p>
       </section>}
 
       {activeTab==='market'&&<section style={{marginTop:12,padding:12,border:'1px solid #30363d',borderRadius:8}}>
