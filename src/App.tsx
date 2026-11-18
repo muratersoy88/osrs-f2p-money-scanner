@@ -2910,18 +2910,24 @@ export default function App() {
     return {rows:out,used,profit,hoursUsed,count:plan.size,reserve:Math.max(0,nightPlan.reserve-used)}
   },[nightV5,prices,volumes,nightHist,nightOnly600,nightHours,portfolioProfile,portfolioCapital,nightPlan.reserve,nightPlan.hoursUsed])
 
-  const saveNightLedger=()=>{
+  type SnapOrder={side:'BUY'|'SELL';item:string;qty:number;price:number}
+  const buildNightOrders=():SnapOrder[]=>{
     const sel=portfolioProfile
-    const rows:NightLedgerRow[]=[]
+    const orders:SnapOrder[]=[]
     nightPlan.rows.filter((r:any)=>r.plan).forEach((r:any)=>{
-      rows.push({item:r.inName,side:'BUY',qty:r.plan.qty,price:r.a.buy[sel],filled:null,hours:null,avg:null})
-      r.extras.forEach((e:any)=>rows.push({item:e.name,side:'BUY',qty:Math.ceil(r.plan.qty*e.perUnit),price:Math.round(e.price[sel]),filled:null,hours:null,avg:null}))
-      rows.push({item:r.outName,side:'SELL',qty:r.plan.qty,price:r.b.sell[sel],filled:null,hours:null,avg:null})
+      orders.push({item:r.inName,side:'BUY',qty:r.plan.qty,price:r.a.buy[sel]})
+      r.extras.forEach((e:any)=>orders.push({item:e.name,side:'BUY',qty:Math.ceil(r.plan.qty*e.perUnit),price:Math.round(e.price[sel])}))
+      orders.push({item:r.outName,side:'SELL',qty:r.plan.qty,price:r.b.sell[sel]})
     })
     nightMethods.rows.filter((r:any)=>r.plan).forEach((r:any)=>{
-      r.ins.forEach((i:any)=>rows.push({item:i.x.name,side:'BUY',qty:r.plan.qty*i.x.qty,price:i.ld.buy[sel],filled:null,hours:null,avg:null}))
-      rows.push({item:r.output,side:'SELL',qty:r.plan.qty*r.outputQty,price:r.outL.sell[sel],filled:null,hours:null,avg:null})
+      r.ins.forEach((i:any)=>orders.push({item:i.x.name,side:'BUY',qty:r.plan.qty*i.x.qty,price:i.ld.buy[sel]}))
+      orders.push({item:r.output,side:'SELL',qty:r.plan.qty*r.outputQty,price:r.outL.sell[sel]})
     })
+    return orders
+  }
+  const saveNightLedger=()=>{
+    const sel=portfolioProfile
+    const rows:NightLedgerRow[]=buildNightOrders().map(o=>({...o,filled:null,hours:null,avg:null}))
     if(!rows.length)return
     setNightLedger(old=>[{id:`night-${Date.now()}`,date:new Date().toISOString(),strategy:sel,rows},...old].slice(0,30))
   }
@@ -2936,6 +2942,70 @@ export default function App() {
     const rowsOut:OrderHistoryRow[]=done.map(({r,i})=>({id:`${batch.id}-${i}`,date:batch.date,item:r.item,side:r.side,quantity:r.qty,orderPrice:r.price,filledQuantity:Math.max(0,r.filled as number),fillHours:r.hours,status:(r.filled as number)>=r.qty?'FILLED':(r.filled as number)>0?'PARTIAL':'CANCELLED',averageFillPrice:r.avg}))
     const ids=new Set(rowsOut.map(x=>x.id))
     setOrderHistory(old=>[...rowsOut,...old.filter(x=>!ids.has(x.id))])
+  }
+
+  // ---- Frozen order-list export (prices stay as they were when the file was created) ----
+  const aggregateOrders=(orders:SnapOrder[])=>{
+    const m=new Map<string,SnapOrder>()
+    orders.forEach(o=>{const q=Math.ceil(o.qty-1e-9);if(q<1)return;const k=`${o.side}|${o.item}|${o.price}`;const e=m.get(k);if(e)e.qty+=q;else m.set(k,{...o,qty:q})})
+    return [...m.values()]
+  }
+  const escHtml=(x:unknown)=>String(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'} as Record<string,string>)[c]||c)
+  const snapshotHtml=(title:string,meta:[string,string][],orders:SnapOrder[],summary:{name:string;qty:number;capital:number;profit:number}[])=>{
+    const ag=aggregateOrders(orders)
+    const table=(side:'BUY'|'SELL')=>{
+      const rows=ag.filter(o=>o.side===side).sort((x,y)=>x.item.localeCompare(y.item))
+      const total=rows.reduce((n,o)=>n+o.qty*o.price,0)
+      return `<table><thead><tr><th></th><th>Ürün</th><th>Adet</th><th>Emir fiyatı (adet başı)</th><th>Toplam</th></tr></thead><tbody>${rows.map(o=>`<tr><td><input type="checkbox"></td><td>${escHtml(o.item)}</td><td class="n">${fmt(o.qty)}</td><td class="n"><b>${fmt(o.price)}</b></td><td class="n">${fmt(o.qty*o.price)}</td></tr>`).join('')}</tbody><tfoot><tr><td></td><td colspan="3">Toplam</td><td class="n">${fmt(total)}</td></tr></tfoot></table>`
+    }
+    const sum=summary.length?`<h2>Plan özeti</h2><table><thead><tr><th>İş</th><th>Adet</th><th>Sermaye</th><th>Beklenen net kâr</th></tr></thead><tbody>${summary.map(r=>`<tr><td>${escHtml(r.name)}</td><td class="n">${fmt(r.qty)}</td><td class="n">${fmt(r.capital)}</td><td class="n">${fmt(r.profit)}</td></tr>`).join('')}</tbody></table>`:''
+    return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escHtml(title)}</title><style>body{font:14px/1.45 system-ui,Segoe UI,Arial,sans-serif;margin:24px;color:#1f2328;background:#fff;max-width:980px}h1{font-size:20px;margin:0 0 8px}h2{font-size:16px;margin:22px 0 6px}table{border-collapse:collapse;width:100%;margin-bottom:8px}th,td{border:1px solid #d0d7de;padding:5px 8px;text-align:left}th{background:#f6f8fa}td.n{text-align:right;font-variant-numeric:tabular-nums}tfoot td{font-weight:700;background:#f6f8fa}.meta td:first-child{width:200px;color:#57606a}.note{font-size:12px;color:#57606a;margin-top:14px}@media print{body{margin:8mm}input{display:none}}</style></head><body><h1>${escHtml(title)}</h1><table class="meta"><tbody>${meta.map(([k,v])=>`<tr><td>${escHtml(k)}</td><td>${escHtml(v)}</td></tr>`).join('')}</tbody></table><h2>1) Alış emirleri (akşam / önce)</h2>${table('BUY')}<h2>2) Satış emirleri (işlemden sonra)</h2>${table('SELL')}${sum}<p class="note">Bu dosya oluşturulduğu andaki fiyatların dondurulmuş halidir; sonradan değişmez. Fiyatlar anlık ve geçmiş verilerden türetilmiş tahmindir, dolum veya kâr garantisi yoktur. Satış emirleri, alımlar dolup ürünler işlendikten sonra, burada yazan adetlere göre (gerçekte dolan adede göre) konur.</p></body></html>`
+  }
+  const snapshotCsv=(orders:SnapOrder[])=>'\uFEFF'+['Yön;Ürün;Adet;Emir fiyatı;Toplam',...aggregateOrders(orders).map(o=>`${o.side==='BUY'?'ALIŞ':'SATIŞ'};${o.item};${o.qty};${o.price};${o.qty*o.price}`)].join('\r\n')
+  const downloadFile=(filename:string,content:string,mime:string)=>{
+    try{
+      const url=URL.createObjectURL(new Blob([content],{type:mime}))
+      const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();document.body.removeChild(a)
+      setTimeout(()=>URL.revokeObjectURL(url),1500)
+    }catch{/* download unavailable in this browser */}
+  }
+  const exportOrders=(kind:'html'|'csv',title:string,orders:SnapOrder[],meta:[string,string][],summary:{name:string;qty:number;capital:number;profit:number}[])=>{
+    if(!aggregateOrders(orders).length)return
+    const d=new Date();const pad=(n:number)=>String(n).padStart(2,'0')
+    const stamp=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`
+    downloadFile(`osrs-emir-plani-${stamp}.${kind}`,kind==='html'?snapshotHtml(title,meta,orders,summary):snapshotCsv(orders),kind==='html'?'text/html;charset=utf-8':'text/csv;charset=utf-8')
+  }
+  const exportNight=(kind:'html'|'csv')=>{
+    const routeLabel=nightRoute==='GRIMY'?(hasHerbloreCape?'Grimy → Unf (pelerin)':'Grimy → Degrime → Unf'):nightRoute==='CLEAN'?'Clean → Unf':'Degrime (Grimy → Clean)'
+    const hours=nightPlan.hoursUsed+nightMethods.hoursUsed
+    exportOrders(kind,'OSRS Gece Emir Listesi',buildNightOrders(),[
+      ['Oluşturulma',new Date().toLocaleString('tr-TR')],
+      ['Piyasa verisi',updated?updated.toLocaleString('tr-TR'):'—'],
+      ['Strateji',portfolioProfile],
+      ['Herblore rotası',routeLabel],
+      ['GP bakiyesi',`${fmt(portfolioCapital)} GP`],
+      ['Bağlanan sermaye',`${fmt(nightPlan.used+nightMethods.used)} GP`],
+      ['Beklenen net kâr (tahmin)',`${fmt(nightPlan.profit+nightMethods.profit)} GP`],
+      ['Tahmini işlem süresi',`${hours.toFixed(2)} saat`]
+    ],[
+      ...nightPlan.rows.filter((r:any)=>r.plan).map((r:any)=>({name:`${r.herb} • ${routeLabel}`,qty:r.plan.qty,capital:r.plan.capital,profit:r.plan.profit})),
+      ...nightMethods.rows.filter((r:any)=>r.plan).map((r:any)=>({name:String(r.name),qty:r.plan.qty,capital:r.plan.capital,profit:r.plan.profit}))
+    ])
+  }
+  const exportPortfolio=(kind:'html'|'csv')=>{
+    const orders:SnapOrder[]=[]
+    portfolioCandidates.rows.forEach((r:any)=>{
+      r.plannedInputs.forEach((x:any)=>orders.push({side:'BUY',item:x.name,qty:r.qty*x.qty,price:Math.round(x.orderPrice)}))
+      orders.push({side:'SELL',item:r.output,qty:r.qty*r.outputQty,price:Math.round(r.outputPrice)})
+    })
+    exportOrders(kind,'OSRS Herblore GE Emir Planı',orders,[
+      ['Oluşturulma',new Date().toLocaleString('tr-TR')],
+      ['Piyasa verisi',updated?updated.toLocaleString('tr-TR'):'—'],
+      ['Strateji',portfolioProfile],
+      ['GP bakiyesi',`${fmt(portfolioCapital)} GP`],
+      ['Bağlanan sermaye',`${fmt(portfolioCandidates.used)} GP`],
+      ['Beklenen net kâr (tahmin)',`${fmt(portfolioCandidates.profit)} GP`]
+    ],portfolioCandidates.rows.map((r:any)=>({name:String(r.name),qty:r.qty,capital:r.capitalUsed,profit:r.expectedProfit})))
   }
 
   const copyNightPlan=async()=>{
@@ -3469,6 +3539,8 @@ export default function App() {
           <span>Toplam kullanılan sermaye: <b>{fmt(portfolioCandidates.used)} GP</b></span>
           <span>Kullanılabilir bakiye: <b>{fmt(portfolioCandidates.reserve)} GP</b></span>
           <span>Beklenen toplam net kâr: <b style={{color:portfolioCandidates.profit>0?'#3fb950':'inherit'}}>{fmt(portfolioCandidates.profit)} GP</b></span>
+          <button onClick={()=>exportPortfolio('html')} disabled={!portfolioCandidates.rows.length} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #30363d',background:'transparent',color:'inherit',cursor:'pointer'}}>Emir listesini indir (HTML)</button>
+          <button onClick={()=>exportPortfolio('csv')} disabled={!portfolioCandidates.rows.length} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #30363d',background:'transparent',color:'inherit',cursor:'pointer'}}>CSV (Excel)</button>
         </div>
         <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Fiyatlar anlık/24h ortalama verilerden türetilmiş tahmindir, gerçekleşmiş fiyat değildir; dolum garantisi yoktur. Kâr, GE satış vergisi, Vial of water ve diğer girdileri içerir. Miktar; alış limiti, 24h hacmin %5'i ve ürün başına sermayenin %50'si ile sınırlıdır. High Alchemy bu plana dahil değildir.</p>
       </section>}
@@ -3508,6 +3580,8 @@ export default function App() {
           <span>Kullanılabilir bakiye: <b>{fmt(nightPlan.reserve)} GP</b></span>
           <span>Beklenen toplam net kâr: <b style={{color:nightPlan.profit>0?'#3fb950':'inherit'}}>{fmt(nightPlan.profit)} GP</b></span>
           <span>Tahmini işlem süresi: <b>{nightPlan.hoursUsed.toFixed(2)} saat</b>{nightHours>0?` / ${nightHours}`:''}{nightPlan.hoursUsed>0?` • etkin ≈ ${fmt(nightPlan.profit/nightPlan.hoursUsed)} GP/saat`:''}</span>
+          <button onClick={()=>exportNight('html')} disabled={!nightPlan.count&&!nightMethods.count} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #30363d',background:'transparent',color:'inherit',cursor:'pointer'}}>Emir listesini indir (HTML)</button>
+          <button onClick={()=>exportNight('csv')} disabled={!nightPlan.count&&!nightMethods.count} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #30363d',background:'transparent',color:'inherit',cursor:'pointer'}}>CSV (Excel)</button>
           <button onClick={copyNightPlan} disabled={!nightPlan.count} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #30363d',background:'transparent',color:'inherit',cursor:'pointer'}}>{nightCopied?'Kopyalandı':'Emir listesini kopyala'}</button>
         </div>
         <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Listelenen herb: {nightPlan.rows.length} • plana girmeyen (soluk satırlar): {nightPlan.skipped}{nightPlan.noData>0?` • fiyat verisi olmayan: ${nightPlan.noData}`:''}. Adet; GE alış limiti, 24 saatlik hacmin %5'i, ürün başına sermayenin %50'si ve seans süresi ile sınırlıdır; sermaye ve süre birlikte en verimli kullanılacak şekilde (kâr / [sermaye payı + süre payı]) dağıtılır. “GP/saat (yalnız bu işle)” sütunu satırların toplamı değildir; gerçek toplam süre ve etkin GP/saat altta yazar (banka ve GE süresi hariç). Net kâr; %2 GE satış vergisi ve Vial of water{nightPlan.vialCost?` (P ${nightPlan.vialCost.P} / B ${nightPlan.vialCost.B} / F ${nightPlan.vialCost.F} GP)`:''} dahil. İşlem hızları tahmindir (Grimy→Unf pelerinle ~1.475, pelerinsiz Grimy→Degrime→Unf iki adımın birleşik hızı ~2.670, Clean→Unf ~3.200, Degrime ~16.200 adet/saat; Degrime için Magic 70 + Arceuus, 2 Nature rune / 27 herb{degrimeEarthStaff?', Earth staff varsayımı açık':', Earth rune dahil'}). Tüm fiyatlar geçmiş verilerden türetilmiş tahmindir, dolum veya kâr garantisi yoktur. High Alchemy dahil değildir.</p>
