@@ -1299,6 +1299,8 @@ export default function App() {
   const [nightOnly600,setNightOnly600]=useState(false)
   const [nightLevelFilter,setNightLevelFilter]=useState(false)
   const [nightCopied,setNightCopied]=useState(false)
+  const [hasHerbloreCape,setHasHerbloreCape]=useState<boolean>(()=>{try{return localStorage.getItem('osrs-herblore-cape-v1')==='1'}catch{return false}})
+  useEffect(()=>{try{localStorage.setItem('osrs-herblore-cape-v1',hasHerbloreCape?'1':'0')}catch{/* storage unavailable */}},[hasHerbloreCape])
   const [nightLedger,setNightLedger]=useState<NightLedgerBatch[]>(()=>{try{const v=JSON.parse(localStorage.getItem('osrs-night-ledger-v1')||'[]');return Array.isArray(v)?v:[]}catch{return[]}})
   useEffect(()=>{try{localStorage.setItem('osrs-night-ledger-v1',JSON.stringify(nightLedger))}catch{/* storage full or unavailable */}},[nightLedger])
   const [orderHistory,setOrderHistory]=useState<OrderHistoryRow[]>(()=>{try{return JSON.parse(localStorage.getItem('osrs-order-history-v56')||'[]')}catch{return[]}})
@@ -2661,16 +2663,17 @@ export default function App() {
       const defs=[
         {r:h.grimyClean,key:'grimyClean',inputs:[{name:h.grimyName,qty:1}],output:h.cleanName,rate:5000,skill:'Herblore',level:h.level,extra:0},
         {r:h.cleanPotion,key:'cleanPotion',inputs:[{name:h.cleanName,qty:1},{name:'Vial of water',qty:1}],output:h.unfinishedName,rate:2500,skill:'Herblore',level:h.level,extra:0},
-        {r:h.grimyPotion,key:'grimyPotion',inputs:[{name:h.grimyName,qty:1},{name:'Vial of water',qty:1}],output:h.unfinishedName,rate:2500,skill:'Herblore',level:h.level,extra:0},
+        {r:h.grimyPotion,key:'grimyPotion',inputs:[{name:h.grimyName,qty:1},{name:'Vial of water',qty:1},...(hasHerbloreCape?[]:[{name:'Nature rune',qty:2/27},...(!degrimeEarthStaff?[{name:'Earth rune',qty:4/27}]:[])])],output:h.unfinishedName,rate:hasHerbloreCape?2500:Math.round(1/(1/16200+1/2500)),skill:hasHerbloreCape?'Herblore':'Herblore / Magic',level:h.level,extra:0},
         {r:h.degrime,key:'degrime',inputs:[{name:h.grimyName,qty:1},{name:'Nature rune',qty:2/27},...(!degrimeEarthStaff?[{name:'Earth rune',qty:4/27}]:[])],output:h.cleanName,rate:16200,skill:'Herblore / Magic',level:h.level,extra:0}
       ]
       defs.forEach((d:any)=>{
         if(!d.r||d.r.levelLocked)return
+        if(d.key==='grimyPotion'&&!hasHerbloreCape&&(!h.degrime||h.degrime.levelLocked))return
         const ins=d.inputs.filter((x:any)=>typeof x?.name==='string'&&x.name.trim()).map((x:any)=>({name:x.name.trim(),qty:x.qty}));if(ins.length!==d.inputs.length||typeof d.output!=='string'||!d.output.trim())return;const ip=ins.map((x:any)=>pair(x.name));const op=pair(d.output)
         if(ip.some((x:any)=>!x)||!op)return
         const vols=[...ip.map((x:any)=>x.vol),op.vol];if(vols.some(x=>x<=0))return
         const lims=ins.map((x:any,i:number)=>ip[i].limit>0?Math.floor(ip[i].limit/x.qty):0);if(lims.some((x:number)=>x<=0))return
-        candidates.push({id:`herb-${h.key}-${d.key}`,group:`herb-${h.key}`,name:`${h.herb} • ${d.key==='grimyClean'?'Grimy → Clean':d.key==='cleanPotion'?'Clean → Unf':d.key==='grimyPotion'?'Grimy → Unf':'Degrime'}`,kind:'Herblore',skill:d.skill,level:d.level,member:true,rate:d.rate,rateSource:'Tahmin',inputs:ins,output:d.output,outputQty:1,buyLimit:Math.min(...lims),volume:Math.min(...vols),buyUnit:0,sellUnit:0,taxed:true,attention:'LOW',requirements:d.key==='degrime'?['A Kingdom Divided','Magic 70']:[]})
+        candidates.push({id:`herb-${h.key}-${d.key}`,group:`herb-${h.key}`,name:`${h.herb} • ${d.key==='grimyClean'?'Grimy → Clean':d.key==='cleanPotion'?'Clean → Unf':d.key==='grimyPotion'?(hasHerbloreCape?'Grimy → Unf':'Grimy → Degrime → Unf'):'Degrime'}`,kind:'Herblore',skill:d.skill,level:d.level,member:true,rate:d.rate,rateSource:'Tahmin',inputs:ins,output:d.output,outputQty:1,buyLimit:Math.min(...lims),volume:Math.min(...vols),buyUnit:0,sellUnit:0,taxed:true,attention:'LOW',requirements:d.key==='degrime'?['A Kingdom Divided','Magic 70']:[]})
       })
     })
     // High Alchemy intentionally excluded: one-by-one manual casting belongs only in its dedicated screen.
@@ -2715,7 +2718,7 @@ export default function App() {
       remaining-=used;usedGroups.add(next.group)
     }
     return {rows:selected,used:selected.reduce((n,x)=>n+x.capitalUsed,0),reserve:Math.max(0,portfolioCapital-selected.reduce((n,x)=>n+x.capitalUsed,0)),profit:selected.reduce((n,x)=>n+x.expectedProfit,0),gpHour:selected.reduce((n,x)=>n+x.expectedGpHour,0),candidateCount:prepared.length}
-  },[v5Rows,herbloreRows,alchemyRows,mapping,prices,volumes,mode,portfolioCapital,portfolioProfile,portfolioRisk,dailyMaxHours,degrimeEarthStaff])
+  },[v5Rows,herbloreRows,alchemyRows,mapping,prices,volumes,mode,portfolioCapital,portfolioProfile,portfolioRisk,dailyMaxHours,degrimeEarthStaff,hasHerbloreCape])
 
 
   const nightHerbs=useMemo(()=>{
@@ -2831,7 +2834,8 @@ export default function App() {
     const sel=portfolioProfile
     const vialWater=nightLive('Vial of water')
     const natL=nightLadder('Nature rune'),earthL=nightLadder('Earth rune')
-    const rate=nightRoute==='GRIMY'?1475:nightRoute==='CLEAN'?3200:16200
+    const grimyNoCape=nightRoute==='GRIMY'&&!hasHerbloreCape
+    const rate=nightRoute==='DEGRIME'?16200:nightRoute==='CLEAN'?3200:hasHerbloreCape?1475:Math.round(1/(1/16200+1/3200))
     const rows:any[]=[]
     let noData=0
     nightHerbs.forEach((h:any)=>{
@@ -2841,16 +2845,18 @@ export default function App() {
       const a=nightLadder(inName),b=nightLadder(outName)
       if(!a||!b){noData++;return}
       const extras:{name:string;perUnit:number;price:NightS3;vol:number;limit:number}[]=[]
-      if(nightRoute==='DEGRIME'){
+      if(nightRoute==='DEGRIME'||grimyNoCape){
         if(!natL||(!degrimeEarthStaff&&!earthL)){noData++;return}
         extras.push({name:'Nature rune',perUnit:2/27,price:natL.buy,vol:natL.l.vol,limit:natL.l.limit})
         if(!degrimeEarthStaff&&earthL)extras.push({name:'Earth rune',perUnit:4/27,price:earthL.buy,vol:earthL.l.vol,limit:earthL.l.limit})
-      }else{
+      }
+      if(nightRoute!=='DEGRIME'){
         const vial=nightLive(h.vialName)
         if(!vial){noData++;return}
-        extras.push({name:h.vialName,perUnit:1,price:{PATIENT:vial.low,BALANCED:Math.round((vial.low+vial.high)/2),FAST:vial.high},vol:vial.vol,limit:vial.limit})
+        extras.unshift({name:h.vialName,perUnit:1,price:{PATIENT:vial.low,BALANCED:Math.round((vial.low+vial.high)/2),FAST:vial.high},vol:vial.vol,limit:vial.limit})
       }
-      const locked=nightRoute==='DEGRIME'?((levels.Herblore||1)<h.cleanLevel||(levels.Magic||1)<70):(levels.Herblore||1)<h.level
+      const degLocked=(levels.Herblore||1)<h.cleanLevel||(levels.Magic||1)<70
+      const locked=nightRoute==='DEGRIME'?degLocked:grimyNoCape?((levels.Herblore||1)<h.level||degLocked):(levels.Herblore||1)<h.level
       if(nightLevelFilter&&locked)return
       const cost:NightS3={PATIENT:0,BALANCED:0,FAST:0},net:NightS3={PATIENT:0,BALANCED:0,FAST:0}
       keys.forEach(k=>{
@@ -2860,7 +2866,7 @@ export default function App() {
       const bottleneck=Math.min(a.l.vol,b.l.vol,...extras.map(e=>e.vol/e.perUnit))
       const limits=[a.l.limit,...extras.map(e=>e.limit>0?Math.floor(e.limit/e.perUnit):0)].filter(x=>x>0)
       const qtyCap=Math.max(0,Math.min(limits.length?Math.min(...limits):Infinity,Math.floor(bottleneck*0.05)))
-      rows.push({key:h.key,herb:h.herb,extras,level:nightRoute==='DEGRIME'?h.cleanLevel:h.level,locked,inName,outName,a,b,cost,net,rate,gpHour:net[sel]*rate,bottleneck,qtyCap})
+      rows.push({key:h.key,herb:h.herb,extras,level:nightRoute==='DEGRIME'?h.cleanLevel:h.level,magic:nightRoute==='DEGRIME'||grimyNoCape,locked,inName,outName,a,b,cost,net,rate,gpHour:net[sel]*rate,bottleneck,qtyCap})
     })
     const eligible=rows.filter(r=>r.net[sel]>0&&r.cost[sel]>0&&r.qtyCap>=1&&Number.isFinite(r.qtyCap)&&(!nightOnly600||r.gpHour>=600000))
     const plan=nightAllocate(eligible.map(r=>({key:r.key,cost:r.cost[sel],net:r.net[sel],qtyCap:r.qtyCap,rate:r.rate})),portfolioCapital,nightHours>0?nightHours:null,portfolioCapital*0.5)
@@ -2870,7 +2876,7 @@ export default function App() {
     const profit=[...plan.values()].reduce((n,x)=>n+x.profit,0)
     const hoursUsed=[...plan.values()].reduce((n,x)=>n+x.hours,0)
     return {rows:out,used,reserve:Math.max(0,portfolioCapital-used),profit,hoursUsed,count:plan.size,skipped:rows.length-eligible.length,noData,vialCost:vialWater?{P:vialWater.low,B:Math.round((vialWater.low+vialWater.high)/2),F:vialWater.high}:null}
-  },[nightHerbs,prices,volumes,nightHist,nightRoute,nightOnly600,nightLevelFilter,nightHours,portfolioProfile,portfolioCapital,levels,mapping,degrimeEarthStaff])
+  },[nightHerbs,prices,volumes,nightHist,nightRoute,nightOnly600,nightLevelFilter,nightHours,portfolioProfile,portfolioCapital,levels,mapping,degrimeEarthStaff,hasHerbloreCape])
 
   const nightMethods=useMemo(()=>{
     type S3={PATIENT:number;BALANCED:number;FAST:number}
@@ -3452,6 +3458,7 @@ export default function App() {
         <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'end',padding:10,border:'1px solid #30363d',borderRadius:8}}>
           <label style={{display:'grid',gap:4}}>Mevcut GP bakiyesi<input type="number" min="1" step="100000" value={portfolioCapital} onChange={e=>setPortfolioCapital(Math.max(1,Number(e.target.value)||1))} style={{width:180}}/></label>
           <div style={{display:'grid',gap:4}}>Strateji<div style={{display:'flex',gap:6}}>{(['PATIENT','BALANCED','FAST'] as const).map(k=><button key={k} onClick={()=>setPortfolioProfile(k)} style={{padding:'6px 12px',borderRadius:6,border:'1px solid #30363d',background:portfolioProfile===k?'#238636':'transparent',color:'inherit',cursor:'pointer',fontWeight:portfolioProfile===k?700:400}}>{k==='PATIENT'?'Patient':k==='BALANCED'?'Balanced':'Fast'}</button>)}</div></div>
+          <label style={{display:'flex',gap:6,alignItems:'center',fontSize:12}}><input type="checkbox" checked={hasHerbloreCape} onChange={e=>setHasHerbloreCape(e.target.checked)}/>Herblore pelerinim var</label>
           <div style={{fontSize:11,color:'#8b949e'}}>Piyasa verisi: <b>{updated?updated.toLocaleString('tr-TR'):'henüz yüklenmedi'}</b><br/>Kaynak: OSRS Wiki /latest (anlık) + /24h (ortalama, hacim)</div>
         </div>
         <div style={{fontSize:11,color:'#8b949e',margin:'8px 0'}}>{portfolioProfile==='PATIENT'?'Patient: alışı en düşük anlık fiyattan (24h ortalamayı geçmeyecek şekilde), satışı en yüksek anlık fiyattan (24h ortalama yüksek fiyatı geçmeyecek şekilde) bırakır; uzun bekleme kabul edilir.':portfolioProfile==='BALANCED'?'Balanced: alış ve satışı anlık yüksek/düşük fiyatların ortasına koyar.':'Fast: alışta anlık yüksek fiyatı öder, satışta anlık düşük fiyata koyar; spread geçilir, kâr düşer ama dolum hızlanır.'} Net 600K GP/h altı listelenmez • Üyelik: {mode} • Herblore: {levels.Herblore||1}.</div>
@@ -3471,8 +3478,9 @@ export default function App() {
         <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'end',padding:10,border:'1px solid #30363d',borderRadius:8}}>
           <label style={{display:'grid',gap:4}}>Mevcut GP bakiyesi<input type="number" min="1" step="100000" value={portfolioCapital} onChange={e=>setPortfolioCapital(Math.max(1,Number(e.target.value)||1))} style={{width:180}}/></label>
           <div style={{display:'grid',gap:4}}>Plan stratejisi<div style={{display:'flex',gap:6}}>{(['PATIENT','BALANCED','FAST'] as const).map(k=><button key={k} onClick={()=>setPortfolioProfile(k)} style={{padding:'6px 12px',borderRadius:6,border:'1px solid #30363d',background:portfolioProfile===k?'#238636':'transparent',color:'inherit',cursor:'pointer',fontWeight:portfolioProfile===k?700:400}}>{k==='PATIENT'?'Patient':k==='BALANCED'?'Balanced':'Fast'}</button>)}</div></div>
-          <div style={{display:'grid',gap:4}}>Rota<div style={{display:'flex',gap:6}}>{([['GRIMY','Grimy → Unf'],['CLEAN','Clean → Unf'],['DEGRIME','Degrime (Grimy → Clean)']] as const).map(([k,label])=><button key={k} onClick={()=>setNightRoute(k)} style={{padding:'6px 12px',borderRadius:6,border:'1px solid #30363d',background:nightRoute===k?'#1f6feb':'transparent',color:'inherit',cursor:'pointer',fontWeight:nightRoute===k?700:400}}>{label}</button>)}</div></div>
+          <div style={{display:'grid',gap:4}}>Rota<div style={{display:'flex',gap:6}}>{([['GRIMY',hasHerbloreCape?'Grimy → Unf (pelerin)':'Grimy → Degrime → Unf'],['CLEAN','Clean → Unf'],['DEGRIME','Degrime (Grimy → Clean)']] as const).map(([k,label])=><button key={k} onClick={()=>setNightRoute(k)} style={{padding:'6px 12px',borderRadius:6,border:'1px solid #30363d',background:nightRoute===k?'#1f6feb':'transparent',color:'inherit',cursor:'pointer',fontWeight:nightRoute===k?700:400}}>{label}</button>)}</div></div>
           <label style={{display:'grid',gap:4}}>Seans süresi (saat, 0 = sınırsız)<input type="number" min="0" step="0.5" value={nightHours} onChange={e=>setNightHours(Math.max(0,Number(e.target.value)||0))} style={{width:120}}/></label>
+          <label style={{display:'flex',gap:6,alignItems:'center',fontSize:12}}><input type="checkbox" checked={hasHerbloreCape} onChange={e=>setHasHerbloreCape(e.target.checked)}/>Herblore pelerinim var (grimy'yi doğrudan karıştırır)</label>
           <label style={{display:'flex',gap:6,alignItems:'center',fontSize:12}}><input type="checkbox" checked={nightOnly600} onChange={e=>setNightOnly600(e.target.checked)}/>Sadece 600K+ GP/saat</label>
           <label style={{display:'flex',gap:6,alignItems:'center',fontSize:12}}><input type="checkbox" checked={nightLevelFilter} onChange={e=>setNightLevelFilter(e.target.checked)}/>Herblore seviyeme göre ({levels.Herblore||1})</label>
         </div>
@@ -3482,7 +3490,7 @@ export default function App() {
         </div>
         {nightPlan.rows.length>0?<div className="tableBox"><table><thead><tr><th>Herb</th><th>{nightRoute==='CLEAN'?'Clean':'Grimy'} alış emri</th><th>Ek malzeme alış emri</th><th>{nightRoute==='DEGRIME'?'Clean herb':'Unf'} satış emri</th><th>Net kâr / adet</th><th>~GP/saat (yalnız bu işle)</th><th>Gece adedi</th><th>Sermaye</th><th>Beklenen net kâr</th><th>Likidite</th></tr></thead><tbody>
           {nightPlan.rows.map((r:any)=><tr key={r.key} style={{opacity:r.plan?1:.55}}>
-            <td><b>{r.herb}</b><div style={{fontSize:10,color:'#8b949e'}}>Lv {r.level}{nightRoute==='DEGRIME'?' • Magic 70':''}{r.locked?' • seviye yetmiyor':''}</div></td>
+            <td><b>{r.herb}</b><div style={{fontSize:10,color:'#8b949e'}}>Lv {r.level}{r.magic?' • Magic 70':''}{r.locked?' • seviye yetmiyor':''}</div></td>
             <td>{r.inName}{r.plan?` ×${fmt(r.plan.qty)}`:''}{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.a.buy[k])}{r.a.ok?'':'*'}</div>)}</td>
             <td>{r.extras.map((e:any)=><div key={e.name} style={{marginBottom:3}}>{e.name}{r.plan?` ×${fmt(Math.ceil(r.plan.qty*e.perUnit))}`:''}{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontSize:11,fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(Math.round(e.price[k]))}</div>)}</div>)}</td>
             <td>{r.outName}{r.plan?` ×${fmt(r.plan.qty)}`:''}{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.b.sell[k])}{r.b.ok?'':'*'}</div>)}</td>
@@ -3502,7 +3510,7 @@ export default function App() {
           <span>Tahmini işlem süresi: <b>{nightPlan.hoursUsed.toFixed(2)} saat</b>{nightHours>0?` / ${nightHours}`:''}{nightPlan.hoursUsed>0?` • etkin ≈ ${fmt(nightPlan.profit/nightPlan.hoursUsed)} GP/saat`:''}</span>
           <button onClick={copyNightPlan} disabled={!nightPlan.count} style={{padding:'4px 10px',borderRadius:6,border:'1px solid #30363d',background:'transparent',color:'inherit',cursor:'pointer'}}>{nightCopied?'Kopyalandı':'Emir listesini kopyala'}</button>
         </div>
-        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Listelenen herb: {nightPlan.rows.length} • plana girmeyen (soluk satırlar): {nightPlan.skipped}{nightPlan.noData>0?` • fiyat verisi olmayan: ${nightPlan.noData}`:''}. Adet; GE alış limiti, 24 saatlik hacmin %5'i, ürün başına sermayenin %50'si ve seans süresi ile sınırlıdır; sermaye ve süre birlikte en verimli kullanılacak şekilde (kâr / [sermaye payı + süre payı]) dağıtılır. “GP/saat (yalnız bu işle)” sütunu satırların toplamı değildir; gerçek toplam süre ve etkin GP/saat altta yazar (banka ve GE süresi hariç). Net kâr; %2 GE satış vergisi ve Vial of water{nightPlan.vialCost?` (P ${nightPlan.vialCost.P} / B ${nightPlan.vialCost.B} / F ${nightPlan.vialCost.F} GP)`:''} dahil. İşlem hızları tahmindir (Grimy→Unf ~1.475, Clean→Unf ~3.200, Degrime ~16.200 adet/saat; Degrime için Magic 70 + Arceuus, 2 Nature rune / 27 herb{degrimeEarthStaff?', Earth staff varsayımı açık':', Earth rune dahil'}). Tüm fiyatlar geçmiş verilerden türetilmiş tahmindir, dolum veya kâr garantisi yoktur. High Alchemy dahil değildir.</p>
+        <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Listelenen herb: {nightPlan.rows.length} • plana girmeyen (soluk satırlar): {nightPlan.skipped}{nightPlan.noData>0?` • fiyat verisi olmayan: ${nightPlan.noData}`:''}. Adet; GE alış limiti, 24 saatlik hacmin %5'i, ürün başına sermayenin %50'si ve seans süresi ile sınırlıdır; sermaye ve süre birlikte en verimli kullanılacak şekilde (kâr / [sermaye payı + süre payı]) dağıtılır. “GP/saat (yalnız bu işle)” sütunu satırların toplamı değildir; gerçek toplam süre ve etkin GP/saat altta yazar (banka ve GE süresi hariç). Net kâr; %2 GE satış vergisi ve Vial of water{nightPlan.vialCost?` (P ${nightPlan.vialCost.P} / B ${nightPlan.vialCost.B} / F ${nightPlan.vialCost.F} GP)`:''} dahil. İşlem hızları tahmindir (Grimy→Unf pelerinle ~1.475, pelerinsiz Grimy→Degrime→Unf iki adımın birleşik hızı ~2.670, Clean→Unf ~3.200, Degrime ~16.200 adet/saat; Degrime için Magic 70 + Arceuus, 2 Nature rune / 27 herb{degrimeEarthStaff?', Earth staff varsayımı açık':', Earth rune dahil'}). Tüm fiyatlar geçmiş verilerden türetilmiş tahmindir, dolum veya kâr garantisi yoktur. High Alchemy dahil değildir.</p>
 
         <h3 style={{marginBottom:4}}>Diğer işleme metodları <span style={{fontSize:11,fontWeight:400,color:'#8b949e'}}>(uygulamadaki doğrulanmış V5 metodları • canlı fiyatta en kârlı ilk 30 • Herblore planından kalan {fmt(nightPlan.reserve)} GP ile)</span></h3>
         {nightMethods.rows.length>0?<div className="tableBox"><table><thead><tr><th>Metod</th><th>Alış emirleri</th><th>Satış emri</th><th>Net kâr / işlem</th><th>~GP/saat</th><th>Gece adedi (işlem)</th><th>Sermaye</th><th>Beklenen net kâr</th><th>Likidite</th></tr></thead><tbody>
