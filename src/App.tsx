@@ -1296,6 +1296,7 @@ export default function App() {
   const [nightLoading,setNightLoading]=useState(false)
   const [nightRoute,setNightRoute]=useState<'GRIMY'|'CLEAN'|'DEGRIME'>('GRIMY')
   const [nightHours,setNightHours]=useState(2)
+  const [bfEfficiency,setBfEfficiency]=useState(85)
   const [nightOnly600,setNightOnly600]=useState(false)
   const [nightLevelFilter,setNightLevelFilter]=useState(false)
   const [nightCopied,setNightCopied]=useState(false)
@@ -2741,9 +2742,25 @@ export default function App() {
       if(!ins.length||ins.length!==r.economy.inputs.length)return
       list.push({key:`v5-${r.id}`,name:String(r.name),skill:(r.skills||[]).join(', '),level:r.level,rate:Number(r.rate),rateSource:r.rateSource||'Tahmin',inputs:ins,output:out,outputQty:Number(r.economy.outputQty)||1,coinFee:Number(r.coinFee||0),gp:typeof r.gp==='number'?r.gp:-Infinity})
     })
+    // Blast Furnace (wiki guide values: coal bag + ice gloves + 36 stamina doses/hour, 72,000 GP/hour coffer fee)
+    const smith=levels.Smithing||1
+    const eff=Math.max(10,Math.min(100,bfEfficiency))/100
+    const BF=[
+      {id:'iron',bar:'Iron bar',ore:'Iron ore',coal:0,level:15,rate:6000},
+      {id:'steel',bar:'Steel bar',ore:'Iron ore',coal:1,level:30,rate:5400},
+      {id:'mithril',bar:'Mithril bar',ore:'Mithril ore',coal:2,level:50,rate:3600},
+      {id:'adamantite',bar:'Adamantite bar',ore:'Adamantite ore',coal:3,level:70,rate:2700},
+      {id:'runite',bar:'Runite bar',ore:'Runite ore',coal:4,level:85,rate:2160}
+    ]
+    const bf=BF.map(b=>{
+      const rate=b.rate*eff,fee=72000/rate
+      return {key:`bf-${b.id}`,bf:true,name:`Blast Furnace — ${b.bar}`,skill:'Smithing',level:b.level,locked:smith<b.level,rate,rateSource:`Wiki ${b.rate.toLocaleString('tr-TR')}/sa × %${Math.round(eff*100)}`,inputs:[{name:b.ore,qty:1},...(b.coal>0?[{name:'Coal',qty:b.coal}]:[]),{name:'Stamina potion(4)',qty:9/rate}],output:b.bar,outputQty:1,coinFee:fee,gp:-Infinity,note:`ocak ücreti ≈ ${Math.round(fee).toLocaleString('tr-TR')} GP/bar`}
+    })
+    const bfOut=new Set(bf.map(b=>b.output.toLowerCase()))
     const seen=new Set<string>()
-    return list.sort((x,y)=>y.gp-x.gp).filter(x=>{const k=x.output.toLowerCase();if(seen.has(k))return false;seen.add(k);return true}).slice(0,30)
-  },[v5Rows,mode])
+    const top=list.filter(x=>!bfOut.has(x.output.toLowerCase())).sort((x,y)=>y.gp-x.gp).filter(x=>{const k=x.output.toLowerCase();if(seen.has(k))return false;seen.add(k);return true}).slice(0,30)
+    return [...bf,...top]
+  },[v5Rows,mode,levels,bfEfficiency])
 
   const nightFetchNames=useMemo(()=>{
     const names:string[]=[]
@@ -2899,15 +2916,16 @@ export default function App() {
       const qtyCap=Math.max(0,Math.min(...limits,Math.floor(bottleneck*0.05)))
       rows.push({...m,ins,outL,cost,net,bottleneck,qtyCap,gpHour:net[sel]*m.rate})
     })
-    const eligible=rows.filter(r=>r.net[sel]>0&&r.cost[sel]>0&&r.qtyCap>=1&&Number.isFinite(r.qtyCap)&&(!nightOnly600||r.gpHour>=600000))
+    const eligible=rows.filter(r=>!r.locked&&r.net[sel]>0&&r.cost[sel]>0&&r.qtyCap>=1&&Number.isFinite(r.qtyCap)&&(!nightOnly600||r.gpHour>=600000))
     const hoursLeft=nightHours>0?Math.max(0,nightHours-nightPlan.hoursUsed):null
     const plan=nightAllocate(eligible.map(r=>({key:r.key,cost:r.cost[sel],net:r.net[sel],qtyCap:r.qtyCap,rate:r.rate})),nightPlan.reserve,hoursLeft,portfolioCapital*0.5)
-    const reasonOf=(r:any)=>r.net[sel]<=0?'zararda':r.qtyCap<1?'hacim/limit yetersiz':(nightOnly600&&r.gpHour<600000)?'600K GP/h altı':!plan.has(r.key)?'sermaye/süre yetmedi':''
+    const reasonOf=(r:any)=>r.locked?`Smithing ${r.level} gerekli`:r.net[sel]<=0?'zararda':r.qtyCap<1?'hacim/limit yetersiz':(nightOnly600&&r.gpHour<600000)?'600K GP/h altı':!plan.has(r.key)?'sermaye/süre yetmedi':''
     const out=rows.map(r=>({...r,plan:plan.get(r.key)||null,reason:reasonOf(r)})).sort((x,y)=>(y.plan?1:0)-(x.plan?1:0)||y.gpHour-x.gpHour)
     const used=[...plan.values()].reduce((n,x)=>n+x.capital,0)
     const profit=[...plan.values()].reduce((n,x)=>n+x.profit,0)
+    const bfFee=out.reduce((n:number,r:any)=>n+(r.plan&&r.bf?r.plan.qty*r.coinFee:0),0)
     const hoursUsed=[...plan.values()].reduce((n,x)=>n+x.hours,0)
-    return {rows:out,used,profit,hoursUsed,count:plan.size,reserve:Math.max(0,nightPlan.reserve-used)}
+    return {rows:out,used,profit,hoursUsed,bfFee,count:plan.size,reserve:Math.max(0,nightPlan.reserve-used)}
   },[nightV5,prices,volumes,nightHist,nightOnly600,nightHours,portfolioProfile,portfolioCapital,nightPlan.reserve,nightPlan.hoursUsed])
 
   type SnapOrder={side:'BUY'|'SELL';item:string;qty:number;price:number}
@@ -2920,7 +2938,7 @@ export default function App() {
       orders.push({item:r.outName,side:'SELL',qty:r.plan.qty,price:r.b.sell[sel]})
     })
     nightMethods.rows.filter((r:any)=>r.plan).forEach((r:any)=>{
-      r.ins.forEach((i:any)=>orders.push({item:i.x.name,side:'BUY',qty:r.plan.qty*i.x.qty,price:i.ld.buy[sel]}))
+      r.ins.forEach((i:any)=>orders.push({item:i.x.name,side:'BUY',qty:Math.ceil(r.plan.qty*i.x.qty-1e-9),price:i.ld.buy[sel]}))
       orders.push({item:r.output,side:'SELL',qty:r.plan.qty*r.outputQty,price:r.outL.sell[sel]})
     })
     return orders
@@ -2986,7 +3004,8 @@ export default function App() {
       ['GP bakiyesi',`${fmt(portfolioCapital)} GP`],
       ['Bağlanan sermaye',`${fmt(nightPlan.used+nightMethods.used)} GP`],
       ['Beklenen net kâr (tahmin)',`${fmt(nightPlan.profit+nightMethods.profit)} GP`],
-      ['Tahmini işlem süresi',`${hours.toFixed(2)} saat`]
+      ['Tahmini işlem süresi',`${hours.toFixed(2)} saat`],
+      ...(nightMethods.bfFee>0?[['Blast Furnace coffer ücreti (yatırılacak)',`${fmt(nightMethods.bfFee)} GP`] as [string,string]]:[])
     ],[
       ...nightPlan.rows.filter((r:any)=>r.plan).map((r:any)=>({name:`${r.herb} • ${routeLabel}`,qty:r.plan.qty,capital:r.plan.capital,profit:r.plan.profit})),
       ...nightMethods.rows.filter((r:any)=>r.plan).map((r:any)=>({name:String(r.name),qty:r.plan.qty,capital:r.plan.capital,profit:r.plan.profit}))
@@ -3587,9 +3606,13 @@ export default function App() {
         <p style={{fontSize:10,color:'#8b949e',marginBottom:0}}>Listelenen herb: {nightPlan.rows.length} • plana girmeyen (soluk satırlar): {nightPlan.skipped}{nightPlan.noData>0?` • fiyat verisi olmayan: ${nightPlan.noData}`:''}. Adet; GE alış limiti, 24 saatlik hacmin %5'i, ürün başına sermayenin %50'si ve seans süresi ile sınırlıdır; sermaye ve süre birlikte en verimli kullanılacak şekilde (kâr / [sermaye payı + süre payı]) dağıtılır. “GP/saat (yalnız bu işle)” sütunu satırların toplamı değildir; gerçek toplam süre ve etkin GP/saat altta yazar (banka ve GE süresi hariç). Net kâr; %2 GE satış vergisi ve Vial of water{nightPlan.vialCost?` (P ${nightPlan.vialCost.P} / B ${nightPlan.vialCost.B} / F ${nightPlan.vialCost.F} GP)`:''} dahil. İşlem hızları tahmindir (Grimy→Unf pelerinle ~1.475, pelerinsiz Grimy→Degrime→Unf iki adımın birleşik hızı ~2.670, Clean→Unf ~3.200, Degrime ~16.200 adet/saat; Degrime için Magic 70 + Arceuus, 2 Nature rune / 27 herb{degrimeEarthStaff?', Earth staff varsayımı açık':', Earth rune dahil'}). Tüm fiyatlar geçmiş verilerden türetilmiş tahmindir, dolum veya kâr garantisi yoktur. High Alchemy dahil değildir.</p>
 
         <h3 style={{marginBottom:4}}>Diğer işleme metodları <span style={{fontSize:11,fontWeight:400,color:'#8b949e'}}>(uygulamadaki doğrulanmış V5 metodları • canlı fiyatta en kârlı ilk 30 • Herblore planından kalan {fmt(nightPlan.reserve)} GP ile)</span></h3>
+        <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',fontSize:12,margin:'4px 0'}}>
+          <label>Blast Furnace verimliliği (% Wiki hızı): <input type="number" min="10" max="100" step="5" value={bfEfficiency} onChange={e=>setBfEfficiency(Math.max(10,Math.min(100,Number(e.target.value)||85)))} style={{width:60}}/></label>
+          <span style={{color:'#8b949e'}}>Blast Furnace: Smithing {levels.Smithing||1}; coal bag + buz eldiveni + stamina varsayımı, ocak ücreti 72.000 GP/saat bar başına dağıtılır (resmi BF dünyası). Seviyen yetmeyen barlar soluk görünür.</span>
+        </div>
         {nightMethods.rows.length>0?<div className="tableBox"><table><thead><tr><th>Metod</th><th>Alış emirleri</th><th>Satış emri</th><th>Net kâr / işlem</th><th>~GP/saat</th><th>Gece adedi (işlem)</th><th>Sermaye</th><th>Beklenen net kâr</th><th>Likidite</th></tr></thead><tbody>
           {nightMethods.rows.map((r:any)=><tr key={r.key} style={{opacity:r.plan?1:.55}}>
-            <td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.skill} Lv {r.level}</div></td>
+            <td><b>{r.name}</b><div style={{fontSize:10,color:'#8b949e'}}>{r.skill} Lv {r.level}{r.note?` • ${r.note}`:''}{r.plan&&r.bf?` • coffer ≈ ${fmt(r.plan.qty*r.coinFee)} GP`:''}</div></td>
             <td>{r.ins.map((i:any)=><div key={i.x.name} style={{marginBottom:3}}>{i.x.name}{r.plan?` ×${fmt(r.plan.qty*i.x.qty)}`:''}{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontSize:11,fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(i.ld.buy[k])}{i.ld.ok?'':'*'}</div>)}</div>)}</td>
             <td>{r.output}{r.plan?` ×${fmt(r.plan.qty*r.outputQty)}`:''}{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontSize:11,fontWeight:portfolioProfile===k?700:400}}>{k[0]} {fmt(r.outL.sell[k])}{r.outL.ok?'':'*'}</div>)}</td>
             <td>{(['PATIENT','BALANCED','FAST'] as const).map(k=><div key={k} style={{fontWeight:portfolioProfile===k?700:400,color:r.net[k]>0?'#3fb950':'#f85149'}}>{k[0]} {fmt(r.net[k])}</div>)}</td>
@@ -3603,6 +3626,7 @@ export default function App() {
         <div style={{display:'flex',gap:16,flexWrap:'wrap',fontSize:12,marginTop:8,padding:10,border:'1px solid #30363d',borderRadius:8}}>
           <span>Bu bölümde emir verilen: <b>{nightMethods.count}</b></span>
           <span>Kullanılan sermaye: <b>{fmt(nightMethods.used)} GP</b></span>
+          {nightMethods.bfFee>0?<span>BF coffer ücreti (ayrıca yatırılır): <b>{fmt(nightMethods.bfFee)} GP</b></span>:null}
           <span>Beklenen net kâr: <b style={{color:nightMethods.profit>0?'#3fb950':'inherit'}}>{fmt(nightMethods.profit)} GP</b></span>
           <b>Genel toplam: {fmt(nightPlan.used+nightMethods.used)} GP bağlı • {fmt(nightPlan.profit+nightMethods.profit)} GP beklenen net kâr • {(nightPlan.hoursUsed+nightMethods.hoursUsed).toFixed(2)} saat • {fmt(nightMethods.reserve)} GP boşta</b>
         </div>
